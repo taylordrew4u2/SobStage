@@ -222,6 +222,39 @@ int main()
         check (std::abs (o.videoSeconds - 1.8) < 0.1, "the picture ends with the sound, as ffmpeg's -shortest does");
     }
 
+    // The take folder renamed in Finder while the export ran -- here, just as
+    // it finished. The finished file is named in the folder as it is now, not
+    // looked for in the old one and left hidden for the next launch to delete
+    // as unfinished.
+    {
+        const auto before = dir + "/Take-before";
+        const auto after = dir + "/Take-after";
+        [[NSFileManager defaultManager] createDirectoryAtPath:[NSString stringWithUTF8String:before.c_str()]
+                                  withIntermediateDirectories:YES attributes:nil error:nil];
+        check (writeMovie (before + "/V01_Cam.mov", 2.0) && writeWav (before + "/MIX.wav", 3.0),
+               "made a take to rename");
+
+        bool renamed = false;
+        const std::function<std::string()> folderNow = [&]
+        {
+            if (! renamed)
+                renamed = std::rename (before.c_str(), after.c_str()) == 0;
+
+            return renamed ? after : before;
+        };
+
+        const auto problem = mma::combineMovieWithSound (before + "/V01_Cam.mov", { before + "/MIX.wav" },
+                                                         before + "/V01_Cam_with-sound.mov", 0.5,
+                                                         notCancelled, folderNow);
+        if (! problem.empty())
+            std::printf ("  problem: %s\n", problem.c_str());
+        check (renamed && problem.empty(), "a take folder renamed during the combine still gets its combined file");
+        check ([[NSFileManager defaultManager] fileExistsAtPath:[NSString stringWithUTF8String:(after + "/V01_Cam_with-sound.mov").c_str()]],
+               "the combined file is in the folder under its new name");
+        check (! [[NSFileManager defaultManager] fileExistsAtPath:[NSString stringWithUTF8String:(after + "/.V01_Cam_with-sound.mov").c_str()]],
+               "no hidden working file is left in the renamed folder");
+    }
+
     // A missing picture is reported, not a crash or an empty file.
     {
         const auto missing = dir + "/nothing.mov";

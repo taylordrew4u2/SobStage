@@ -3195,7 +3195,7 @@ void Application::toggleRecording()
             }
             else if (plan.hasWork())
             {
-                takeCombiner.start (juce::File (currentSessionFolder), plan);
+                takeCombiner.start (juce::File (currentSessionFolder), plan, followTakeFolderAfterTheTake());
             }
             else if (! plan.problem.empty())
             {
@@ -3225,7 +3225,8 @@ void Application::toggleRecording()
                 noteActivity (ActivityLevel::Warning, "Podcast copy",
                               "No podcast-ready copy was made: the card stopped answering.");
             else if (! podcastExporter.start (juce::File (currentSessionFolder), "MIX.wav",
-                                              deliveryTarget.toStdString()))
+                                              deliveryTarget.toStdString(),
+                                              followTakeFolderAfterTheTake()))
                 noteActivity (ActivityLevel::Warning, "Podcast copy",
                               "No podcast-ready copy was made for " + deliveryTarget + ".");
         }
@@ -5253,6 +5254,16 @@ void Application::followRenamedTakeFolder()
     noteActivity (ActivityLevel::Warning, "Recording",
                   "This take's folder was renamed or moved. It is still recording, into "
                   + live + ".");
+}
+
+std::shared_ptr<TakeFolderTracker> Application::followTakeFolderAfterTheTake() const
+{
+    auto tracker = std::make_shared<TakeFolderTracker>();
+
+    if (! tracker->adopt (takeFolderTracker.duplicateDescriptor(), currentSessionFolder.toStdString()))
+        return nullptr;
+
+    return tracker;
 }
 
 void Application::followTakeFolderMovedAfterAudioStopped()

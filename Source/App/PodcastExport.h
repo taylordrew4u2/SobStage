@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 #include "../Core/StreamingTargets.h"
+#include "../Core/TakeFolderTracker.h"
+#include <functional>
 
 namespace mma {
 
@@ -73,12 +75,19 @@ juce::String podcastCopyFileName (const juce::String& mixFileName, const std::st
 /// complete, so a copy cut short by `cancel`, a full card or a crash never
 /// sits in the folder looking like a finished one.
 ///
+/// `currentFolder`, when given, is asked where the take folder is each time a
+/// file in it is about to be opened, checked or renamed. The folder can be
+/// renamed in Finder during the minutes a long copy takes; with this the copy
+/// follows it rather than failing in -- and leaving its working file behind
+/// for -- a folder that is no longer there. Without it, `sessionFolder`.
+///
 /// Blocking, and minutes of reading for a long take: never call it on the
 /// audio or message thread. PodcastExporter is how the app runs it.
 PodcastExportResult exportPodcastCopy (const juce::File& sessionFolder,
                                        const juce::String& mixFileName,
                                        const StreamingTarget& target,
-                                       const std::atomic<bool>& cancel);
+                                       const std::atomic<bool>& cancel,
+                                       const std::function<juce::File()>& currentFolder = {});
 
 /// Runs exportPodcastCopy() after each take, on a thread of its own.
 ///
@@ -97,9 +106,12 @@ public:
     ~PodcastExporter();
 
     /// Queues one take. False when quitting, or when `targetName` names no
-    /// target.
+    /// target. `followedFolder`, when given, holds the take folder itself
+    /// (TakeFolderTracker::duplicateDescriptor()), so the copy follows the
+    /// folder through a rename in Finder while it waits or runs.
     bool start (const juce::File& sessionFolder, const juce::String& mixFileName,
-                const std::string& targetName);
+                const std::string& targetName,
+                std::shared_ptr<TakeFolderTracker> followedFolder = nullptr);
 
     /// Results finished since the last call, oldest first. For the message
     /// thread, which is the only place that may report them.
@@ -123,6 +135,7 @@ private:
         juce::File sessionFolder;
         juce::String mixFileName;
         StreamingTarget target;
+        std::shared_ptr<TakeFolderTracker> followedFolder;
     };
 
     struct State

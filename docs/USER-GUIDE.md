@@ -320,7 +320,8 @@ files really are empty and the card says so instead of calling it saved.
   to move and by how much. **After each take a ready-to-upload copy of the
   mix is saved beside it** ("MIX - Apple-Podcasts.wav"), turned to that
   loudness with its loudest peaks gently limited so they don't clip. The
-  stems and the original mix are never changed.
+  stems and the original mix are never changed. Renaming the take's folder in
+  Finder while the copy is being made is fine; the copy follows it.
 - **Mono needs a different number, and this is the part that catches people.**
   Every file this app writes is mono, and a mono file played through both
   speakers is the same signal twice — which measures **3 LU louder** than the
@@ -398,7 +399,8 @@ this feature works out for you.
   deletes its unfinished copy, and starts again from the beginning once that
   take is over, so the take has the card to itself. A card without room for
   the combined file and 1 GB to spare doesn't get one; the line under the
-  record button says so.
+  record button says so. Renaming the take's folder in Finder while it is
+  being made is fine: the file ends up in the folder under its new name.
 - **A camera counts against the card's speed, not just its space.** §6.4 blocks
   arming when the card cannot sustain twice what the take needs; that figure now
   includes the video, because a card that keeps up with eight microphones can

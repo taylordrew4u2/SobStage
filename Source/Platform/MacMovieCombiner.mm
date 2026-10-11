@@ -24,13 +24,26 @@ std::string describe (NSError* error)
     return text != nullptr ? std::string (text) : std::string();
 }
 
+/// The folder as `currentFolder` says it is now, or `atStart` when it can't say.
+NSURL* folderNow (const std::function<std::string()>& currentFolder, NSURL* atStart)
+{
+    const std::string now = currentFolder != nullptr ? currentFolder() : std::string();
+    NSString* path = now.empty() ? nil : [NSString stringWithUTF8String:now.c_str()];
+
+    if (path == nil)
+        return atStart;
+
+    return [NSURL fileURLWithPath:path isDirectory:YES];
+}
+
 } // namespace
 
 std::string combineMovieWithSound (const std::string& videoPath,
                                    const std::vector<std::string>& audioParts,
                                    const std::string& outputPath,
                                    double audioLeadSeconds,
-                                   const std::function<bool()>& shouldStop)
+                                   const std::function<bool()>& shouldStop,
+                                   const std::function<std::string()>& currentFolder)
 {
     @autoreleasepool
     {
@@ -123,6 +136,8 @@ std::string combineMovieWithSound (const std::string& videoPath,
             return "macOS couldn't set up the combined file.";
 
         NSURL* outputUrl = fileUrl (outputPath);
+        NSURL* folderAtStart = [outputUrl URLByDeletingLastPathComponent];
+        NSString* outputName = outputUrl.lastPathComponent;
 
         // Written under a hidden working name and renamed into place only once
         // complete. Exported straight to the final name, a combine cut short
@@ -130,8 +145,8 @@ std::string combineMovieWithSound (const std::string& videoPath,
         // with no index -- unplayable, and named exactly like the finished
         // one. Hidden by a leading dot (the app's own rule for files that are
         // not part of the take), and still .mov, which the export requires.
-        NSURL* workingUrl = [[outputUrl URLByDeletingLastPathComponent]
-                                URLByAppendingPathComponent:[@"." stringByAppendingString:outputUrl.lastPathComponent]];
+        NSString* workingName = [@"." stringByAppendingString:outputName];
+        NSURL* workingUrl = [folderAtStart URLByAppendingPathComponent:workingName];
         NSFileManager* files = [NSFileManager defaultManager];
 
         [files removeItemAtURL:outputUrl error:nil];
@@ -159,10 +174,21 @@ std::string combineMovieWithSound (const std::string& videoPath,
                 // finished. This runs on a detached worker, so waiting here
                 // never holds up quitting.
                 dispatch_semaphore_wait (done, dispatch_time (DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC));
-                [files removeItemAtURL:workingUrl error:nil];
+                [files removeItemAtURL:[folderNow (currentFolder, folderAtStart) URLByAppendingPathComponent:workingName]
+                                 error:nil];
                 return "Stopped before the combined file was finished.";
             }
         }
+
+        // The take folder can be renamed in Finder while a long export runs,
+        // and the export goes on writing into it under its new name. So the
+        // working file is looked for -- and named, or cleared away -- in the
+        // folder as it is now. Looked for in the old place, the rename
+        // failed, the user was told the combine had, and the next launch
+        // deleted the finished file, still hidden, as unfinished work.
+        NSURL* folder = folderNow (currentFolder, folderAtStart);
+        workingUrl = [folder URLByAppendingPathComponent:workingName];
+        outputUrl = [folder URLByAppendingPathComponent:outputName];
 
         if (exporter.status != AVAssetExportSessionStatusCompleted)
         {

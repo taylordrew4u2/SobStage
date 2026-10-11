@@ -66,6 +66,29 @@ TEST_CASE (TakeFolderTracker_FollowsAFolderRenamedAfterItWasOpened)
                                           archive / "Kitchen show (keep)"));
 }
 
+// The combined video and the podcast copy run for minutes after the take has
+// let go of its folder. Each gets a descriptor of its own, which still finds
+// the folder after a rename once the take's tracker is closed.
+TEST_CASE (TakeFolderTracker_ADuplicateFollowsTheFolderAfterTheOriginalCloses)
+{
+    ScratchFolder scratch;
+    const auto take = scratch.root / "2026-10-11_2105_Late-set";
+    const auto renamed = scratch.root / "Late set (keep)";
+    std::filesystem::create_directories (take);
+
+    TakeFolderTracker tracker;
+    REQUIRE (tracker.open (take.string()));
+
+    TakeFolderTracker later;
+    REQUIRE (later.adopt (tracker.duplicateDescriptor(), take.string()));
+    tracker.close();
+
+    REQUIRE (later.resolve() == take.string());
+
+    std::filesystem::rename (take, renamed);
+    REQUIRE (std::filesystem::equivalent (std::filesystem::path (later.resolve()), renamed));
+}
+
 TEST_CASE (TakeFolderTracker_ADeletedFolderHasNoAnswer)
 {
     ScratchFolder scratch;
@@ -87,6 +110,7 @@ TEST_CASE (TakeFolderTracker_ClosedOrMissingAnswersNothing)
     TakeFolderTracker tracker;
     REQUIRE_FALSE (tracker.isOpen());
     REQUIRE (tracker.resolve().empty());
+    REQUIRE (tracker.duplicateDescriptor() == -1);
 
     REQUIRE_FALSE (tracker.open ((std::filesystem::temp_directory_path() / "sobstage-no-such-take").string()));
     REQUIRE (tracker.resolve().empty());

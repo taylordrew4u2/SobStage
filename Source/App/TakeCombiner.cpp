@@ -10,6 +10,22 @@
 
 namespace mma {
 
+namespace {
+
+/// Where the take folder is now: followed through a rename in Finder when a
+/// descriptor on it is held, otherwise -- or once it can no longer be found --
+/// where it was last known to be.
+juce::File folderNow (TakeFolderTracker* followed, const juce::File& lastKnown)
+{
+    if (followed != nullptr)
+        if (const auto now = followed->resolve(); ! now.empty())
+            return juce::File (juce::String::fromUTF8 (now.c_str()));
+
+    return lastKnown;
+}
+
+} // namespace
+
 TakeCombiner::TakeCombiner()
     : runState (std::make_shared<RunState>())
 {
@@ -95,7 +111,8 @@ juce::String TakeCombiner::probeFfmpeg()
     return {};
 }
 
-bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePlan& plan)
+bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePlan& plan,
+                          std::shared_ptr<TakeFolderTracker> followedFolder)
 {
     if (! plan.hasWork())
         return false;
@@ -113,7 +130,7 @@ bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePla
             if (runState->cancelling.load (std::memory_order_acquire))
                 return false;
 
-            runState->queued.push_back ({ sessionFolder, plan });
+            runState->queued.push_back ({ sessionFolder, plan, std::move (followedFolder) });
             runState->status.total += static_cast<int> (plan.jobs.size());
             return true;
         }
@@ -174,9 +191,9 @@ bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePla
     // destroyed TakeCombiner or overwrite a later run's status.
     try
     {
-        std::thread ([next, sessionFolder, plan, ffmpeg]
+        std::thread ([next, sessionFolder, plan, followedFolder, ffmpeg]
         {
-            TakeCombiner::run (next, sessionFolder, plan, ffmpeg);
+            TakeCombiner::run (next, sessionFolder, plan, followedFolder, ffmpeg);
         }).detach();
     }
     catch (...)
@@ -207,15 +224,19 @@ bool TakeCombiner::waitWhileHeld (RunState& state)
 
 void TakeCombiner::combineTake (const std::shared_ptr<RunState>& state,
                                 const juce::File& sessionFolder,
+                                TakeFolderTracker* followedFolder,
                                 const CombinedTakePlan& plan,
                                 const juce::String& ffmpeg,
                                 int& failures,
                                 juce::String& firstFailureDetail)
 {
+    auto folder = sessionFolder;
+
     for (const auto& job : plan.jobs)
     {
         auto ended = Attempt::Yielded;
         juce::String problem;
+        bool triedAgainAfterMove = false;
 
         // Round again for as long as takes keep starting mid-combine: the copy
         // a take interrupted was thrown away, and is made again from the start
@@ -226,8 +247,24 @@ void TakeCombiner::combineTake (const std::shared_ptr<RunState>& state,
             if (! waitWhileHeld (*state))
                 return;
 
+            // Where the take is now, not where it was at Stop: the folder can
+            // be renamed in Finder while this waits its turn or runs. A take
+            // queued behind another used to list the old folder, find
+            // nothing, and fail.
+            folder = folderNow (followedFolder, folder);
+
             problem.clear();
-            ended = combineOnce (*state, sessionFolder, job, ffmpeg, problem);
+            ended = combineOnce (*state, folder, followedFolder, job, ffmpeg, problem);
+
+            // A folder renamed while the copy was reading it can fail the copy
+            // -- a later part of the mix opened by its old name. Once more,
+            // from where the folder is now.
+            if (ended == Attempt::Failed && ! triedAgainAfterMove
+                && folderNow (followedFolder, folder) != folder)
+            {
+                triedAgainAfterMove = true;
+                ended = Attempt::Yielded;
+            }
         }
 
         if (ended == Attempt::Cancelled)
@@ -245,18 +282,27 @@ void TakeCombiner::combineTake (const std::shared_ptr<RunState>& state,
         ++state->status.done;
 
         if (ended == Attempt::Written)
-            state->status.written.add (sessionFolder.getChildFile (juce::String (job.outputFile)).getFileName());
+            state->status.written.add (folder.getChildFile (juce::String (job.outputFile)).getFileName());
     }
 }
 
 TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
                                                  const juce::File& sessionFolder,
+                                                 TakeFolderTracker* followedFolder,
                                                  const CombinedTakeJob& job,
                                                  const juce::String& ffmpeg,
                                                  juce::String& problem)
 {
     const auto video = sessionFolder.getChildFile (juce::String (job.videoFile));
     const auto output = sessionFolder.getChildFile (juce::String (job.outputFile));
+
+    // The combined file where the folder is now, for clearing away a file
+    // that must not be left: a folder renamed mid-copy has it under its new
+    // name, and deleting by the old one deleted nothing.
+    const auto outputNow = [followedFolder, &sessionFolder, &job]
+    {
+        return folderNow (followedFolder, sessionFolder).getChildFile (juce::String (job.outputFile));
+    };
 
     // The mix as it is on the card: MIX.wav, and MIX_001.wav onwards if a
     // long take crossed the split limit. The plan names only the first;
@@ -317,18 +363,23 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
                                                 audioPaths,
                                                 output.getFullPathName().toStdString(),
                                                 job.audioLeadSeconds,
-                                                shouldStop);
+                                                shouldStop,
+                                                [followedFolder, &sessionFolder]
+                                                {
+                                                    return folderNow (followedFolder, sessionFolder)
+                                                               .getFullPathName().toStdString();
+                                                });
 
         if (state.cancelling.load (std::memory_order_acquire))
         {
-            output.deleteFile();
+            outputNow().deleteFile();
             return Attempt::Cancelled;
         }
 
         if (why.empty())
             return Attempt::Written;
 
-        output.deleteFile();
+        outputNow().deleteFile();
 
         if (yielded)
             return Attempt::Yielded;
@@ -382,7 +433,7 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
     // can poll the child in bounded steps and honour shutdown promptly.
     if (! process.start (argv, 0))
     {
-        output.deleteFile();
+        outputNow().deleteFile();
         problem = "ffmpeg wouldn't start.";
         return Attempt::Failed;
     }
@@ -410,7 +461,7 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
             (void) process.waitForProcessToFinish (1000);
         }
 
-        output.deleteFile();
+        outputNow().deleteFile();
         return state.cancelling.load (std::memory_order_acquire) ? Attempt::Cancelled
                                                                  : Attempt::Yielded;
     }
@@ -420,7 +471,7 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
     // already-reaped child and make JUCE replace the real status.
     if (process.getExitCode() != 0)
     {
-        output.deleteFile();
+        outputNow().deleteFile();
         problem = "ffmpeg stopped before it made a complete file.";
         return Attempt::Failed;
     }
@@ -431,6 +482,7 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
 void TakeCombiner::run (std::shared_ptr<RunState> state,
                         juce::File sessionFolder,
                         CombinedTakePlan plan,
+                        std::shared_ptr<TakeFolderTracker> followedFolder,
                         juce::String ffmpeg)
 {
     int failures = 0;
@@ -442,7 +494,7 @@ void TakeCombiner::run (std::shared_ptr<RunState> state,
 
     for (;;)
     {
-        combineTake (state, sessionFolder, plan, ffmpeg, failures, firstFailureDetail);
+        combineTake (state, sessionFolder, followedFolder.get(), plan, ffmpeg, failures, firstFailureDetail);
 
         // The next take stopped while this one was muxing, or the end of the
         // run. Decided under the lock start() queues under, and the run is
@@ -455,6 +507,7 @@ void TakeCombiner::run (std::shared_ptr<RunState> state,
         {
             sessionFolder = state->queued.front().sessionFolder;
             plan = std::move (state->queued.front().plan);
+            followedFolder = std::move (state->queued.front().followedFolder);
             state->queued.pop_front();
             continue;
         }

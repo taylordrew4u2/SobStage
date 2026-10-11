@@ -12,6 +12,7 @@
 #include <thread>
 #include <vector>
 #include "../Core/CombinedTakePlan.h"
+#include "../Core/TakeFolderTracker.h"
 
 namespace mma {
 
@@ -55,7 +56,14 @@ public:
     /// false and drop the plan, and the app never asked twice, so a take
     /// stopped while the last one was still muxing silently never got its
     /// combined file.
-    bool start (const juce::File& sessionFolder, const CombinedTakePlan& plan);
+    ///
+    /// `followedFolder`, when given, holds the take folder itself
+    /// (TakeFolderTracker::duplicateDescriptor()), so a folder renamed in
+    /// Finder while the combine waits or runs is followed: the inputs are
+    /// read, and the combined file named, wherever the folder is by then.
+    /// Without it the combine works in `sessionFolder` as given.
+    bool start (const juce::File& sessionFolder, const CombinedTakePlan& plan,
+                std::shared_ptr<TakeFolderTracker> followedFolder = nullptr);
 
     /// True from start() until the run has finished -- including while it is
     /// held for a take (below), so quitting and the recovery scan still wait.
@@ -129,6 +137,7 @@ private:
     {
         juce::File sessionFolder;
         CombinedTakePlan plan;
+        std::shared_ptr<TakeFolderTracker> followedFolder;
     };
 
     struct RunState
@@ -159,10 +168,12 @@ private:
     static void run (std::shared_ptr<RunState> state,
                      juce::File sessionFolder,
                      CombinedTakePlan plan,
+                     std::shared_ptr<TakeFolderTracker> followedFolder,
                      juce::String ffmpeg);
 
     static void combineTake (const std::shared_ptr<RunState>& state,
                              const juce::File& sessionFolder,
+                             TakeFolderTracker* followedFolder,
                              const CombinedTakePlan& plan,
                              const juce::String& ffmpeg,
                              int& failures,
@@ -179,6 +190,7 @@ private:
 
     static Attempt combineOnce (RunState& state,
                                 const juce::File& sessionFolder,
+                                TakeFolderTracker* followedFolder,
                                 const CombinedTakeJob& job,
                                 const juce::String& ffmpeg,
                                 juce::String& problem);

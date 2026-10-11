@@ -1294,6 +1294,13 @@ private:
     /// folder itself, held open for the take by takeFolderTracker.
     void followTakeFolderMovedAfterAudioStopped();
     TakeFolderTracker takeFolderTracker;
+
+    /// A tracker of its own on the take folder, for work that carries on after
+    /// the take lets go of takeFolderTracker: the combined video and the
+    /// podcast copy run for minutes, and the folder can be renamed under them
+    /// too. One each -- a tracker is not shared between threads. Null when
+    /// the take's folder isn't held. Touches no card.
+    std::shared_ptr<TakeFolderTracker> followTakeFolderAfterTheTake() const;
     /// The figures session.json reports, read from the live take now.
     TakeFigures liveTakeFigures (bool sessionHasStopped) const;
     /// Writes a take's text file with a deadline, skipping the card once it

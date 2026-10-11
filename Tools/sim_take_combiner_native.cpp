@@ -41,6 +41,10 @@ void expect (bool condition, const char* what)
 std::atomic<int> exportMs { 600 };
 std::atomic<int> exportsStarted { 0 };
 
+/// Whether the stand-in fails, as AVFoundation can, when a part of the mix is
+/// no longer where it was when the copy began.
+std::atomic<bool> failsIfAPartMoved { false };
+
 bool writeText (const std::filesystem::path& path, const char* text)
 {
     std::ofstream out (path, std::ios::binary | std::ios::trunc);
@@ -78,7 +82,8 @@ std::string combineMovieWithSound (const std::string& videoPath,
                                    const std::vector<std::string>& audioParts,
                                    const std::string& outputPath,
                                    double,
-                                   const std::function<bool()>& shouldStop)
+                                   const std::function<bool()>& shouldStop,
+                                   const std::function<std::string()>& currentFolder)
 {
     ++exportsStarted;
 
@@ -87,13 +92,28 @@ std::string combineMovieWithSound (const std::string& videoPath,
         return "The camera's file has no picture in it.";
 
     const std::filesystem::path output (outputPath);
-    const auto working = output.parent_path() / ("." + output.filename().string());
+    const auto folderAtStart = output.parent_path();
+    const auto outputName = output.filename();
+    const auto workingName = std::filesystem::path ("." + outputName.string());
+
+    // Asked only once the export has ended, as the real one does.
+    const auto folderNow = [&]
+    {
+        const auto now = currentFolder != nullptr ? currentFolder() : std::string();
+        return now.empty() ? folderAtStart : std::filesystem::path (now);
+    };
 
     std::filesystem::remove (output, ec);
-    std::filesystem::remove (working, ec);
+    std::filesystem::remove (folderAtStart / workingName, ec);
 
-    if (! writeText (working, "partial"))
+    // Written through a file held open for the whole copy, as AVFoundation
+    // writes its export: a folder renamed meanwhile takes the file with it.
+    std::ofstream working (folderAtStart / workingName, std::ios::binary | std::ios::trunc);
+    if (! working)
         return "macOS couldn't set up the combined file.";
+
+    working << "partial";
+    working.flush();
 
     // The real one polls every 100 ms; quicker here only to keep the run short.
     const auto finishAt = Clock::now() + std::chrono::milliseconds (exportMs.load());
@@ -101,20 +121,33 @@ std::string combineMovieWithSound (const std::string& videoPath,
     {
         if (shouldStop())
         {
-            std::filesystem::remove (working, ec);
+            working.close();
+            std::filesystem::remove (folderNow() / workingName, ec);
             return "Stopped before the combined file was finished.";
         }
 
         std::this_thread::sleep_for (std::chrono::milliseconds (10));
     }
 
-    if (! writeText (working, "complete"))
-        return "macOS couldn't finish the combined file.";
+    working << " complete";
+    working.close();
 
-    std::filesystem::rename (working, output, ec);
+    const auto folder = folderNow();
+
+    // An export that reads a later part of the mix by name once the folder
+    // has moved finds nothing there, and fails.
+    if (failsIfAPartMoved.load())
+        for (const auto& part : audioParts)
+            if (! std::filesystem::exists (part, ec))
+            {
+                std::filesystem::remove (folder / workingName, ec);
+                return "Couldn't read the sound in " + part + ".";
+            }
+
+    std::filesystem::rename (folder / workingName, folder / outputName, ec);
     if (ec)
     {
-        std::filesystem::remove (working, ec);
+        std::filesystem::remove (folder / workingName, ec);
         return "Couldn't name the finished combined file: " + ec.message();
     }
 
@@ -302,6 +335,116 @@ int main()
         expect (exportsStarted.load() == 1 && std::filesystem::exists (take / "V01_Cam_with-sound.mov", ec),
                 "a card that could not report its room was refused the combine");
     }
+
+    // Only a Mac or Linux can hold the folder itself to follow it
+    // (TakeFolderTracker); a Windows folder with open files can't be renamed.
+   #if defined (__APPLE__) || defined (__linux__)
+    // 7. The take folder renamed in Finder while the copy runs: the finished
+    //    file is named in the folder as it is now. Looked for in the old
+    //    place, the rename failed, the user was told the combine had, and the
+    //    next launch deleted the finished file, still hidden, as unfinished.
+    {
+        const auto take = makeTake ("2026-10-11_2100_Show");
+        const auto renamed = root / "Show (keep)";
+        exportsStarted = 0;
+        exportMs = 400;
+        failsIfAPartMoved = false;
+
+        auto followed = std::make_shared<mma::TakeFolderTracker>();
+        expect (followed->open (take.string()), "could not hold the take folder");
+
+        mma::TakeCombiner combiner;
+        expect (combiner.start (folderOf (take), plan, std::move (followed)), "the combine did not start");
+        expect (waitFor ([] { return exportsStarted.load() == 1; }, 2000), "the copy never began");
+        sleepMs (50);
+
+        std::filesystem::rename (take, renamed, ec);
+        expect (! ec, "could not rename the take folder");
+
+        expect (waitFor ([&combiner] { return ! combiner.isRunning(); }, 3000),
+                "the combine in a renamed folder did not finish");
+
+        const auto status = combiner.getStatus();
+        if (status.problem.isNotEmpty())
+            std::printf ("  renamed mid-copy: %s\n", status.problem.toRawUTF8());
+
+        expect (status.problem.isEmpty() && status.written.contains ("V01_Cam_with-sound.mov"),
+                "a take folder renamed during the combine was reported as a failed combine");
+        expect (std::filesystem::exists (renamed / "V01_Cam_with-sound.mov", ec),
+                "the combined file is not in the renamed take folder");
+        expect (! std::filesystem::exists (renamed / ".V01_Cam_with-sound.mov", ec),
+                "the renamed take folder was left holding the hidden working file");
+        expect (exportsStarted.load() == 1, "a combine in a renamed folder was copied twice");
+    }
+
+    // 8. Renamed, then Record pressed mid-copy: the working file is cleared
+    //    out of the renamed folder, and the copy made again there afterwards.
+    {
+        const auto take = makeTake ("2026-10-11_2130_Encore");
+        const auto renamed = root / "Encore (keep)";
+        exportsStarted = 0;
+        exportMs = 600;
+        failsIfAPartMoved = false;
+
+        auto followed = std::make_shared<mma::TakeFolderTracker>();
+        expect (followed->open (take.string()), "could not hold the encore's folder");
+
+        mma::TakeCombiner combiner;
+        expect (combiner.start (folderOf (take), plan, std::move (followed)), "the encore's combine did not start");
+        expect (waitFor ([] { return exportsStarted.load() == 1; }, 2000), "the encore's copy never began");
+        sleepMs (50);
+
+        std::filesystem::rename (take, renamed, ec);
+        expect (! ec, "could not rename the encore's folder");
+        sleepMs (50);
+
+        combiner.setHeldForRecording (true);
+        sleepMs (250);
+        expect (! std::filesystem::exists (renamed / ".V01_Cam_with-sound.mov", ec),
+                "a copy stopped for a take left its working file in the renamed folder");
+
+        combiner.setHeldForRecording (false);
+        expect (waitFor ([&combiner] { return ! combiner.isRunning(); }, 3000),
+                "the encore's combine did not finish after the take");
+        expect (exportsStarted.load() == 2 && combiner.getStatus().problem.isEmpty()
+                    && std::filesystem::exists (renamed / "V01_Cam_with-sound.mov", ec),
+                "the copy stopped for a take was not made again in the renamed folder");
+    }
+
+    // 9. A copy that fails because the folder moved under it -- a later part
+    //    of the mix asked for by its old name -- is made once more, from
+    //    where the folder is now.
+    {
+        const auto take = makeTake ("2026-10-11_2200_Late");
+        const auto renamed = root / "Late (keep)";
+        exportsStarted = 0;
+        exportMs = 300;
+        failsIfAPartMoved = true;
+
+        auto followed = std::make_shared<mma::TakeFolderTracker>();
+        expect (followed->open (take.string()), "could not hold the late take's folder");
+
+        mma::TakeCombiner combiner;
+        expect (combiner.start (folderOf (take), plan, std::move (followed)), "the late take's combine did not start");
+        expect (waitFor ([] { return exportsStarted.load() == 1; }, 2000), "the late take's copy never began");
+        sleepMs (50);
+
+        std::filesystem::rename (take, renamed, ec);
+        expect (! ec, "could not rename the late take's folder");
+
+        expect (waitFor ([&combiner] { return ! combiner.isRunning(); }, 3000),
+                "the late take's combine did not finish");
+
+        const auto status = combiner.getStatus();
+        expect (exportsStarted.load() == 2, "a copy failed by a moved folder was not made again from its new place");
+        expect (status.problem.isEmpty() && std::filesystem::exists (renamed / "V01_Cam_with-sound.mov", ec),
+                "a copy failed by a moved folder did not end with the combined file");
+        expect (! std::filesystem::exists (renamed / ".V01_Cam_with-sound.mov", ec),
+                "a copy failed by a moved folder left its working file behind");
+
+        failsIfAPartMoved = false;
+    }
+   #endif
 
     std::printf ("%s (%d checks, %d failing)\n",
                  failures == 0 ? "ALL CHECKS PASSED" : "CHECKS FAILED", checks, failures);

@@ -240,29 +240,41 @@ juce::String podcastCopyFileName (const juce::String& mixFileName, const std::st
 PodcastExportResult exportPodcastCopy (const juce::File& sessionFolder,
                                        const juce::String& mixFileName,
                                        const StreamingTarget& target,
-                                       const std::atomic<bool>& cancel)
+                                       const std::atomic<bool>& cancel,
+                                       const std::function<juce::File()>& currentFolder)
 {
     const juce::String noCopy ("No podcast-ready copy was made: ");
 
+    // Asked afresh every time a file in the take folder is opened, checked or
+    // renamed: the folder can be renamed in Finder during a long copy, and a
+    // path worked out at the start then names a folder that is not there.
+    // Files already open carry on regardless.
+    const auto folderNow = [&sessionFolder, &currentFolder]
+    {
+        return currentFolder != nullptr ? currentFolder() : sessionFolder;
+    };
+
     // The mix as it is on the card: the first file, then every split part that
-    // follows it -- the same list the combined video is laid against.
+    // follows it -- the same list the combined video is laid against. Kept as
+    // names, so each pass opens them wherever the folder is by then.
+    const auto listed = folderNow();
     std::vector<std::string> namesInFolder;
-    for (const auto& file : sessionFolder.findChildFiles (juce::File::findFiles, false))
+    for (const auto& file : listed.findChildFiles (juce::File::findFiles, false))
         namesInFolder.push_back (file.getFileName().toStdString());
 
-    std::vector<juce::File> parts;
+    std::vector<juce::String> parts;
     for (const auto& part : splitPartsInOrder (mixFileName.toStdString(), namesInFolder))
-        parts.push_back (sessionFolder.getChildFile (juce::String::fromUTF8 (part.c_str())));
+        parts.push_back (juce::String::fromUTF8 (part.c_str()));
 
     if (parts.empty())
-        return skipped (noCopy + mixFileName + " wasn't in " + sessionFolder.getFileName() + ".");
+        return skipped (noCopy + mixFileName + " wasn't in " + listed.getFileName() + ".");
 
     juce::AudioFormatManager formats;
     formats.registerBasicFormats();
 
-    auto openPart = [&formats] (const juce::File& file)
+    auto openPart = [&formats, &folderNow] (const juce::String& name)
     {
-        return std::unique_ptr<juce::AudioFormatReader> (formats.createReaderFor (file));
+        return std::unique_ptr<juce::AudioFormatReader> (formats.createReaderFor (folderNow().getChildFile (name)));
     };
 
     double rate = 0.0;
@@ -273,7 +285,7 @@ PodcastExportResult exportPodcastCopy (const juce::File& sessionFolder,
         auto reader = openPart (part);
 
         if (reader == nullptr || reader->sampleRate <= 0.0 || reader->numChannels < 1)
-            return skipped (noCopy + part.getFileName() + " couldn't be read.");
+            return skipped (noCopy + part + " couldn't be read.");
 
         if (rate == 0.0)
         {
@@ -297,7 +309,7 @@ PodcastExportResult exportPodcastCopy (const juce::File& sessionFolder,
             auto reader = openPart (part);
             if (reader == nullptr)
             {
-                problem = part.getFileName() + " couldn't be read.";
+                problem = part + " couldn't be read.";
                 return false;
             }
 
@@ -313,7 +325,7 @@ PodcastExportResult exportPodcastCopy (const juce::File& sessionFolder,
                                                                               reader->lengthInSamples - pos));
                 if (! reader->read (&buffer, 0, count, pos, true, true))
                 {
-                    problem = part.getFileName() + " couldn't be read to the end.";
+                    problem = part + " couldn't be read to the end.";
                     return false;
                 }
 
@@ -441,16 +453,18 @@ PodcastExportResult exportPodcastCopy (const juce::File& sessionFolder,
     // put there, keeps its name and this one takes the next free one.
     const auto wantedName = podcastCopyFileName (mixFileName, target.name);
     const auto stem = stemOf (wantedName).toStdString();
+    const auto namingFolder = folderNow();
     const auto freeStem = SessionFolderNaming::resolveCollision (stem, [&] (const std::string& candidate)
     {
-        return sessionFolder.getChildFile (juce::String::fromUTF8 (candidate.c_str()) + ".wav").exists();
+        return namingFolder.getChildFile (juce::String::fromUTF8 (candidate.c_str()) + ".wav").exists();
     });
 
-    const auto output = sessionFolder.getChildFile (juce::String::fromUTF8 (freeStem.c_str()) + ".wav");
+    const auto outputName = juce::String::fromUTF8 (freeStem.c_str()) + ".wav";
 
     // Not .wav until it is finished, so nothing that lists the folder's audio
     // -- this app's own saved-take card included -- can count it before then.
-    const auto working = output.getSiblingFile (output.getFileName() + ".part");
+    const auto workingName = outputName + ".part";
+    const auto workingNow = [&folderNow, &workingName] { return folderNow().getChildFile (workingName); };
 
     // Pass two: the mix again, with the gain and the limiter, into the working
     // file -- measured on the way out, because the copy's loudness is the
@@ -458,13 +472,14 @@ PodcastExportResult exportPodcastCopy (const juce::File& sessionFolder,
     auto render = [&] (double withGainDb) -> Rendered
     {
         Rendered rendered;
+        const auto working = workingNow();
         working.deleteFile();
 
         auto stream = std::make_unique<juce::FileOutputStream> (working);
 
         if (stream->failedToOpen())
         {
-            rendered.problem = "couldn't write to " + sessionFolder.getFileName() + ".";
+            rendered.problem = "couldn't write to " + working.getParentDirectory().getFileName() + ".";
             return rendered;
         }
 
@@ -477,8 +492,8 @@ PodcastExportResult exportPodcastCopy (const juce::File& sessionFolder,
         if (writer == nullptr)
         {
             stream.reset();
-            working.deleteFile();
-            rendered.problem = "couldn't start a WAV file in " + sessionFolder.getFileName() + ".";
+            workingNow().deleteFile();
+            rendered.problem = "couldn't start a WAV file in " + working.getParentDirectory().getFileName() + ".";
             return rendered;
         }
 
@@ -537,11 +552,15 @@ PodcastExportResult exportPodcastCopy (const juce::File& sessionFolder,
             // disk when the writer was deleted, where a failure is dropped.
             // So a card that filled on those last bytes gave a short file that
             // was renamed into place as finished. Pushed out and checked here.
+            //
+            // Measured where the folder is now: by the name it was opened
+            // under, a folder renamed during the pass reads as an empty file,
+            // and the copy was reported as the card running out of room.
             if (! writeFailed)
             {
                 fileStream->flush();
                 writeFailed = fileStream->getStatus().failed()
-                           || working.getSize() < fileStream->getPosition();
+                           || workingNow().getSize() < fileStream->getPosition();
             }
         }
 
@@ -549,7 +568,7 @@ PodcastExportResult exportPodcastCopy (const juce::File& sessionFolder,
 
         if (! read || writeFailed)
         {
-            working.deleteFile();
+            workingNow().deleteFile();
             rendered.problem = read ? juce::String ("the card ran out of room or stopped answering "
                                                     "while it was being written.")
                                     : problem;
@@ -577,6 +596,13 @@ PodcastExportResult exportPodcastCopy (const juce::File& sessionFolder,
 
     if (rendered.problem.isNotEmpty())
         return skipped (noCopy + rendered.problem);
+
+    // Named where the folder is now. Named in the old place, a folder renamed
+    // during the copy kept its finished copy hidden as ".part", and the next
+    // launch deleted it as unfinished work.
+    const auto finalFolder = folderNow();
+    const auto working = finalFolder.getChildFile (workingName);
+    const auto output = finalFolder.getChildFile (outputName);
 
     if (! working.moveFileTo (output))
     {
@@ -627,7 +653,8 @@ PodcastExporter::~PodcastExporter()
 }
 
 bool PodcastExporter::start (const juce::File& sessionFolder, const juce::String& mixFileName,
-                             const std::string& targetName)
+                             const std::string& targetName,
+                             std::shared_ptr<TakeFolderTracker> followedFolder)
 {
     const auto* target = findStreamingTarget (targetName);
     if (target == nullptr)
@@ -642,7 +669,7 @@ bool PodcastExporter::start (const juce::File& sessionFolder, const juce::String
         if (state->cancelling.load (std::memory_order_acquire))
             return false;
 
-        state->queued.push_back ({ sessionFolder, mixFileName, *target });
+        state->queued.push_back ({ sessionFolder, mixFileName, *target, std::move (followedFolder) });
 
         if (! state->running)
         {
@@ -708,8 +735,20 @@ void PodcastExporter::run (std::shared_ptr<State> state)
             state->queued.pop_front();
         }
 
+        // Where the take folder is now, followed through a rename in Finder;
+        // where it was last known to be once it can't be found.
+        auto lastKnown = job.sessionFolder;
+        const std::function<juce::File()> folderNow = [&job, &lastKnown]
+        {
+            if (job.followedFolder != nullptr)
+                if (const auto now = job.followedFolder->resolve(); ! now.empty())
+                    lastKnown = juce::File (juce::String::fromUTF8 (now.c_str()));
+
+            return lastKnown;
+        };
+
         auto result = exportPodcastCopy (job.sessionFolder, job.mixFileName, job.target,
-                                         state->cancelling);
+                                         state->cancelling, folderNow);
 
         const std::lock_guard<std::mutex> lock (state->lock);
         state->finished.push_back (std::move (result));

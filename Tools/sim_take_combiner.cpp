@@ -433,6 +433,55 @@ int main (int argc, char** argv)
             return fail ("the combine held for a take was not made once the take stopped");
     }
 
+    // Only a Mac or Linux can hold the folder itself to follow it
+    // (TakeFolderTracker); a Windows folder with open files can't be renamed.
+   #if defined (__APPLE__) || defined (__linux__)
+    // A take whose folder is renamed in Finder while its combine waits behind
+    // the last take's. The combine looks for the take where it is now; it
+    // used to list the old folder, find nothing there, and fail.
+    {
+        const auto queuedTake = root.getChildFile ("2026-10-11_2300_Queued");
+        const auto renamedTake = root.getChildFile ("Queued (keep)");
+
+        if (! root.getChildFile ("slow-input.mov").replaceWithText ("video")
+            || ! queuedTake.createDirectory().wasOk()
+            || ! queuedTake.getChildFile ("success-input.mov").replaceWithText ("video")
+            || ! queuedTake.getChildFile ("MIX.wav").replaceWithText ("audio"))
+            return fail ("could not make the renamed take's fake inputs");
+
+        mma::CombinedTakePlan slowPlan;
+        slowPlan.jobs.push_back ({ "slow-input.mov", "MIX.wav", "ahead-output.mov", 24, 0.0 });
+
+        mma::CombinedTakePlan queuedPlan;
+        queuedPlan.jobs.push_back ({ "success-input.mov", "MIX.wav", "queued-output.mov", 24, 0.0 });
+
+        auto followed = std::make_shared<mma::TakeFolderTracker>();
+        if (! followed->open (queuedTake.getFullPathName().toStdString()))
+            return fail ("could not hold the renamed take's folder");
+
+        mma::TakeCombiner renameCombiner;
+        renameCombiner.setFfmpegOverride (executable);
+
+        if (! renameCombiner.start (root, slowPlan)
+            || ! renameCombiner.start (queuedTake, queuedPlan, std::move (followed)))
+            return fail ("the renamed take's combine was not queued");
+
+        // While the take ahead is still combining (its stand-in takes 400 ms).
+        if (! queuedTake.moveFileTo (renamedTake))
+            return fail ("could not rename the queued take's folder");
+
+        const auto renameDeadline = std::chrono::steady_clock::now() + std::chrono::seconds (3);
+        while (renameCombiner.isRunning() && std::chrono::steady_clock::now() < renameDeadline)
+            std::this_thread::sleep_for (std::chrono::milliseconds (10));
+
+        const auto renameStatus = renameCombiner.getStatus();
+
+        if (renameCombiner.isRunning() || renameStatus.problem.isNotEmpty()
+            || ! renamedTake.getChildFile ("queued-output.mov").existsAsFile())
+            return fail ("a take renamed while its combine waited never got its combined file");
+    }
+   #endif
+
     // "Install ffmpeg and the next take will combine them" has to be true.
     // A failed lookup used to be cached for the life of the app, so ffmpeg
     // installed after the first take was never found until a restart.
@@ -503,6 +552,6 @@ int main (int argc, char** argv)
     if (checkSplitMixReachesTheCombinedFile (root) != 0)
         return 1;
 
-    std::printf ("ALL CHECKS PASSED (30 checks, 0 failing)\n");
+    std::printf ("ALL CHECKS PASSED (34 checks, 0 failing)\n");
     return 0;
 }
