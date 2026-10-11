@@ -16,6 +16,10 @@ constexpr double kCentres[] = { 80.0, 100.0, 125.0, 160.0, 200.0, 250.0, 315.0, 
 
 constexpr double kPi = 3.14159265358979323846;
 
+// Band filter memory smaller than this is cleared at each frame end. See
+// endFrame().
+constexpr double kFilterMemoryFloor = 1.0e-20;
+
 double toDb (double power) noexcept
 {
     return power > 1.0e-20 ? 10.0 * std::log10 (power) : -200.0;
@@ -71,6 +75,19 @@ void FeedbackDetector::reset() noexcept
     triggeredHz = 0.0;
 }
 
+bool FeedbackDetector::filtersAreAtRest() const noexcept
+{
+    for (int b = 0; b < numBands; ++b)
+    {
+        const auto& band = bands[static_cast<size_t> (b)];
+
+        if (band.z1 != 0.0 || band.z2 != 0.0)
+            return false;
+    }
+
+    return true;
+}
+
 bool FeedbackDetector::process (const float* samples, int numSamples) noexcept
 {
     if (samples == nullptr)
@@ -111,6 +128,26 @@ void FeedbackDetector::endFrame() noexcept
         auto& band = bands[static_cast<size_t> (b)];
         const double levelDb = toDb (band.energy / static_cast<double> (frameLength));
         band.energy = 0.0;
+
+        // A silent bus -- the headphone mix muted with the spacebar, held by a
+        // latched cut, every input quiet -- is exact zeros, sometimes for a
+        // whole show. Zeros do not take a recursive filter's memory to zero:
+        // it decays into denormal doubles and then circulates there for as
+        // long as the silence lasts, and on an Intel Mac every step of
+        // arithmetic on a denormal is dozens of times slower. That held this
+        // thread at around a tenth of a core while nothing was playing.
+        //
+        // Memory this small is far below anything measured: 1e-20 is about
+        // -400 dBFS, and its energy reads as silence in toDb. Once it is
+        // zero, zeros keep it there. And it cannot reach the denormal range
+        // (below about 2.2e-308) between two frame ends: within one 20 ms
+        // frame even the fastest-decaying band, 12.5 kHz, falls by no more
+        // than about 114 orders of magnitude, at any sample rate.
+        if (std::abs (band.z1) < kFilterMemoryFloor)
+            band.z1 = 0.0;
+
+        if (std::abs (band.z2) < kFilterMemoryFloor)
+            band.z2 = 0.0;
 
         const bool qualifies = levelDb >= kFloorDb && peakDb - levelDb <= kWithinBroadbandDb;
         band.qualifyingFrames = qualifies ? band.qualifyingFrames + 1 : 0;

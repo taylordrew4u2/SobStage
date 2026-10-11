@@ -128,6 +128,68 @@ TEST_CASE (FeedbackDetector_AHowlRisingOutOfSpeechIsCaughtOnceItStandsOut)
     REQUIRE (at < 3.0);
 }
 
+TEST_CASE (FeedbackDetector_SilenceLeavesTheBandFiltersAtExactlyZero)
+{
+    // The guard analyses the headphone mix the whole time it is open, and a
+    // muted mix -- the spacebar, a latched cut, every input silent -- is
+    // exact zeros, sometimes for a whole show. A recursive filter fed zeros
+    // does not reach zero on its own: its memory decays into denormal
+    // doubles and then circulates there, and on an Intel Mac every
+    // arithmetic step on one is dozens of times slower. It has to settle to
+    // exactly zero instead, at every rate the monitor can run at.
+    for (const double rate : { 44100.0, 48000.0, 96000.0, 192000.0 })
+    {
+        FeedbackDetector d (rate);
+        std::mt19937 rng (5);
+        std::normal_distribution<float> noise (0.0f, 0.25f);
+        std::vector<float> block (64);
+
+        // Something played first, so every band has memory to lose.
+        for (int i = 0; i < static_cast<int> (2.0 * rate / 64); ++i)
+        {
+            for (auto& s : block)
+                s = noise (rng);
+
+            d.process (block.data(), static_cast<int> (block.size()));
+        }
+
+        REQUIRE_FALSE (d.filtersAreAtRest());
+
+        // Then the mix is muted. Long enough for every band to be well into
+        // the denormal range if nothing clears it (about 8 s at 48 kHz for
+        // the slowest, 80 Hz, band).
+        std::fill (block.begin(), block.end(), 0.0f);
+
+        for (int i = 0; i < static_cast<int> (20.0 * rate / 64); ++i)
+            d.process (block.data(), static_cast<int> (block.size()));
+
+        REQUIRE (d.filtersAreAtRest());
+
+        // And a howl after the silence is still caught.
+        const double at = [&]
+        {
+            long long n = 0;
+
+            while (n < static_cast<long long> (3.0 * rate))
+            {
+                for (auto& s : block)
+                {
+                    const double t = static_cast<double> (n++) / rate;
+                    s = static_cast<float> (dbToGain (-50.0 + 20.0 * t) * std::sin (kTwoPi * 2000.0 * t));
+                }
+
+                if (d.process (block.data(), static_cast<int> (block.size())))
+                    return static_cast<double> (n) / rate;
+            }
+
+            return -1.0;
+        }();
+
+        REQUIRE (at > 0.0);
+        REQUIRE (at < 1.2);
+    }
+}
+
 TEST_CASE (FeedbackGuard_CutsTheBusAndCountsIt)
 {
     MonitorBus bus (kRate);
