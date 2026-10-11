@@ -5,6 +5,7 @@
 #include "Core/StreamingTargets.h"
 #include "Core/PolarPatternDetector.h"
 #include "Core/SlowMicrophoneNotice.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1679,6 +1680,128 @@ TEST_CASE (CaptureCoordinator_ASwitchedOffHeadphoneJackGetsSilenceAndTheRestTheM
     c.setOutputChannelGains ({});
     c.processAudioBlock (ins, 2, outs, 4, 64);
     REQUIRE_NEAR (o3[10], o0[10], 1e-9);
+}
+
+namespace
+{
+    float loudestOf (const std::vector<float>& block)
+    {
+        float peak = 0.0f;
+        for (float v : block)
+            peak = std::max (peak, std::abs (v));
+        return peak;
+    }
+}
+
+TEST_CASE (CaptureCoordinator_ASwitchedOffJackStillGetsTheAlarmButNeverTheMix)
+{
+    // A jack switched off from the mix used to get zeros, the alarm included,
+    // so the person who switched theirs off never heard the siren. They get
+    // the app's own sounds alone: the mix still never reaches them (§5.2),
+    // and the jacks that hear the mix get the mix with the siren over it.
+    FakeBackend backend, referenceBackend;
+    CaptureCoordinator c (backend, 48000.0, 64), reference (referenceBackend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    reference.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (reference.startMonitoring (twoMics(), "out-device"));
+    c.setOutputChannelGains ({ 1.0f, 1.0f, 0.0f, 0.0f });
+    reference.setOutputChannelGains ({ 1.0f, 1.0f, 0.0f, 0.0f });
+
+    std::vector<float> a (64, 0.15f), b (64, 0.15f);
+    const float* ins[] = { a.data(), b.data() };
+    std::vector<float> o0 (64), o1 (64), o2 (64), o3 (64);
+    std::vector<float> r0 (64), r1 (64), r2 (64), r3 (64);
+    float* outs[] = { o0.data(), o1.data(), o2.data(), o3.data() };
+    float* refOuts[] = { r0.data(), r1.data(), r2.data(), r3.data() };
+
+    c.processAudioBlock (ins, 2, outs, 4, 64);
+    reference.processAudioBlock (ins, 2, refOuts, 4, 64);
+    REQUIRE (loudestOf (o0) > 0.01f);
+    REQUIRE (loudestOf (o2) == 0.0f); // no alarm yet: silence
+
+    c.getAlarm().setFault (true);
+    float switchedOffPeak = 0.0f;
+
+    for (int block = 0; block < 8; ++block)
+    {
+        const auto renderedBefore = c.getAlarm().getSamplesRendered();
+
+        c.processAudioBlock (ins, 2, outs, 4, 64);
+        reference.processAudioBlock (ins, 2, refOuts, 4, 64);
+
+        // Rendered once for the block, not once per kind of channel: a second
+        // render would move the siren on and play a different stretch of it.
+        REQUIRE (c.getAlarm().getSamplesRendered() - renderedBefore == 64u);
+
+        switchedOffPeak = std::max (switchedOffPeak, loudestOf (o2));
+
+        for (size_t s = 0; s < 64; ++s)
+        {
+            REQUIRE (o2[s] == o3[s]);
+            REQUIRE_NEAR (o0[s], o1[s], 1e-9);
+
+            // The switched-off jack carries the alarm and nothing else: what
+            // the hearing jack gets on top of the alarm-free mix is exactly
+            // what the switched-off one gets.
+            REQUIRE_NEAR (o0[s], std::clamp (r0[s] + o2[s], -1.0f, 1.0f), 1e-6);
+            REQUIRE (r2[s] == 0.0f);
+        }
+    }
+
+    REQUIRE (switchedOffPeak > 0.2f);
+    c.getAlarm().setFault (false);
+}
+
+TEST_CASE (CaptureCoordinator_EveryJackSwitchedOffStillSoundsTheAlarm)
+{
+    // Every microphone's jack switched off: the output stream is still open,
+    // so the app keeps its sounds on it rather than the computer's speaker --
+    // and they reached no channel at all. The start chirp and the fault siren
+    // must still come out of every jack, and the mix out of none.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    c.setOutputChannelGains ({ 0.0f, 0.0f, 0.0f, 0.0f });
+
+    std::vector<float> a (64, 0.3f), b (64, 0.3f);
+    const float* ins[] = { a.data(), b.data() };
+    std::vector<float> o0 (64), o1 (64), o2 (64), o3 (64);
+    float* outs[] = { o0.data(), o1.data(), o2.data(), o3.data() };
+
+    // The loudest each jack got over a run of blocks.
+    const auto peaksOver = [&] (int blocks)
+    {
+        std::vector<float> peaks (4, 0.0f);
+        for (int block = 0; block < blocks; ++block)
+        {
+            c.processAudioBlock (ins, 2, outs, 4, 64);
+            peaks[0] = std::max (peaks[0], loudestOf (o0));
+            peaks[1] = std::max (peaks[1], loudestOf (o1));
+            peaks[2] = std::max (peaks[2], loudestOf (o2));
+            peaks[3] = std::max (peaks[3], loudestOf (o3));
+        }
+        return peaks;
+    };
+
+    for (float peak : peaksOver (4))
+        REQUIRE (peak == 0.0f); // the mix reaches nobody
+
+    c.getAlarm().trigger (AlarmTone::Kind::Started);
+    for (float peak : peaksOver (8))
+        REQUIRE (peak > 0.2f);
+
+    c.getAlarm().setFault (true);
+    for (float peak : peaksOver (8))
+    {
+        REQUIRE (peak > 0.2f);
+        REQUIRE (peak <= AlarmTone::kSirenLevel + 1e-6f); // the siren alone, no mix under it
+    }
+
+    c.getAlarm().setFault (false);
+    for (float peak : peaksOver (2))
+        REQUIRE (peak == 0.0f);
 }
 
 // A mic still handing over audio is plainly plugged in. One device-list pass

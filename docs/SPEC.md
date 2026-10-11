@@ -107,7 +107,7 @@ The master's own crystal is part of what this measures. A gate that gives the ma
 ```
 Computer -> combined device (SobStage) -> every microphone's own headphone jack
 ```
-- **Default (macOS): everyone hears everything through their own microphone.** The monitor output is the combined device of §7 — the same "SobStage" other apps record from — so the one mix plays out of every microphone's headphone jack at once. Each person's jack can be switched off in Settings ("Who hears the mix in their headphones"); a switched-off jack gets silence, never a different mix.
+- **Default (macOS): everyone hears everything through their own microphone.** The monitor output is the combined device of §7 — the same "SobStage" other apps record from — so the one mix plays out of every microphone's headphone jack at once. Each person's jack can be switched off in Settings ("Who hears the mix in their headphones"); a switched-off jack gets no mix, never a different one. It still carries the app's own sounds (the start and stop chirps and the fault siren), so a rig with every jack switched off still hears an alarm.
 - The combined device is never hog-moded: other apps must still be able to record from it.
 - Picking any other output in Settings turns this off and remembers that choice; the priority order of §5.3 then applies as before. Where no combined device exists, or no microphone in it has a headphone jack, §5.3 applies.
 - Hardware with non-defeatable analog direct monitoring (§14.5) means a listener hears their own voice twice (0 ms analog + the mix). Accepted: the user asked for every mic's jack to carry the whole room.

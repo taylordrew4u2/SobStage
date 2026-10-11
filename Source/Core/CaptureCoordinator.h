@@ -332,10 +332,13 @@ public:
     /// (none asked for, or it refused and the rig went input-only).
     const std::string& getOutputDeviceId() const noexcept { return openOutputDeviceId; }
 
-    /// Per output channel: 1 sends the mix there, 0 sends silence. Lets the
-    /// combined device feed every microphone's headphone jack while each
-    /// person can still be switched off. Channels past the list, and every
-    /// channel by default, get the mix. Safe to call while running.
+    /// Per output channel: 1 sends the mix there, 0 keeps the mix off it.
+    /// Lets the combined device feed every microphone's headphone jack while
+    /// each person can still be switched off. A switched-off channel still
+    /// gets the app's own sounds (getAlarm(): the start and stop chirps and
+    /// the fault siren), so turning every jack off cannot silence an alarm.
+    /// Channels past the list, and every channel by default, get the mix.
+    /// Safe to call while running.
     static constexpr int kMaxOutputChannelGains = 64;
     void setOutputChannelGains (const std::vector<float>& gains) noexcept;
 
@@ -871,6 +874,11 @@ private:
     // The bus before master volume, per sample of the block, for the
     // feedback guard. Sized with mixScratch.
     std::vector<float> busScratch;
+
+    // The app's own sounds alone (AlarmTone), for an output channel switched
+    // off from the mix: it still gets the chirps and the siren. Sized with
+    // mixScratch.
+    std::vector<float> alarmScratch;
     std::vector<float> trimFrame;
     std::vector<float> trimGains;
 

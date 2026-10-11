@@ -75,6 +75,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
                                  static_cast<size_t> (DeviceInputStream::kLargestDeviceBlock)),
                        0.0f);
     busScratch.assign (mixScratch.size(), 0.0f);
+    alarmScratch.assign (mixScratch.size(), 0.0f);
     trimFrame.assign (std::max<size_t> (1, channels.size()), 0.0f);
 
     // §3.2: one capture path per device, each with its own ring and PI loop.
@@ -2002,6 +2003,7 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     // buzz at the callback rate for as long as the condition lasts.
     if (mixScratch.size() < static_cast<size_t> (numSamples)
         || busScratch.size() < static_cast<size_t> (numSamples)
+        || alarmScratch.size() < static_cast<size_t> (numSamples)
         || static_cast<int> (trimFrame.size()) < channelCount
         || static_cast<int> (trimGains.size()) < channelCount)
     {
@@ -2052,13 +2054,25 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     // room and not the siren, and after the mute: a fault alarm has to reach
     // the headphones however the monitor is set. Clamped, because a siren over
     // a mix at the ceiling would otherwise clip in the driver.
-    alarm.render (mixScratch.data(), numSamples, sampleRate);
+    //
+    // Rendered on their own first, and only once: render() moves the tone on,
+    // so a second call would play the next stretch of it instead. A jack
+    // switched off from the mix gets these alone. It used to get zeros, siren
+    // included, so with every jack switched off the chirps and the fault siren
+    // played nowhere -- the output stream was still open, so nothing sent them
+    // anywhere else either.
+    std::fill (alarmScratch.begin(), alarmScratch.begin() + numSamples, 0.0f);
+    alarm.render (alarmScratch.data(), numSamples, sampleRate);
     for (int s = 0; s < numSamples; ++s)
-        mixScratch[static_cast<size_t> (s)] = std::clamp (mixScratch[static_cast<size_t> (s)], -1.0f, 1.0f);
+    {
+        const auto i = static_cast<size_t> (s);
+        mixScratch[i] = std::clamp (mixScratch[i] + alarmScratch[i], -1.0f, 1.0f);
+        alarmScratch[i] = std::clamp (alarmScratch[i], -1.0f, 1.0f);
+    }
 
     // §5.2: the same mix to every output channel -- no per-listener variation.
     // A channel can be switched off (a person who wants their headphones
-    // quiet), never given a different mix.
+    // quiet), never given a different mix; it still hears the alarm.
     for (int ch = 0; ch < numOutputs; ++ch)
     {
         if (outputs[ch] == nullptr)
@@ -2067,11 +2081,8 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
         const bool hears = ch >= kMaxOutputChannelGains
                         || outputChannelGains[static_cast<size_t> (ch)].load (std::memory_order_relaxed) > 0.0f;
 
-        if (hears)
-            std::copy (mixScratch.begin(), mixScratch.begin() + numSamples,
-                       outputs[ch] + outputFrameOffset);
-        else
-            std::fill (outputs[ch] + outputFrameOffset, outputs[ch] + outputFrameOffset + numSamples, 0.0f);
+        const auto& source = hears ? mixScratch : alarmScratch;
+        std::copy (source.begin(), source.begin() + numSamples, outputs[ch] + outputFrameOffset);
     }
 }
 

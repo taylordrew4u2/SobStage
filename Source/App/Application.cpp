@@ -1986,7 +1986,8 @@ void Application::setHeadphonesOn (const juce::String& deviceKey, bool on)
 
         noteActivity (ActivityLevel::Started, juce::String (d.displayName),
                       on ? juce::String ("Headphones on: hearing everyone.")
-                         : juce::String ("Headphones off: this jack gets silence."));
+                         : juce::String ("Headphones off: this jack no longer gets the mix. "
+                                         "Alarm sounds still play in it."));
         return;
     }
 }
