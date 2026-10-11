@@ -2241,8 +2241,11 @@ TakeHealth Application::snapshotTakeHealth() const
         // that window, the next observation saw the camera appear and
         // announced "Camera X is back." for a camera that had never gone
         // anywhere. What `present` means here is "in the take, not lost".
+        // The id goes with it: twins share a display name, and the watchdog
+        // must not read one's state as the other's.
         health.cameras.push_back ({ camera.displayName,
-                                    camera.recording || camera.starting });
+                                    camera.recording || camera.starting,
+                                    camera.id });
 
     health.cameraProblem = cameraController.getProblem().toStdString();
     health.monitorProblem = getMonitorProblem().toStdString();

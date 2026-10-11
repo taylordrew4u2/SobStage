@@ -158,6 +158,84 @@ TEST_CASE (TakeWatchdog_ACameraThatVanishesFromTheListIsGoneToo)
     REQUIRE (back.empty());
 }
 
+namespace {
+
+/// Two capture dongles of the same model: the OS gives them one name and
+/// two device ids. `a` and `b` say whether each is in the take.
+TakeHealth twins (bool a, bool b)
+{
+    auto h = healthyRig();
+    h.cameras = { { "USB2 Video", a, "unit-A" }, { "USB2 Video", b, "unit-B" } };
+    return h;
+}
+
+size_t countKind (const std::vector<TakeAlert>& alerts, TakeAlert::Kind kind)
+{
+    size_t n = 0;
+    for (const auto& a : alerts)
+        if (a.kind == kind)
+            ++n;
+    return n;
+}
+
+} // namespace
+
+TEST_CASE (TakeWatchdog_ATwinThatNeverStartedIsNotALossAtTheStart)
+{
+    // Unit B has no HDMI signal, so it never starts; it is still in the take's
+    // roster as absent. Matched by name, B read A's "present" and the first
+    // tick of the take said "USB2 Video has gone away" about nothing.
+    TakeWatchdog w;
+    w.beginTake (twins (true, false));
+    REQUIRE (w.observe (twins (true, false)).empty());
+
+    // A's real loss later in the take is still said, once.
+    const auto alerts = w.observe (twins (false, false));
+    REQUIRE (alerts.size() == 1);
+    REQUIRE (alerts[0].kind == TakeAlert::Kind::CameraLost);
+    REQUIRE (alerts[0].message.find ("USB2 Video") != std::string::npos);
+    REQUIRE (w.observe (twins (false, false)).empty());
+}
+
+TEST_CASE (TakeWatchdog_ATwinThatNeverStartedListedFirstDoesNotHideTheOthersLoss)
+{
+    // The same rig with the absent unit first in the list. By name, A's
+    // "was present" came from B's absent entry, so A's loss was never said.
+    TakeWatchdog w;
+    w.beginTake (twins (false, true));
+    REQUIRE (w.observe (twins (false, true)).empty());
+
+    const auto alerts = w.observe (twins (false, false));
+    REQUIRE (countKind (alerts, TakeAlert::Kind::CameraLost) == 1);
+}
+
+TEST_CASE (TakeWatchdog_EachTwinLostIsSaid)
+{
+    // Two working twins. The latch was by name, so the second one lost said
+    // nothing.
+    TakeWatchdog w;
+    w.beginTake (twins (true, true));
+    REQUIRE (w.observe (twins (true, true)).empty());
+
+    REQUIRE (countKind (w.observe (twins (false, true)), TakeAlert::Kind::CameraLost) == 1);
+    REQUIRE (countKind (w.observe (twins (false, false)), TakeAlert::Kind::CameraLost) == 1);
+    REQUIRE (w.observe (twins (false, false)).empty());
+
+    // A twin that drops out of the list altogether is carried forward under
+    // its own id, not merged into the one still listed.
+    TakeWatchdog v;
+    v.beginTake (twins (true, true));
+    auto onlyB = twins (true, true);
+    onlyB.cameras.erase (onlyB.cameras.begin());
+    REQUIRE (countKind (v.observe (onlyB), TakeAlert::Kind::CameraLost) == 1);
+    REQUIRE (v.observe (onlyB).empty());
+
+    auto none = onlyB;
+    none.cameras.clear();
+    REQUIRE (countKind (v.observe (none), TakeAlert::Kind::CameraLost) == 1);
+    REQUIRE (v.observe (none).empty());
+}
+
 TEST_CASE (TakeWatchdog_DroppedAudioIsSaidOnceThenAtMostOnceAMinute)
 {
     // A struggling machine drops a little on every tick. Said on every

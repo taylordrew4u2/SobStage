@@ -12,7 +12,14 @@ namespace mma {
 struct TakeHealth
 {
     struct Mic    { std::string name; bool live = true; };
-    struct Camera { std::string name; bool present = true; };
+
+    /// `id` is the camera's device id and is what the watchdog matches on;
+    /// `name` is only for the sentence. Two cameras of the same model show
+    /// the same name, and matching on it read one twin's state as the
+    /// other's: a twin that never started looked like a loss at the start of
+    /// the take, and the latch then hid the real loss of the other. Empty
+    /// falls back to the name. Last, so `{ name, present }` still builds.
+    struct Camera { std::string name; bool present = true; std::string id; };
 
     std::vector<Mic> mics;
     std::vector<Camera> cameras;
@@ -112,6 +119,7 @@ private:
     bool warnedTwoMinutes = false;
     bool droppedReported = false;
     double droppedReportedAt = 0.0;
+    /// Keyed by device id (the name where there is none), never by name alone.
     std::set<std::string> lostCamerasThisTake;
 };
 
