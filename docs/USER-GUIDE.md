@@ -446,6 +446,11 @@ recording remain part of the physical-hardware gate.
   movies in the take are counted on the card too, but nothing repairs them:
   a Mac's (`.mov`) plays up to its last ten-second fragment, and one from a
   Windows camera (`.wmv`) was not finished and may not open.
+  A take whose `session.json` can't be read at that moment — say a folder in
+  iCloud with "Optimize Mac Storage" on, opened without internet — is left
+  exactly as it is and checked again next launch; the activity list says how
+  many were skipped. It is never mistaken for an interrupted take, and its
+  details are never overwritten.
 
 <p align="center">
   <img src="images/recovered.png" alt="A card headed 'Recovered.' explaining that the app stopped before the take was finished, listing the session folder with '3 files, 4s of sound, and 1 empty file left alone', and buttons reading Done and Open the folder" width="660">

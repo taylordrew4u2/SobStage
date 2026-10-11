@@ -7512,10 +7512,33 @@ Application::RecoveryAcknowledgementResult Application::runRecoveryAcknowledgeme
 
         try
         {
-            const auto contents = file.loadFileAsString().toStdString();
+            // A read that failed is not an empty record. Parsed as one, it had
+            // no stop time, was stamped, and a near-empty record was renamed
+            // over the real one -- which a rename can do to an iCloud
+            // placeholder this Mac could not read offline. Left exactly as it
+            // is, and offered again. A file that WAS read and is empty or cut
+            // short is still stamped below, or a take whose record a power
+            // cut emptied would come back at every launch.
+            const auto bytes = SessionRecovery::readWholeFileChecked (
+                file.getFullPathName().toStdString());
 
             if (wasCancelled())
                 break;
+
+            if (! bytes.has_value())
+            {
+                result.activity.push_back (
+                    { ActivityLevel::Warning,
+                      "Interrupted take",
+                      (file.getParentDirectory().getFileName()
+                       + " wasn't marked as dealt with, because its details file couldn't be "
+                         "read just now. Nothing was changed, so it will be offered again next "
+                         "time.").toStdString() });
+                continue;
+            }
+
+            const auto contents = juce::String::createStringFromData (
+                                      bytes->data(), static_cast<int> (bytes->size())).toStdString();
 
             auto meta = SessionMetadata::fromJsonString (contents);
 
@@ -7829,6 +7852,9 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
     constexpr int kMaxFoldersExamined = 20;
     const int examine = juce::jmin (folders.size(), kMaxFoldersExamined);
 
+    // Takes whose details file is there but could not be read just now.
+    int couldNotReadNow = 0;
+
     for (int i = 0; i < examine && ! wasCancelled(); ++i)
     {
         const auto folder = folders[i];
@@ -7838,19 +7864,39 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
         if (! metadataFile.existsAsFile() || wasCancelled())
             continue;
 
+        // Read with a check, because a failed read and an empty file used to
+        // look the same here. An iCloud "Optimize Mac Storage" placeholder
+        // opened offline (or a card that hiccups) gave an empty string, which
+        // made a finished take look interrupted -- and then its real record was
+        // overwritten when it was dismissed, or straight away when its audio
+        // could not be read either. Nothing in such a folder is touched: it is
+        // skipped and looked at again next launch.
+        const auto bytes = SessionRecovery::readWholeFileChecked (
+            metadataFile.getFullPathName().toStdString());
+
+        if (wasCancelled())
+            return result;
+
+        if (! bytes.has_value())
+        {
+            ++couldNotReadNow;
+            continue;
+        }
+
         SessionMetadata meta;
 
         // A session.json truncated by the same power cut that interrupted the
         // take is not a reason to fail: the audio beside it is still worth
-        // recovering, so an unreadable one is treated as interrupted.
+        // recovering, so one that was read but says nothing is treated as
+        // interrupted.
         bool metadataUnreadable = false;
 
         try
         {
-            const auto text = metadataFile.loadFileAsString().toStdString();
-
-            if (wasCancelled())
-                return result;
+            // Through juce::String as loadFileAsString did, so a byte-order
+            // mark is handled the same way it always was.
+            const auto text = juce::String::createStringFromData (
+                                  bytes->data(), static_cast<int> (bytes->size())).toStdString();
 
             const auto parsed = JsonValue::parse (text);
 
@@ -8022,6 +8068,24 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
             if (! wasCancelled())
                 (void) replaceWithTextChecked (metadataFile, juce::String (meta.toJsonString()));
         }
+    }
+
+    // One line for all of them: a folder of takes iCloud has moved off this
+    // Mac would otherwise be twenty warnings at every offline launch.
+    if (couldNotReadNow > 0 && ! wasCancelled())
+    {
+        const bool one = couldNotReadNow == 1;
+
+        report (ActivityLevel::Warning,
+                (one ? juce::String ("One recent take") : juce::String (couldNotReadNow) + " recent takes")
+                + " in " + root.getFileName()
+                + (one ? " wasn't" : " weren't")
+                + " checked for an interruption, because "
+                + (one ? "its details file" : "their details files")
+                + " couldn't be read just now. Nothing was changed. If "
+                + (one ? "it's" : "they're")
+                + " kept in iCloud or another online storage service, connect to the internet. "
+                  "SobStage will check again next time it opens.");
     }
 
     return result;

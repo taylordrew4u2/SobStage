@@ -232,7 +232,11 @@ Run on volume selection and again on arming; cache per volume ID with a 30-day e
 ### 6.6 Crash and power loss
 - Update WAV headers every 5 seconds so an interrupted file remains playable to within 5 seconds of the cut.
 - On launch, scan the last-used card and the enabled mirror directory for
-  sessions lacking a stop timestamp. Run both scans away from the window thread;
+  sessions lacking a stop timestamp. A session record that could not be read
+  (it would not open, or delivered fewer bytes than its size, as a cloud-only
+  placeholder does offline) is not a missing stop timestamp: leave that folder
+  untouched and report it. One that was read and is empty or cut short is
+  treated as interrupted. Run both scans away from the window thread;
   they must never delay the first window, a destination change or shutdown.
   Discard an obsolete result if its destination changes while it is running.
 - Block recording until every required recovery scan succeeds. Failure to start

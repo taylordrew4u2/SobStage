@@ -1,6 +1,8 @@
 #pragma once
 #include "SessionMetadata.h"
 #include <cstdint>
+#include <iosfwd>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -157,6 +159,30 @@ public:
     /// Returns frames == 0 for anything that is not a readable WAV, rather than
     /// throwing -- a folder recovered off a card can contain anything.
     static RecoveredFile repairWavFile (const std::string& path);
+
+    /// A take's session.json, byte for byte, or nothing when its bytes could
+    /// not be read just now -- which is not the same as a file that was read
+    /// and turned out empty or cut short.
+    ///
+    /// The two used to look identical. juce::File::loadFileAsString answers a
+    /// failed open or a failed read with an empty string, the lenient parser
+    /// turns that into a default record without throwing, and the record then
+    /// had no stop time -- so a perfectly good take whose details file was an
+    /// iCloud "Optimize Mac Storage" placeholder, opened offline, was called
+    /// interrupted, and dismissing it renamed a near-empty record over the
+    /// real one (a rename needs none of the old file's bytes). A file cut short
+    /// by a power cut still reads, as the bytes it really holds, and is still
+    /// treated as interrupted and stamped, or it would be offered at every
+    /// launch.
+    ///
+    /// Not there, not openable, a read that fails, or fewer bytes than the file
+    /// says it holds -- what a cloud-only placeholder delivers offline -- all
+    /// count as "could not read". `path` is UTF-8.
+    static std::optional<std::string> readWholeFileChecked (const std::string& path);
+
+    /// The check behind readWholeFileChecked, for any stream: exactly
+    /// `expectedBytes` from `in`, or nothing when it delivered fewer or failed.
+    static std::optional<std::string> readExactly (std::istream& in, uint64_t expectedBytes);
 
     /// Counts `fileName`, one file in an interrupted take's folder, into
     /// `session` when it is a camera movie: in the container this computer's
