@@ -535,7 +535,7 @@ jobs:
             codesign --force --options runtime --timestamp=none \
               --entitlements Resources/SobStage.entitlements --sign - "$app"
             echo "SOBSTAGE_MAC_SIGNING=adhoc" >> "$GITHUB_ENV"
-            echo "::warning::Ad-hoc macOS build: no Developer ID secrets. Users must clear quarantine once (see README, Installing -> macOS)."
+            echo "::warning::Ad-hoc macOS build: no Developer ID secrets. Users must clear quarantine once (see docs/INSTALLING.md, Installing -> macOS)."
           fi
           bash Tools/verify_macos_release.sh \
             "$app" "$version" 13.0 --capture-entitlements

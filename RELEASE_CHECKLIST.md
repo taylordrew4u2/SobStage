@@ -207,18 +207,22 @@ passed the physical camera matrix.
 - [ ] Release notes (`docs/release-notes/v1.13.25.md`, which the release
   workflow requires and publishes as the release body) state the supported
   targets and known limitations without describing simulator results as
-  hardware certification.
+  hardware certification, name the previous release for rolling back, and
+  describe network use as `PRIVACY.md` does. Their links to files in this
+  repository are checked by ctest (`release_notes_links`).
 
 ## 6. Release and rollback
 
-- [ ] Keep the v1.13.25 and v1.13.19 tags and assets immutable and available until v1.13.25 is
-  proven in production.
+- [ ] Keep the v1.13.25 tag and the previous release's tag (the one the release
+  notes name for rolling back) and their assets immutable and available until
+  v1.13.25 is proven in production.
 - [ ] Publish v1.13.25 from the exact tested commit; never move or reuse the tag.
 - [ ] Smoke-test each URL, checksum, install, launch, short recording, playback,
   diagnostics export and uninstall from the public release page.
 - [ ] If a serious regression appears, mark v1.13.25 as pre-release/not latest,
-  point users to v1.13.19 when safe, preserve reports and publish a fixed v1.13.25
-  from a new commit/tag. Do not silently replace assets or retag.
+  point users to the previous release when safe, preserve reports and publish
+  the fix as a new version from a new commit and tag. Do not silently replace
+  assets or retag.
 - [ ] Before advising a downgrade, back up `settings.json` and confirm the older
   version can read it; otherwise remove or restore settings explicitly. Never
   delete recordings or session folders as part of rollback.

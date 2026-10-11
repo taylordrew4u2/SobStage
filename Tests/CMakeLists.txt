@@ -73,9 +73,12 @@ add_test(NAME mma_core_tests COMMAND mma_core_tests)
 
 # Release packaging checks written in Python (standard library only, so any
 # Python 3 runs them): the macOS disk-image window must never put an icon on
-# the first-launch command drawn on its background.
+# the first-launch command drawn on its background, and the newest release
+# notes must not link to a file or section that does not exist.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if (Python3_Interpreter_FOUND)
     add_test(NAME dmg_layout
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_dmg_layout.py)
+    add_test(NAME release_notes_links
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_release_notes.py)
 endif()
