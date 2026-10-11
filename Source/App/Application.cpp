@@ -1454,6 +1454,16 @@ void Application::syncSleepInhibitor()
     sleepInhibitor.setHeld (isRecording());
 }
 
+void Application::syncCombineHold()
+{
+    // The card is the take's until its last movie is finished: a combine
+    // copying gigabytes beside it starved the take's writer and filled the
+    // card under it.
+    takeCombiner.setHeldForRecording (isRecording()
+                                      || pendingStoppedTakeCompletion != nullptr
+                                      || cameraController.isFinalizingRecording());
+}
+
 bool Application::refreshMicrophonePermission()
 {
     secondsSinceMicrophonePermissionCheck = 0.0;
@@ -2745,6 +2755,10 @@ void Application::toggleRecording()
         }
         if (recordingEngine.start (std::move (channels)))
         {
+            // Before any file of the take is opened: a combine still copying
+            // the last take stops now, and the card is this take's.
+            syncCombineHold();
+
             // recordingStartMs is NOT taken here. It is the take's audio t=0,
             // and no audio exists yet: a capacity probe, one or two mkdirs
             // (including the mirror, possibly on a slow card) and the WAV
@@ -2807,6 +2821,7 @@ void Application::toggleRecording()
                     // Nothing was written, so the engine must not claim a take.
                     recordingEngine.stop();
                     recordingStartMs = 0.0;
+                    syncCombineHold();
 
                     // And the user is told. This path used to return here in
                     // silence: the button un-latched, no message appeared
@@ -3288,6 +3303,10 @@ void Application::toggleRecording()
         bufferLadder.setRecording (false);
         syncSleepInhibitor();
 
+        // Every movie is finished and the take's combine is queued: whatever
+        // combining is waiting can have the card now.
+        syncCombineHold();
+
         currentSessionFolder.clear();
         currentMirrorFolder.clear();
         takeFolderTracker.close();
@@ -3345,6 +3364,7 @@ void Application::toggleRecording()
             recordingEngine.stop();
             bufferLadder.setRecording (false);
             syncSleepInhibitor();
+            syncCombineHold(); // still held: the movies are still being written
             return;
         }
 
@@ -5527,6 +5547,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // a full disk, a pulled card): mirror the take state into the sleep
     // assertion. Idempotent, so this costs nothing on an unchanged tick.
     syncSleepInhibitor();
+    syncCombineHold();
 
     // A save location that was not mounted when it was checked for an
     // interrupted take is checked again once it is.

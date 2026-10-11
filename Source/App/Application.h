@@ -894,6 +894,12 @@ private:
     TakeCombiner takeCombiner;
     PodcastExporter podcastExporter;
     std::function<void()> pendingStoppedTakeCompletion;
+
+    /// Holds the combined video while a take records or its movies are still
+    /// being finished (TakeCombiner::setHeldForRecording), and lets it go once
+    /// neither is true. Idempotent; called wherever a take starts or ends, and
+    /// every status tick as a backstop.
+    void syncCombineHold();
     bool combineVideoAndAudio = false;
     juce::String deliveryTarget;
 

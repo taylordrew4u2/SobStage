@@ -393,6 +393,12 @@ this feature works out for you.
   installing: SobStage uses macOS's own video tools. **On Windows it needs
   [ffmpeg](https://ffmpeg.org)**; if it is missing, the toggle says so before a
   take rather than after one.
+  The combined file is made after the take stops, and **never while the next
+  take records**: press Record while it is still being made and it stops,
+  deletes its unfinished copy, and starts again from the beginning once that
+  take is over, so the take has the card to itself. A card without room for
+  the combined file and 1 GB to spare doesn't get one; the line under the
+  record button says so.
 - **A camera counts against the card's speed, not just its space.** §6.4 blocks
   arming when the card cannot sustain twice what the take needs; that figure now
   includes the video, because a card that keeps up with eight microphones can

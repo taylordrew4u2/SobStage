@@ -1,4 +1,6 @@
 #pragma once
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -96,6 +98,20 @@ std::string combinedFileNameFor (const std::string& videoFileName);
 /// Pure: the caller lists the folder.
 std::vector<std::string> splitPartsInOrder (const std::string& firstFileName,
                                             const std::vector<std::string>& namesInFolder);
+
+/// What a combine leaves free on the card beside its own file.
+constexpr uint64_t kCombineHeadroomBytes = 1ull << 30;
+
+/// Whether a combine may start: the card must hold the combined file and still
+/// have kCombineHeadroomBytes to spare. `inputBytes` is the camera's file plus
+/// every part of the mix -- neither stream is re-encoded, so the combined file
+/// comes to about that.
+///
+/// A copy that ran a card dry failed at the end anyway, and until it did the
+/// card read as full: Record said there was no room, or a take started then
+/// ran out of it. Free space the system cannot report lets the combine try,
+/// as it always has; a full card still only fails the combined file.
+bool hasRoomToCombine (std::optional<uint64_t> availableBytes, uint64_t inputBytes) noexcept;
 
 /// Builds the plan for a finished take.
 ///

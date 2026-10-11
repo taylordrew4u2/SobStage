@@ -28,6 +28,18 @@ std::string stemOf (const std::string& fileName)
 
 } // namespace
 
+bool hasRoomToCombine (std::optional<uint64_t> availableBytes, uint64_t inputBytes) noexcept
+{
+    if (! availableBytes.has_value())
+        return true;
+
+    // Saturating: a size near the top of the range must not wrap to "fits".
+    const uint64_t needed = inputBytes > UINT64_MAX - kCombineHeadroomBytes
+                                ? UINT64_MAX
+                                : inputBytes + kCombineHeadroomBytes;
+    return *availableBytes >= needed;
+}
+
 std::string combinedFileNameFor (const std::string& videoFileName)
 {
     if (videoFileName.empty())

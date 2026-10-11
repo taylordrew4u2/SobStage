@@ -500,6 +500,24 @@ if (MMA_BUILD_APP)
     add_test(NAME sim_take_combiner COMMAND sim_take_combiner)
     set_tests_properties(sim_take_combiner PROPERTIES TIMEOUT 10)
 
+    # TakeCombiner built the way the Mac app builds it (its own AVFoundation
+    # combine, MMA_NATIVE_MOVIE_COMBINER), against a stand-in for
+    # MacMovieCombiner.mm, so the Mac branch runs on every platform: a take
+    # started mid-combine gets the card, and the combine is made afterwards.
+    add_executable(sim_take_combiner_native
+        Tools/sim_take_combiner_native.cpp
+        Source/App/TakeCombiner.cpp)
+    target_compile_definitions(sim_take_combiner_native PRIVATE
+        MMA_NATIVE_MOVIE_COMBINER=1
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        JUCE_STANDALONE_APPLICATION=1)
+    target_include_directories(sim_take_combiner_native PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(sim_take_combiner_native PRIVATE mma_core juce::juce_core)
+    add_test(NAME sim_take_combiner_native COMMAND sim_take_combiner_native)
+    set_tests_properties(sim_take_combiner_native PROPERTIES TIMEOUT 30)
+
     # settings.json, session.json and saved shows are replaced whole or not at
     # all: a full disk (simulated with RLIMIT_FSIZE) must leave the previous
     # file intact rather than renaming an empty one over it.

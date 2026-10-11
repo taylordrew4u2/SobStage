@@ -1,10 +1,13 @@
 #pragma once
 #include <juce_core/juce_core.h>
 #include <atomic>
+#include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -54,8 +57,32 @@ public:
     /// combined file.
     bool start (const juce::File& sessionFolder, const CombinedTakePlan& plan);
 
+    /// True from start() until the run has finished -- including while it is
+    /// held for a take (below), so quitting and the recovery scan still wait.
     bool isRunning() const;
     Status getStatus() const;
+
+    /// Held while a take is recording, and while its movies are still being
+    /// finished: the card is the take's. Nothing starts while held, and a copy
+    /// already under way is stopped, its unfinished file deleted, and made
+    /// again from the start once released.
+    ///
+    /// The combine reads the whole movie and writes another of the same size
+    /// to the same card. Run beside the next take it starved the take's writer
+    /// -- the sound fell back to the mix alone, cameras dropped frames -- and
+    /// filled the card under it. The Mac's ffmpeg once ran at the lowest disk
+    /// priority for this; the Mac's own AVFoundation copy does its reading and
+    /// writing on threads this app cannot lower, so waiting is the only way to
+    /// be sure. Not a failure: no problem is reported for a held copy.
+    ///
+    /// Message thread. Idempotent; quitting (cancel()) still wins.
+    void setHeldForRecording (bool held);
+
+    /// Test seam: what availableBytesForRecording() would say about a folder.
+    void setAvailableBytesForTesting (std::function<std::optional<uint64_t> (const std::string&)> query)
+    {
+        availableBytesQuery = std::move (query);
+    }
 
     /// Requests that any ffmpeg child stop. Returns immediately; the detached
     /// worker owns its remaining cleanup and cannot refer back to this object.
@@ -93,6 +120,8 @@ private:
     bool haveMissed = false;
     juce::uint32 lastMissMs = 0;
     juce::uint64 lastRun = 0;
+    bool heldForRecording = false;
+    std::function<std::optional<uint64_t> (const std::string&)> availableBytesQuery;
 
     juce::String probeFfmpeg();
 
@@ -106,6 +135,15 @@ private:
     {
         std::atomic<bool> running { false };
         std::atomic<bool> cancelling { false };
+
+        /// A take has the card (setHeldForRecording). Changed under statusLock
+        /// and announced on `released`; read without it by a running copy.
+        std::atomic<bool> held { false };
+        std::condition_variable released;
+
+        /// Free space where a combine would write, asked before each one.
+        std::function<std::optional<uint64_t> (const std::string&)> availableBytes;
+
         mutable std::mutex statusLock;
         Status status;
 
@@ -129,6 +167,24 @@ private:
                              const juce::String& ffmpeg,
                              int& failures,
                              juce::String& firstFailureDetail);
+
+    /// How one go at one camera's combine ended.
+    enum class Attempt
+    {
+        Written,   ///< the combined file is there
+        Failed,    ///< it isn't, and `problem` says why
+        Yielded,   ///< stopped for a take that started; nothing left behind
+        Cancelled  ///< quitting; nothing left behind
+    };
+
+    static Attempt combineOnce (RunState& state,
+                                const juce::File& sessionFolder,
+                                const CombinedTakeJob& job,
+                                const juce::String& ffmpeg,
+                                juce::String& problem);
+
+    /// Waits while a take has the card. False once quitting.
+    static bool waitWhileHeld (RunState& state);
 };
 
 } // namespace mma

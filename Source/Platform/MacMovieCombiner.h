@@ -1,5 +1,5 @@
 #pragma once
-#include <atomic>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -17,12 +17,13 @@ namespace mma {
 /// the picture, or picture past the end of the sound, is trimmed off.
 ///
 /// Returns empty on success, otherwise what went wrong in plain words. Blocks
-/// until done; call it from a worker. `cancelled` is polled and abandons the
-/// export, leaving no file behind.
+/// until done; call it from a worker. `shouldStop` is asked every 100 ms while
+/// the export runs -- quitting, or a take starting on the card -- and true
+/// abandons the export, leaving no file behind.
 std::string combineMovieWithSound (const std::string& videoPath,
                                    const std::vector<std::string>& audioParts,
                                    const std::string& outputPath,
                                    double audioLeadSeconds,
-                                   const std::atomic<bool>& cancelled);
+                                   const std::function<bool()>& shouldStop);
 
 } // namespace mma

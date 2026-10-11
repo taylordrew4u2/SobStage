@@ -1,6 +1,8 @@
 #include "TakeCombiner.h"
 #include "../Core/FfmpegCommand.h"
 #include "../Core/FfmpegLocator.h"
+#include "../Platform/VolumeCapacity.h"
+#include <chrono>
 
 #if defined (MMA_NATIVE_MOVIE_COMBINER)
  #include "../Platform/MacMovieCombiner.h"
@@ -132,6 +134,13 @@ bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePla
     const auto ffmpeg = probeFfmpeg();
     auto next = std::make_shared<RunState>();
 
+    // A take stopped and started again before this one has even begun: it
+    // waits for that take too.
+    next->held.store (heldForRecording, std::memory_order_release);
+    next->availableBytes = availableBytesQuery != nullptr
+        ? availableBytesQuery
+        : [] (const std::string& path) { return availableBytesForRecording (path); };
+
     {
         const std::lock_guard<std::mutex> lock (next->statusLock);
         next->status.total = static_cast<int> (plan.jobs.size());
@@ -183,6 +192,19 @@ bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePla
     return true;
 }
 
+bool TakeCombiner::waitWhileHeld (RunState& state)
+{
+    std::unique_lock<std::mutex> lock (state.statusLock);
+
+    // Bounded steps rather than one wait: cancel() only sets its flag, and
+    // quitting must still be noticed promptly while a take holds the card.
+    while (state.held.load (std::memory_order_acquire)
+           && ! state.cancelling.load (std::memory_order_acquire))
+        state.released.wait_for (lock, std::chrono::milliseconds (100));
+
+    return ! state.cancelling.load (std::memory_order_acquire);
+}
+
 void TakeCombiner::combineTake (const std::shared_ptr<RunState>& state,
                                 const juce::File& sessionFolder,
                                 const CombinedTakePlan& plan,
@@ -192,174 +214,218 @@ void TakeCombiner::combineTake (const std::shared_ptr<RunState>& state,
 {
     for (const auto& job : plan.jobs)
     {
-        if (state->cancelling.load (std::memory_order_acquire))
-            break;
+        auto ended = Attempt::Yielded;
+        juce::String problem;
 
-        const auto video = sessionFolder.getChildFile (juce::String (job.videoFile));
-        const auto output = sessionFolder.getChildFile (juce::String (job.outputFile));
+        // Round again for as long as takes keep starting mid-combine: the copy
+        // a take interrupted was thrown away, and is made again from the start
+        // once that take has stopped. Not counted against the run -- nothing
+        // went wrong, the take simply came first.
+        while (ended == Attempt::Yielded)
+        {
+            if (! waitWhileHeld (*state))
+                return;
 
-        // The mix as it is on the card: MIX.wav, and MIX_001.wav onwards if a
-        // long take crossed the split limit. The plan names only the first;
-        // how many followed is known only now the take is finished.
-        std::vector<std::string> namesInFolder;
-        for (const auto& file : sessionFolder.findChildFiles (juce::File::findFiles, false))
-            namesInFolder.push_back (file.getFileName().toStdString());
+            problem.clear();
+            ended = combineOnce (*state, sessionFolder, job, ffmpeg, problem);
+        }
 
-        std::vector<std::string> audioPaths;
-        for (const auto& part : splitPartsInOrder (job.audioFile, namesInFolder))
-            audioPaths.push_back (sessionFolder.getChildFile (juce::String::fromUTF8 (part.c_str()))
-                                      .getFullPathName().toStdString());
+        if (ended == Attempt::Cancelled)
+            return;
 
-        // Checked here rather than in the plan, because the plan is built from
-        // what the take intended to write and this runs against what is
-        // actually on the card -- which a pulled card or a full disk can make
-        // two different things.
-        if (! video.existsAsFile() || audioPaths.empty())
+        if (ended == Attempt::Failed)
         {
             ++failures;
 
             if (firstFailureDetail.isEmpty())
-                firstFailureDetail = juce::String (job.videoFile)
-                                   + " or its sound wasn't on the card to combine.";
-
-            continue;
-        }
-
-       #if defined (MMA_NATIVE_MOVIE_COMBINER)
-        if (ffmpeg == kBuiltInCombiner)
-        {
-            const auto problem = combineMovieWithSound (video.getFullPathName().toStdString(),
-                                                        audioPaths,
-                                                        output.getFullPathName().toStdString(),
-                                                        job.audioLeadSeconds,
-                                                        state->cancelling);
-
-            if (state->cancelling.load (std::memory_order_acquire))
-            {
-                output.deleteFile();
-                break;
-            }
-
-            const bool ok = problem.empty();
-
-            if (! ok)
-            {
-                output.deleteFile();
-                ++failures;
-
-                if (firstFailureDetail.isEmpty())
-                    firstFailureDetail = juce::String::fromUTF8 (problem.c_str());
-            }
-
-            const std::lock_guard<std::mutex> lock (state->statusLock);
-            ++state->status.done;
-
-            if (ok)
-                state->status.written.add (output.getFileName());
-
-            continue;
-        }
-       #endif
-
-        // More than one part is joined through a list file, kept in the temp
-        // folder rather than the take's and removed whichever way this ends.
-        // UTF-8 inside it, which is what ffmpeg reads it as on every platform.
-        const auto concatList = juce::File::getSpecialLocation (juce::File::tempDirectory)
-                                    .getNonexistentChildFile ("sobstage-mix", ".ffconcat", false);
-
-        struct RemoveList
-        {
-            const juce::File& file;
-            ~RemoveList() { file.deleteFile(); }
-        } removeList { concatList };
-
-        if (audioPaths.size() > 1
-            && ! concatList.replaceWithText (juce::String::fromUTF8 (buildFfmpegConcatList (audioPaths).c_str()),
-                                             false, false, "\n"))
-        {
-            ++failures;
-
-            if (firstFailureDetail.isEmpty())
-                firstFailureDetail = "The list of the sound's parts couldn't be written.";
-
-            const std::lock_guard<std::mutex> lock (state->statusLock);
-            ++state->status.done;
-            continue;
-        }
-
-        const auto args = buildFfmpegArguments (ffmpeg.toStdString(),
-                                                video.getFullPathName().toStdString(),
-                                                audioPaths,
-                                                concatList.getFullPathName().toStdString(),
-                                                output.getFullPathName().toStdString(),
-                                                job.audioLeadSeconds,
-                                                job.audioBitDepth);
-
-        // Lowest disk priority on the Mac, so the next take recording to the
-        // same card comes first. Only when the tool is where macOS keeps it.
-        const auto platform = juce::File ("/usr/sbin/taskpolicy").existsAsFile()
-                                ? thisHostPlatform() : HostPlatform::Linux;
-
-        juce::StringArray argv;
-        for (const auto& arg : withLowDiskPriority (args, platform))
-            argv.add (juce::String (arg));
-
-        juce::ChildProcess process;
-
-        // No captured output pipe: POSIX stdio reads can block forever while
-        // a wedged ffmpeg still owns the pipe. With its streams discarded we
-        // can poll the child in bounded steps and honour shutdown promptly.
-        bool ok = process.start (argv, 0);
-
-        if (! ok && firstFailureDetail.isEmpty())
-            firstFailureDetail = "ffmpeg wouldn't start.";
-
-        if (ok)
-        {
-            bool finished = false;
-
-            while (! state->cancelling.load (std::memory_order_acquire))
-            {
-                if (process.waitForProcessToFinish (100))
-                {
-                    finished = true;
-                    break;
-                }
-            }
-
-            if (state->cancelling.load (std::memory_order_acquire))
-            {
-                if (process.isRunning())
-                    (void) process.kill();
-
-                (void) process.waitForProcessToFinish (1000);
-                output.deleteFile();
-                break;
-            }
-
-            // waitForProcessToFinish's successful terminal poll is also the
-            // POSIX reap. Calling isRunning() after it can ask waitpid about an
-            // already-reaped child and make JUCE replace the real status.
-            ok = finished && process.getExitCode() == 0;
-
-            if (! ok && firstFailureDetail.isEmpty())
-                firstFailureDetail = "ffmpeg stopped before it made a complete file.";
-        }
-
-        // A file left behind by a run that failed halfway is worse than no file
-        // at all: it plays, briefly, and looks like the take.
-        if (! ok)
-        {
-            output.deleteFile();
-            ++failures;
+                firstFailureDetail = problem;
         }
 
         const std::lock_guard<std::mutex> lock (state->statusLock);
         ++state->status.done;
 
-        if (ok)
-            state->status.written.add (output.getFileName());
+        if (ended == Attempt::Written)
+            state->status.written.add (sessionFolder.getChildFile (juce::String (job.outputFile)).getFileName());
     }
+}
+
+TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
+                                                 const juce::File& sessionFolder,
+                                                 const CombinedTakeJob& job,
+                                                 const juce::String& ffmpeg,
+                                                 juce::String& problem)
+{
+    const auto video = sessionFolder.getChildFile (juce::String (job.videoFile));
+    const auto output = sessionFolder.getChildFile (juce::String (job.outputFile));
+
+    // The mix as it is on the card: MIX.wav, and MIX_001.wav onwards if a
+    // long take crossed the split limit. The plan names only the first;
+    // how many followed is known only now the take is finished.
+    std::vector<std::string> namesInFolder;
+    for (const auto& file : sessionFolder.findChildFiles (juce::File::findFiles, false))
+        namesInFolder.push_back (file.getFileName().toStdString());
+
+    std::vector<std::string> audioPaths;
+    uint64_t inputBytes = static_cast<uint64_t> (juce::jmax<juce::int64> (0, video.getSize()));
+
+    for (const auto& part : splitPartsInOrder (job.audioFile, namesInFolder))
+    {
+        const auto file = sessionFolder.getChildFile (juce::String::fromUTF8 (part.c_str()));
+        audioPaths.push_back (file.getFullPathName().toStdString());
+        inputBytes += static_cast<uint64_t> (juce::jmax<juce::int64> (0, file.getSize()));
+    }
+
+    // Checked here rather than in the plan, because the plan is built from
+    // what the take intended to write and this runs against what is
+    // actually on the card -- which a pulled card or a full disk can make
+    // two different things.
+    if (! video.existsAsFile() || audioPaths.empty())
+    {
+        problem = juce::String (job.videoFile) + " or its sound wasn't on the card to combine.";
+        return Attempt::Failed;
+    }
+
+    // The combined file is about the size of what it is made from. Started on
+    // a card without that much room, the copy ran the card dry before failing.
+    if (! hasRoomToCombine (state.availableBytes != nullptr
+                                ? state.availableBytes (sessionFolder.getFullPathName().toStdString())
+                                : std::nullopt,
+                            inputBytes))
+    {
+        problem = "There wasn't room on the card for the combined copy of "
+                + juce::String (job.videoFile) + ".";
+        return Attempt::Failed;
+    }
+
+    // Asked while the copy runs: quitting, or a take starting on the card.
+    bool yielded = false;
+    const std::function<bool()> shouldStop = [&state, &yielded]
+    {
+        if (state.cancelling.load (std::memory_order_acquire))
+            return true;
+
+        if (state.held.load (std::memory_order_acquire))
+            yielded = true;
+
+        return yielded;
+    };
+
+   #if defined (MMA_NATIVE_MOVIE_COMBINER)
+    if (ffmpeg == kBuiltInCombiner)
+    {
+        const auto why = combineMovieWithSound (video.getFullPathName().toStdString(),
+                                                audioPaths,
+                                                output.getFullPathName().toStdString(),
+                                                job.audioLeadSeconds,
+                                                shouldStop);
+
+        if (state.cancelling.load (std::memory_order_acquire))
+        {
+            output.deleteFile();
+            return Attempt::Cancelled;
+        }
+
+        if (why.empty())
+            return Attempt::Written;
+
+        output.deleteFile();
+
+        if (yielded)
+            return Attempt::Yielded;
+
+        problem = juce::String::fromUTF8 (why.c_str());
+        return Attempt::Failed;
+    }
+   #endif
+
+    // More than one part is joined through a list file, kept in the temp
+    // folder rather than the take's and removed whichever way this ends.
+    // UTF-8 inside it, which is what ffmpeg reads it as on every platform.
+    const auto concatList = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getNonexistentChildFile ("sobstage-mix", ".ffconcat", false);
+
+    struct RemoveList
+    {
+        const juce::File& file;
+        ~RemoveList() { file.deleteFile(); }
+    } removeList { concatList };
+
+    if (audioPaths.size() > 1
+        && ! concatList.replaceWithText (juce::String::fromUTF8 (buildFfmpegConcatList (audioPaths).c_str()),
+                                         false, false, "\n"))
+    {
+        problem = "The list of the sound's parts couldn't be written.";
+        return Attempt::Failed;
+    }
+
+    const auto args = buildFfmpegArguments (ffmpeg.toStdString(),
+                                            video.getFullPathName().toStdString(),
+                                            audioPaths,
+                                            concatList.getFullPathName().toStdString(),
+                                            output.getFullPathName().toStdString(),
+                                            job.audioLeadSeconds,
+                                            job.audioBitDepth);
+
+    // Lowest disk priority on the Mac, so the next take recording to the
+    // same card comes first. Only when the tool is where macOS keeps it.
+    const auto platform = juce::File ("/usr/sbin/taskpolicy").existsAsFile()
+                            ? thisHostPlatform() : HostPlatform::Linux;
+
+    juce::StringArray argv;
+    for (const auto& arg : withLowDiskPriority (args, platform))
+        argv.add (juce::String (arg));
+
+    juce::ChildProcess process;
+
+    // No captured output pipe: POSIX stdio reads can block forever while
+    // a wedged ffmpeg still owns the pipe. With its streams discarded we
+    // can poll the child in bounded steps and honour shutdown promptly.
+    if (! process.start (argv, 0))
+    {
+        output.deleteFile();
+        problem = "ffmpeg wouldn't start.";
+        return Attempt::Failed;
+    }
+
+    bool finished = false;
+
+    while (! shouldStop())
+    {
+        if (process.waitForProcessToFinish (100))
+        {
+            finished = true;
+            break;
+        }
+    }
+
+    // A file left behind by a run that was stopped or failed halfway is worse
+    // than no file at all: it plays, briefly, and looks like the take.
+    if (! finished || state.cancelling.load (std::memory_order_acquire))
+    {
+        if (! finished)
+        {
+            if (process.isRunning())
+                (void) process.kill();
+
+            (void) process.waitForProcessToFinish (1000);
+        }
+
+        output.deleteFile();
+        return state.cancelling.load (std::memory_order_acquire) ? Attempt::Cancelled
+                                                                 : Attempt::Yielded;
+    }
+
+    // waitForProcessToFinish's successful terminal poll is also the
+    // POSIX reap. Calling isRunning() after it can ask waitpid about an
+    // already-reaped child and make JUCE replace the real status.
+    if (process.getExitCode() != 0)
+    {
+        output.deleteFile();
+        problem = "ffmpeg stopped before it made a complete file.";
+        return Attempt::Failed;
+    }
+
+    return Attempt::Written;
 }
 
 void TakeCombiner::run (std::shared_ptr<RunState> state,
@@ -415,7 +481,27 @@ void TakeCombiner::run (std::shared_ptr<RunState> state,
 void TakeCombiner::cancel() noexcept
 {
     if (runState != nullptr)
+    {
         runState->cancelling.store (true, std::memory_order_release);
+        runState->released.notify_all();
+    }
+}
+
+void TakeCombiner::setHeldForRecording (bool held)
+{
+    heldForRecording = held;
+
+    if (runState == nullptr || runState->held.load (std::memory_order_acquire) == held)
+        return;
+
+    {
+        // Under the lock the worker waits under, so a release is never
+        // missed between its check and its wait.
+        const std::lock_guard<std::mutex> lock (runState->statusLock);
+        runState->held.store (held, std::memory_order_release);
+    }
+
+    runState->released.notify_all();
 }
 
 bool TakeCombiner::isRunning() const

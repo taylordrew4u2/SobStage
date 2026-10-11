@@ -387,6 +387,52 @@ int main (int argc, char** argv)
         || ! queuedStatus.written.contains ("second-take-output.mov"))
         return fail ("the status did not account for both queued takes");
 
+    // A take started while a combine is running gets the card: the combine's
+    // ffmpeg is stopped and its file deleted, nothing is reported as failed,
+    // and the combine runs again, whole, once the take is over.
+    {
+        const auto heldTake = root.getChildFile ("held-take");
+
+        if (! heldTake.createDirectory().wasOk()
+            || ! heldTake.getChildFile ("slow-input.mov").replaceWithText ("video")
+            || ! heldTake.getChildFile ("MIX.wav").replaceWithText ("audio"))
+            return fail ("could not make the held take's fake inputs");
+
+        mma::CombinedTakePlan heldPlan;
+        heldPlan.jobs.push_back ({ "slow-input.mov", "MIX.wav", "held-output.mov", 24, 0.0 });
+
+        mma::TakeCombiner heldCombiner;
+        heldCombiner.setFfmpegOverride (executable);
+
+        if (! heldCombiner.start (heldTake, heldPlan))
+            return fail ("the held take's simulated combine did not start");
+
+        std::this_thread::sleep_for (std::chrono::milliseconds (100));
+        heldCombiner.setHeldForRecording (true); // Record pressed
+
+        // Well past the 400 ms the stand-in takes to write its file.
+        std::this_thread::sleep_for (std::chrono::milliseconds (700));
+
+        if (heldTake.getChildFile ("held-output.mov").exists())
+            return fail ("the combine kept writing while the next take recorded");
+
+        if (! heldCombiner.isRunning() || heldCombiner.getStatus().problem.isNotEmpty())
+            return fail ("a combine held for a take was reported as finished or failed");
+
+        heldCombiner.setHeldForRecording (false); // the take stopped
+
+        const auto heldDeadline = std::chrono::steady_clock::now() + std::chrono::seconds (3);
+        while (heldCombiner.isRunning() && std::chrono::steady_clock::now() < heldDeadline)
+            std::this_thread::sleep_for (std::chrono::milliseconds (10));
+
+        const auto heldStatus = heldCombiner.getStatus();
+
+        if (heldCombiner.isRunning() || heldStatus.problem.isNotEmpty()
+            || ! heldStatus.written.contains ("held-output.mov")
+            || ! heldTake.getChildFile ("held-output.mov").existsAsFile())
+            return fail ("the combine held for a take was not made once the take stopped");
+    }
+
     // "Install ffmpeg and the next take will combine them" has to be true.
     // A failed lookup used to be cached for the life of the app, so ffmpeg
     // installed after the first take was never found until a restart.
@@ -457,6 +503,6 @@ int main (int argc, char** argv)
     if (checkSplitMixReachesTheCombinedFile (root) != 0)
         return 1;
 
-    std::printf ("ALL CHECKS PASSED (26 checks, 0 failing)\n");
+    std::printf ("ALL CHECKS PASSED (30 checks, 0 failing)\n");
     return 0;
 }

@@ -30,7 +30,7 @@ std::string combineMovieWithSound (const std::string& videoPath,
                                    const std::vector<std::string>& audioParts,
                                    const std::string& outputPath,
                                    double audioLeadSeconds,
-                                   const std::atomic<bool>& cancelled)
+                                   const std::function<bool()>& shouldStop)
 {
     @autoreleasepool
     {
@@ -144,11 +144,12 @@ std::string combineMovieWithSound (const std::string& videoPath,
         dispatch_semaphore_t done = dispatch_semaphore_create (0);
         [exporter exportAsynchronouslyWithCompletionHandler:^{ dispatch_semaphore_signal (done); }];
 
-        // Polled rather than waited on outright, so quitting is honoured
-        // promptly however long a four-hour take takes to copy.
+        // Polled rather than waited on outright, so quitting -- or a take
+        // starting on this card -- is honoured promptly however long a
+        // four-hour take takes to copy.
         while (dispatch_semaphore_wait (done, dispatch_time (DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC)) != 0)
         {
-            if (cancelled.load (std::memory_order_acquire))
+            if (shouldStop())
             {
                 [exporter cancelExport];
 

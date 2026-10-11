@@ -9,11 +9,11 @@
 #import <Foundation/Foundation.h>
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -173,7 +173,7 @@ int main()
     check (writeWav (mix, 3.0), "made a 3 s 24-bit mix");
     check (writeWav (mixA, 1.0) && writeWav (mixB, 2.0), "made a mix split in two parts");
 
-    const std::atomic<bool> notCancelled { false };
+    const std::function<bool()> notCancelled = [] { return false; };
 
     // One mix; the sound started half a second before the picture.
     {
