@@ -40,6 +40,13 @@ struct TakeHealth
     /// True while the headphone output has stopped calling back and the take
     /// is running on the computer's own clock.
     bool outputClockLost = false;
+    /// True while the headphone output has been set aside because it was
+    /// switched to another sample rate (CaptureCoordinator::
+    /// abandonOutputClock). The take runs on the computer's clock then too,
+    /// but the monitor problem says why in its own words, so the "has
+    /// stopped -- unplugged, or taken by another app" alert is not raised
+    /// over it.
+    bool outputRateChanged = false;
     /// True while the writer is falling behind (ring buffer past its warning
     /// mark) and true while it has given up the stems and kept only the mix.
     bool writerBehind = false;

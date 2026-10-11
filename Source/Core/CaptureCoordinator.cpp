@@ -44,6 +44,12 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     monitorProblem.clear();
     devicesThatFailedToOpen.clear();
 
+    // A new output stream is the clock again until told otherwise. Cleared
+    // before anything opens, so its first callback pulls.
+    outputAbandoned.store (false, std::memory_order_release);
+    outputCarriesChannels = false;
+    openOutputDeviceId.clear();
+
     channelMeters.clear();
     for (size_t i = 0; i < channels.size(); ++i)
         channelMeters.push_back (std::make_unique<Metering> (sampleRate));
@@ -226,6 +232,18 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
                                                        float* const* outputs, int numOutputs,
                                                        int numSamples)
     {
+        // Set aside (abandonOutputClock): this device is calling back at a
+        // rate the rig is not running at, and the software clock is pulling.
+        // Silence, before the stamp, so the takeover's catch-up starts from
+        // the last block this callback actually pulled.
+        if (outputAbandoned.load (std::memory_order_acquire))
+        {
+            for (int ch = 0; ch < numOutputs; ++ch)
+                if (outputs != nullptr && outputs[ch] != nullptr)
+                    std::fill (outputs[ch], outputs[ch] + numSamples, 0.0f);
+            return;
+        }
+
         // The software clock watches this stamp: a callback that stops
         // arriving hands the rig over to it within a few buffer periods.
         lastOutputCallbackNs.store (std::chrono::duration_cast<std::chrono::nanoseconds> (
@@ -374,6 +392,8 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     // it only steps in when that stream goes quiet; without one it is the
     // clock from the first block.
     outputStreamOpen = ! outputDeviceId.empty();
+    outputCarriesChannels = outputStreamOpen && ! outputDeviceRouting.empty();
+    openOutputDeviceId = outputDeviceId;
     outputClockLost.store (false, std::memory_order_relaxed);
     lastOutputCallbackNs.store (std::chrono::duration_cast<std::chrono::nanoseconds> (
                                     std::chrono::steady_clock::now().time_since_epoch()).count(),
@@ -518,7 +538,10 @@ void CaptureCoordinator::runSoftwareClock()
     while (clockRunning.load (std::memory_order_acquire))
     {
         const auto now = clock::now();
-        bool takeOver = ! outputStreamOpen;
+
+        // An abandoned output goes on calling back -- at the wrong rate -- so
+        // its stamp never goes stale; the flag is the only way to know.
+        bool takeOver = ! outputStreamOpen || outputAbandoned.load (std::memory_order_acquire);
 
         if (! takeOver)
         {
@@ -636,6 +659,26 @@ void CaptureCoordinator::stopSoftwareClock()
 
     outputClockLost.store (false, std::memory_order_relaxed);
     outputStreamOpen = false;
+}
+
+bool CaptureCoordinator::abandonOutputClock (const std::string& why)
+{
+    if (! monitoring || ! outputStreamOpen || outputCarriesChannels
+        || ! clockRunning.load (std::memory_order_acquire))
+        return false;
+
+    if (! outputAbandoned.exchange (true, std::memory_order_acq_rel))
+    {
+        // Said now rather than on the clock's next look, so the app routes
+        // its own sounds away from the headphones straight away.
+        outputClockLost.store (true, std::memory_order_relaxed);
+
+        // Ahead of a problem already there (a microphone that did not open),
+        // which still stands.
+        monitorProblem = monitorProblem.empty() ? why : why + " " + monitorProblem;
+    }
+
+    return true;
 }
 
 uint64_t CaptureCoordinator::getOverrunSamples() const noexcept
@@ -805,6 +848,9 @@ void CaptureCoordinator::stopMonitoring()
     // must not be mid-pull while the streams are torn down.
     stopSoftwareClock();
     backend.closeAllStreams();
+    outputAbandoned.store (false, std::memory_order_release);
+    outputCarriesChannels = false;
+    openOutputDeviceId.clear();
     monitoring = false;
     latenciesReady.store (false, std::memory_order_relaxed);
     feedbackGuard.stop();

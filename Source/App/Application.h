@@ -844,6 +844,13 @@ private:
     // kDeadInputReopenBackoffMs is left dead rather than reopened in a loop.
     std::map<std::string, double> deadInputReopenedAtMs;
 
+    // When the rig was last reopened to put the headphone output back at its
+    // rate after something else switched it, and which output that was.
+    // Switched again inside kDeadInputReopenBackoffMs, it is set aside rather
+    // than reopened in a tug-of-war (OutputRateChangeAction::setAside).
+    double outputRateReopenedAtMs = 0.0;
+    std::string outputRateReopenedFor;
+
     // Whether the mirror was still writing when this take was stopped, sampled
     // before stopRecording() tears the pipeline down. Read after, isMirroring()
     // is always false, so every finished take claimed its backup never ran --

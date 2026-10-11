@@ -127,6 +127,18 @@ If the selected output still refuses its real low-latency open, show the reason
 and reopen the microphones input-only under the software clock. Headphone
 monitoring is off, but recording remains available; an output failure must not
 become a recording-input failure.
+The same holds when another process changes the open output's nominal sample
+rate (an output with inputs of its own is not hogged, so any app can). Its
+callback is the clock every input is pulled on (§3.2), so it must not go on
+pulling at the new rate. Between takes, reopen the rig at its own rate, which
+sets the output back; if it changes again within 30 s of that, stop using it
+as the clock (headphones silent, the software clock pulls) until it returns
+to the rig's rate, rather than fight over it. Mid-take, stop using it as the
+clock and carry the take on under the software clock with the headphones
+silent; Stop reopens it. Only an output that itself carries take audio -- the
+combined device, whose rate is its microphones', or a duplex mixer -- stops
+the take, as a microphone's rate change does (§2.2). Ring losses from the
+mismatch are not counted toward §5.4's buffer ladder.
 ### 5.4 Latency budget — hard constraint
 Zero latency is not achievable in a software monitor path. The requirement is a budget.
 - **Target: under 6 ms** mic diaphragm to headphone, **measured by loopback at startup, not estimated.**

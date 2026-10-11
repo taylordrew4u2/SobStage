@@ -1870,11 +1870,18 @@ void Application::rescanDevices()
     // and reopening every stream for it -- a few hundred milliseconds after
     // they first opened -- is the immediate identical reopen some USB drivers
     // stall on. A dead stream, a lost output or a failed mic still reopens.
+    //
+    // An output set aside for changing its rate is not lost: it was put down
+    // on purpose, because something keeps switching it (pollStatusAdvice).
+    // The rate change itself fires this notification, and reopening here --
+    // which sets the rate back -- is the very tug-of-war setting it aside
+    // ended. It comes back when it is back at the rig's rate, or the rig
+    // changes.
     if (capture != nullptr && capture->isMonitoring()
         && ! lastStartedRigSignature.empty()
         && deadInputStreams.empty()
         && capture->getDevicesThatFailedToOpen().empty()
-        && (selectedOutputDeviceId.empty() || capture->hasOutputStream())
+        && (selectedOutputDeviceId.empty() || capture->hasOutputStream() || capture->isOutputAbandoned())
         && describeRig() == lastStartedRigSignature)
         return;
 
@@ -2264,6 +2271,7 @@ TakeHealth Application::snapshotTakeHealth() const
         health.samplesOverrun = capture->getWorstChannelOverrunThisTake();
         health.sampleRate = currentSampleRate;
         health.outputClockLost = capture->isOutputClockLost();
+        health.outputRateChanged = capture->isOutputAbandoned();
         health.writerBehind = capture->getRingFillFraction() >= CapacityMonitor::kFillWarningFraction;
         health.mixOnly = capture->isMixOnly();
     }
@@ -5864,7 +5872,8 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         juce::String firstFailure;
         juce::String firstWarning;
         bool bufferLadderStepped = false;
-        bool reopenDeadInputs = false;
+        bool reopenStreams = false;
+        bool outputRateChanged = false;
 
         for (const auto& failure : audioBackend->takeStreamFailures())
         {
@@ -5881,6 +5890,31 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                 for (const auto& d : deviceManager.getDevices())
                     if (d.identity.key() == failure.deviceId)
                         subject = juce::String (d.displayName);
+            }
+
+            if (failure.kind == StreamFailureKind::resumed && failure.deviceId.empty())
+            {
+                // The headphone output back at the rig's rate, after a switch
+                // set it aside (below). Between takes the rig is reopened,
+                // which makes it the clock again. Mid-take the take's streams
+                // stay as they are, and Stop reopens it anyway.
+                if (capture != nullptr && capture->isOutputAbandoned())
+                {
+                    const auto line = subject + " " + juce::String (failure.reason);
+
+                    if (isRecording() || capture->isRecording())
+                    {
+                        noteActivity (ActivityLevel::Warning, subject,
+                                      line + " You'll hear the mix again when you stop.");
+                    }
+                    else
+                    {
+                        noteActivity (ActivityLevel::Recovered, subject,
+                                      line + " You can hear the mix again.");
+                        reopenStreams = true;
+                    }
+                }
+                continue;
             }
 
             // §6.5: a still-listed mic called dead below whose stream is
@@ -5909,6 +5943,95 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                                   "Sending audio again. Its track is live again.");
                 }
                 continue;
+            }
+
+            // §5.3: the headphone output, not a microphone, changed sample
+            // rate -- Audio MIDI Setup, another app, a music player switching
+            // the device to its own rate. (An output that has inputs of its
+            // own is not hogged, so any app may.) Its callback is the rig's
+            // clock, and left alone it went on pulling every microphone at the
+            // wrong rate. Mid-take the take was stopped as if a microphone's
+            // file format had changed, though none had, and the rest of the
+            // show went unrecorded. Between takes nothing reopened it: every
+            // ring overflowed, and three polls later the buffer ladder blamed
+            // the computer and raised the buffer -- or, at its top rung, the
+            // next take recorded with a piece of every track missing.
+            if (streamFailureIsOutputRateChange (failure) && capture != nullptr)
+            {
+                outputRateChanged = true;
+
+                // The combined device's rate is the microphones' own (they are
+                // its sub-devices), and a mixer that is both the headphones and
+                // some of the microphones carries them on the output callback:
+                // either way the take's format did change, whatever the
+                // microphones' own reports say or when they arrive. The open
+                // stream is asked as well as the selection, which can move
+                // mid-take ahead of the reopen at Stop.
+                const bool carriesTakeAudio = selectedOutputDeviceId == kOurAggregateUid
+                                           || capture->getOutputDeviceId() == kOurAggregateUid
+                                           || capture->outputCarriesTakeChannels();
+
+                // Put back once; switched again straight after, something is
+                // fighting for it, and a reopen per switch is a tug-of-war
+                // with the headphones dropping out at every turn.
+                const auto nowMs = juce::Time::getMillisecondCounterHiRes();
+                const bool reopenedRecently = outputRateReopenedFor == selectedOutputDeviceId
+                                           && nowMs - outputRateReopenedAtMs < kDeadInputReopenBackoffMs;
+
+                auto action = outputRateChangeAction (isRecording() || capture->isRecording(),
+                                                      carriesTakeAudio, reopenedRecently);
+                const auto changed = subject + " " + juce::String (failure.reason);
+                juce::String said;
+
+                switch (action)
+                {
+                    case OutputRateChangeAction::carryOnWithoutIt:
+                        said = changed + " Recording carries on, but you won't hear the mix in your "
+                                         "headphones until you stop.";
+
+                        // Stop reopens it at the take's rate. With no software
+                        // clock to take over, nothing else could clock the
+                        // take, and it stops as before.
+                        if (capture->abandonOutputClock (said.toStdString()))
+                            captureRestartDeferred = true;
+                        else
+                            action = OutputRateChangeAction::stopTake;
+                        break;
+
+                    case OutputRateChangeAction::reopenNow:
+                        said = changed + " SobStage is switching it back.";
+                        outputRateReopenedAtMs = nowMs;
+                        outputRateReopenedFor = selectedOutputDeviceId;
+                        reopenStreams = true;
+                        break;
+
+                    case OutputRateChangeAction::setAside:
+                        said = changed + " Something keeps switching it, so the mix is off in your "
+                                         "headphones; recording still works. Set it back in Audio "
+                                         "MIDI Setup to hear the mix again.";
+
+                        if (! capture->abandonOutputClock (said.toStdString()))
+                            said = changed + " Set it back in Audio MIDI Setup.";
+                        break;
+
+                    case OutputRateChangeAction::stopTake:
+                        break;
+                }
+
+                // Whichever way the take goes on or ends, Stop reopens the
+                // rig at its own rate.
+                if (action == OutputRateChangeAction::stopTake)
+                    captureRestartDeferred = true;
+
+                // stopTake goes on to the ordinary path below, which stops the
+                // take as it does for a microphone's rate change.
+                if (action != OutputRateChangeAction::stopTake)
+                {
+                    noteActivity (ActivityLevel::Warning, subject, said);
+                    if (firstWarning.isEmpty())
+                        firstWarning = said;
+                    continue;
+                }
             }
 
             // §5.4's buffer ladder lives or dies here. noteCallbackOverrun()
@@ -6004,7 +6127,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                         switch (deadInputStreamAction (takeRunning, reopenedRecently))
                         {
                             case DeadInputStreamAction::reopenAtStop: captureRestartDeferred = true; break;
-                            case DeadInputStreamAction::reopenNow:    reopenDeadInputs = true; break;
+                            case DeadInputStreamAction::reopenNow:    reopenStreams = true; break;
                             case DeadInputStreamAction::leaveDead:    break;
                         }
                     }
@@ -6013,14 +6136,28 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
             if (stopForSafety)
             {
+                // Stop reopens the rig at its own rate, which sets the device
+                // back. Without that the device-list notification this same
+                // change queued -- run after the stop -- found the rig
+                // unchanged and reopened nothing, and the next take ran with
+                // the device still at the other rate and its one report spent.
+                captureRestartDeferred = true;
                 stopReason = "an audio device changed sample rate";
                 toggleRecording();
             }
         }
 
         // After the loop, so several streams dying together reopen once.
-        if (reopenDeadInputs)
+        if (reopenStreams)
             restartCapture();
+
+        // What the rings lost before this poll heard of an output rate
+        // change was that output pulling them at its new rate, not the
+        // computer missing a deadline. Counted by the ladder below on the next
+        // poll, it was a third of the way to blaming the computer and raising
+        // the buffer for a fault that has just been dealt with.
+        if (outputRateChanged && capture != nullptr)
+            reportedRingLossEvents = capture->getRingLossEvents();
 
         // Acted on after the loop, so one batch of overloads produces one step
         // rather than one per report.

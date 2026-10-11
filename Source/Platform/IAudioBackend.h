@@ -56,7 +56,9 @@ enum class StreamFailureKind
 
     /// Not a failure: an input stream reported dead has started delivering
     /// again on the same stream. The owner takes back what the dead report
-    /// did -- its channel goes live again -- and says so.
+    /// did -- its channel goes live again -- and says so. With no device id it
+    /// is the headphone output, back at the rate it was opened at after a
+    /// sampleRateChanged report (see outputRateChangeAction()).
     resumed
 };
 
@@ -65,6 +67,9 @@ enum class StreamFailureKind
 /// knowingly write audio under a stale header. Disconnects retain the frozen
 /// take layout and write silence (§6.5); overload/listener reports are visible
 /// warnings rather than reasons to discard the rest of a take.
+///
+/// A rate change on the headphone output alone is not a microphone's, and is
+/// decided by outputRateChangeAction() before this is asked.
 constexpr bool streamFailureRequiresRecordingStop (StreamFailureKind kind) noexcept
 {
     return kind == StreamFailureKind::sampleRateChanged;
@@ -134,6 +139,51 @@ struct StreamFailure
 
     StreamFailureKind kind = StreamFailureKind::unknown;
 };
+
+/// The headphone output's own sample rate changed under the app -- another
+/// app, Audio MIDI Setup or a music player switched the device -- rather than
+/// a microphone's. The backend names no device for the monitor output.
+inline bool streamFailureIsOutputRateChange (const StreamFailure& failure) noexcept
+{
+    return failure.kind == StreamFailureKind::sampleRateChanged && failure.deviceId.empty();
+}
+
+/// §5.3: what the owner does when the headphone output changes sample rate.
+///
+/// The output's callback is the clock the whole rig is pulled on (§3.2). At
+/// the wrong rate it pulls every microphone's ring too fast or too slow, so
+/// leaving it running loses audio from every track -- and the ring losses
+/// then read as the computer being too slow, and raise the buffer size.
+enum class OutputRateChangeAction
+{
+    /// The output carries take audio itself (the combined device, whose
+    /// rate is the microphones', or a mixer that is both): the take's format
+    /// would become untrue, so it stops, as for a microphone's rate change.
+    stopTake,
+    /// Mid-take, an output that carries none of it: the output stops being
+    /// the clock and the software clock takes over, so the take carries on
+    /// intact with the headphones silent. Stop reopens the output.
+    carryOnWithoutIt,
+    /// Nothing recording: reopen the rig at its own rate now, which sets the
+    /// output back.
+    reopenNow,
+    /// Changed again straight after such a reopen -- something keeps
+    /// switching it. Rather than fight it in a loop, the output stops being
+    /// the clock (headphones silent, recording unaffected) until it is back
+    /// at the rig's rate.
+    setAside
+};
+
+constexpr OutputRateChangeAction outputRateChangeAction (bool recording,
+                                                         bool outputCarriesTakeAudio,
+                                                         bool reopenedRecently) noexcept
+{
+    if (recording)
+        return outputCarriesTakeAudio ? OutputRateChangeAction::stopTake
+                                      : OutputRateChangeAction::carryOnWithoutIt;
+
+    return reopenedRecently ? OutputRateChangeAction::setAside : OutputRateChangeAction::reopenNow;
+}
 
 /// Where a backend's worker threads leave a failure for the message thread to
 /// pick up. Locked rather than lock-free: a stream dying is a once-per-session

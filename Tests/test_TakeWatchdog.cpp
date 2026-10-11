@@ -358,6 +358,30 @@ TEST_CASE (TakeWatchdog_OutputClockLostIsSaidOnceAndComesBack)
     REQUIRE (back[0].recovery);
 }
 
+TEST_CASE (TakeWatchdog_AnOutputSetAsideForARateChangeIsSaidOnceInItsOwnWords)
+{
+    // Another app switched the headphones to 44.1 kHz mid-take, and the take
+    // carries on without them. The output is still plugged in and nobody took
+    // it, so "has stopped -- unplugged, or taken by another app ... until it
+    // comes back" would be wrong; the monitor problem says what happened.
+    TakeWatchdog w;
+    w.beginTake (healthyRig());
+
+    auto now = healthyRig();
+    now.outputClockLost = true;
+    now.outputRateChanged = true;
+    now.monitorProblem = "Your sound output changed to 44.1 kHz while SobStage is using 48 kHz. "
+                         "Recording carries on, but you won't hear the mix in your headphones "
+                         "until you stop.";
+
+    const auto alerts = w.observe (now);
+    REQUIRE (alerts.size() == 1);
+    REQUIRE (alerts[0].kind == TakeAlert::Kind::MonitorTrouble);
+    REQUIRE (alerts[0].message == now.monitorProblem);
+    REQUIRE_FALSE (has (alerts, TakeAlert::Kind::OutputLost));
+    REQUIRE (w.observe (now).empty());
+}
+
 TEST_CASE (TakeWatchdog_RingOverrunsCountAsDroppedAudio)
 {
     TakeWatchdog w;

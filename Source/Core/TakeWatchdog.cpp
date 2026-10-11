@@ -107,7 +107,10 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
     if (! now.cameraProblem.empty() && now.cameraProblem != last.cameraProblem)
         alerts.push_back ({ TakeAlert::Kind::CameraTrouble, now.cameraProblem, false });
 
-    if (now.outputClockLost && ! last.outputClockLost)
+    // An output set aside for changing its rate is still plugged in and was
+    // not taken: the monitor problem (MonitorTrouble below) says what did
+    // happen, and that it stays off until Stop.
+    if (now.outputClockLost && ! last.outputClockLost && ! now.outputRateChanged)
         alerts.push_back ({ TakeAlert::Kind::OutputLost,
                             "The headphone output has stopped -- unplugged, or taken by another "
                             "app. The take carries on on this computer's clock; you will not hear "

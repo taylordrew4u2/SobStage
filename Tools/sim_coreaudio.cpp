@@ -903,6 +903,83 @@ void aLiveSampleRateChangeIsReportedAndReenumerated()
            "closing the stream removes every per-device listener");
 }
 
+/// The headphone output, not a microphone, switched to another rate by
+/// another app. An output with inputs of its own is not hogged, so any app
+/// may. The report has to be told apart from a microphone's -- the take's
+/// files are not at risk, so the app carries the take on without the output
+/// rather than stopping it -- and must not carry advice to "start a new take"
+/// that the app may not follow. Its return to the stream's rate is news too:
+/// it is how an output the app stopped using gets taken back.
+void aLiveOutputRateChangeIsReportedAsTheOutputsAndSoIsItsReturn()
+{
+    std::printf ("\nHeadphones on an interface that another app switches to another rate\n");
+    fakeca::reset();
+
+    auto spec = headphones ("Rate Change Out", "uid-rate-out", 2,
+                            fakeca::BufferShape::oneChannelPerBuffer);
+    spec.inputChannels = 2; // a duplex interface: left un-hogged, so others can switch it
+    spec.rateRanges = { { 44100.0, 44100.0 }, { 48000.0, 48000.0 } };
+    const auto id = fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+    int deviceChanges = 0;
+    backend.setDeviceChangeCallback ([&deviceChanges] { ++deviceChanges; });
+
+    auto silent = [] (const float* const*, int, float* const* outputs, int numOutputs, int numSamples)
+    {
+        for (int ch = 0; ch < numOutputs; ++ch)
+            std::fill (outputs[ch], outputs[ch] + numSamples, 0.0f);
+    };
+
+    check (backend.openExclusiveOutputStream ("uid-rate-out", 48000.0, 256, silent),
+           "the output opens at 48 kHz");
+
+    check (fakeca::setNominalRateExternally (id, 44100.0),
+           "another app switches the output to 44.1 kHz");
+
+    const auto changed = backend.takeStreamFailures();
+    check (changed.size() == 1, "the change is reported on the next message-thread poll");
+
+    if (! changed.empty())
+    {
+        const auto& f = changed.front();
+        check (f.deviceId.empty() && f.subject == "Your sound output",
+               "it is reported as the sound output's, naming no microphone");
+        check (mma::streamFailureIsOutputRateChange (f),
+               "and typed so the app can tell it from a microphone's rate change");
+        check (f.reason.find ("44.1 kHz") != std::string::npos
+               && f.reason.find ("48 kHz") != std::string::npos,
+               "the report names both the new rate and SobStage's rate");
+        check (f.reason.find ("new take") == std::string::npos,
+               "and says nothing about starting a new take: the app decides what happens to the take");
+    }
+
+    check (deviceChanges == 1, "the change is still bridged into re-enumeration");
+    check (backend.takeStreamFailures().empty(), "an unchanged switch is not repeated on every poll");
+
+    fakeca::setNominalRateExternally (id, 48000.0);
+    const auto back = backend.takeStreamFailures();
+    check (back.size() == 1, "its return to the stream's rate is reported");
+
+    if (! back.empty())
+    {
+        const auto& f = back.front();
+        check (f.kind == mma::StreamFailureKind::resumed && f.deviceId.empty()
+               && f.subject == "Your sound output",
+               "as the sound output being usable again");
+        check (f.reason.find ("48 kHz") != std::string::npos, "naming the rate it is back at");
+    }
+
+    check (backend.takeStreamFailures().empty(), "and only once");
+
+    fakeca::setNominalRateExternally (id, 44100.0);
+    check (backend.takeStreamFailures().size() == 1, "a later switch is reported again");
+
+    backend.closeAllStreams();
+    check (fakeca::propertyListenerCount (id) == 0,
+           "closing the stream removes every per-device listener");
+}
+
 /// H11: kAudioDevicePropertyDeviceIsAlive reaches the backend before the
 /// system device list necessarily drops the AudioObjectID. This must report a
 /// dead stream immediately rather than waiting five seconds for the IOProc
@@ -2671,6 +2748,7 @@ int main()
     anOutputWeAlreadyHoldIsStillReportedAsAvailable();
     hotplugArrivesThroughTheOsListener();
     aLiveSampleRateChangeIsReportedAndReenumerated();
+    aLiveOutputRateChangeIsReportedAsTheOutputsAndSoIsItsReturn();
     aDeviceAliveChangeIsReportedImmediately();
     aMicWhoseAliveFlagDipsAndReturnsIsReportedAsResumed();
     processorOverloadsAreCountedOnTheRightPath();

@@ -2148,18 +2148,33 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
             if (mismatched && ! stream->sampleRateMismatchReported)
             {
                 stream->sampleRateMismatchReported = true;
+
+                // The output's advice depends on what the app does about it
+                // -- carry the take on without it, or put it back -- so the
+                // app adds it (outputRateChangeAction()).
                 failures.push_back ({ stream->isOutput ? std::string() : stream->uid,
                                       "changed to " + formatRate (actualRate)
                                       + " while SobStage is using "
-                                      + formatRate (stream->expectedSampleRate)
-                                      + ". Set the interface back to "
-                                      + formatRate (stream->expectedSampleRate)
-                                      + ", then start a new take.",
+                                      + formatRate (stream->expectedSampleRate) + "."
+                                      + (stream->isOutput
+                                             ? std::string()
+                                             : " Set the interface back to "
+                                               + formatRate (stream->expectedSampleRate)
+                                               + ", then start a new take."),
                                       stream->isOutput ? "Your sound output" : std::string(),
                                       StreamFailureKind::sampleRateChanged });
             }
             else if (! mismatched)
             {
+                // The headphone output back at the rate it was opened for.
+                // The app may have stopped using it as the clock over the
+                // change, and this is what tells it it can again.
+                if (stream->sampleRateMismatchReported && stream->isOutput)
+                    failures.push_back ({ std::string(),
+                                          "is back at " + formatRate (stream->expectedSampleRate) + ".",
+                                          "Your sound output",
+                                          StreamFailureKind::resumed });
+
                 // A later mismatch is new information once the device has
                 // returned to the rate this stream was opened for.
                 stream->sampleRateMismatchReported = false;

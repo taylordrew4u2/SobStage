@@ -304,7 +304,33 @@ public:
     /// (isOutputClockLost). Anything mixed into the headphones then reaches
     /// nobody -- the software clock pulls with no buffer to fill -- so the
     /// app's own sounds must go another way until the output returns.
-    bool hasOutputStream() const noexcept { return outputStreamOpen && ! isOutputClockLost(); }
+    bool hasOutputStream() const noexcept
+    {
+        return outputStreamOpen && ! isOutputClockLost() && ! isOutputAbandoned();
+    }
+
+    /// §5.3: stops using the open output as the rig's clock, for good, until
+    /// the next startMonitoring(). Its callback fills silence and pulls
+    /// nothing, and the software clock pulls every microphone instead -- so a
+    /// headphone output that another app has switched to a different sample
+    /// rate (and which would pull the rings at that rate) cannot cost the take
+    /// any audio. `why` becomes the monitor problem, ahead of any already
+    /// there. Message thread.
+    ///
+    /// Refused (false) when there is no output stream, when the output also
+    /// carries take channels (a duplex mixer: silencing its callback would
+    /// silence those microphones), or when no software clock is running to
+    /// take over.
+    bool abandonOutputClock (const std::string& why);
+    bool isOutputAbandoned() const noexcept { return outputAbandoned.load (std::memory_order_acquire); }
+
+    /// The open output stream also carries take channels: a mixer that is
+    /// both the headphones and some of the microphones, opened once.
+    bool outputCarriesTakeChannels() const noexcept { return outputCarriesChannels; }
+
+    /// The device the open output stream was opened on; empty without one
+    /// (none asked for, or it refused and the rig went input-only).
+    const std::string& getOutputDeviceId() const noexcept { return openOutputDeviceId; }
 
     /// Per output channel: 1 sends the mix there, 0 sends silence. Lets the
     /// combined device feed every microphone's headphone jack while each
@@ -662,9 +688,14 @@ private:
     /// held: use pullOutputBlock() from anywhere that does not hold it.
     void processOutputBlock (float* const* outputs, int numOutputs, int numSamples) noexcept;
     std::atomic<bool> outputClockLost { false };
+    /// abandonOutputClock(): the output callback pulls nothing and the
+    /// software clock pulls instead, however recently the output called back.
+    std::atomic<bool> outputAbandoned { false };
     std::array<std::atomic<float>, kMaxOutputChannelGains> outputChannelGains;
     std::atomic<int64_t> lastOutputCallbackNs { 0 };
     bool outputStreamOpen = false;
+    bool outputCarriesChannels = false;
+    std::string openOutputDeviceId;
     bool softwareClockEnabled = true;
     void runSoftwareClock();
     void stopSoftwareClock();
