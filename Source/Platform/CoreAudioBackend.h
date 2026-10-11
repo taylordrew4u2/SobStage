@@ -77,19 +77,23 @@ private:
     std::unique_ptr<CoreAudioDeviceListListenerState> deviceListListenerState;
     bool deviceListListenerInstalled = false;
 
-    // coreaudiod restarting (kAudioHardwarePropertyServiceRestarted) and an
+    // coreaudiod restarting (kAudioHardwarePropertyServiceRestarted), an
     // output's route changing (kAudioDevicePropertyDataSource /
     // kAudioDevicePropertyJackIsConnected: headphones into or out of an Intel
-    // Mac's jack, which changes no device list) are delivered through the same
-    // listener state, trampoline and callback as the device list, so they share
-    // its lease gate and its process-lifetime retirement. Each registration is
-    // remembered so it is removed before that state is retired.
+    // Mac's jack, which changes no device list) and the app's combined device
+    // changing shape (its active sub-device list and output stream
+    // configuration: a microphone dropping out of it or joining it late) are
+    // delivered through the same listener state, trampoline and callback as
+    // the device list, so they share its lease gate and its process-lifetime
+    // retirement. Each registration is remembered so it is removed before
+    // that state is retired.
     bool serviceRestartListenerInstalled = false;
 
     struct OutputRouteListener
     {
         uint32_t device = 0;   // AudioObjectID
-        uint32_t selector = 0; // AudioObjectPropertySelector, output scope
+        uint32_t selector = 0; // AudioObjectPropertySelector
+        uint32_t scope = 0;    // AudioObjectPropertyScope
     };
 
     std::vector<OutputRouteListener> outputRouteListeners;
@@ -122,7 +126,8 @@ private:
 
     /// Message thread only. Brings the output-route listeners in line with the
     /// outputs now listed: one per route property each output actually has,
-    /// none left on a device that has gone.
+    /// and the combined device's layout properties while it is listed; none
+    /// left on a device that has gone.
     void syncOutputRouteListeners();
     bool openStream (const std::string& deviceId, double sampleRate, int bufferSizeSamples,
                      AudioCallback callback, bool isOutput);

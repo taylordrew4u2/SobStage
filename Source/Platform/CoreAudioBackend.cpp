@@ -498,8 +498,9 @@ std::vector<uint32_t> querySupportedSampleRates (AudioObjectID device)
 // DeviceChangeCallback. Registered on kAudioObjectSystemObject for
 // kAudioHardwarePropertyDevices so hotplug is delivered by the OS, never
 // polled on a timer (§2) -- and, with the same clientData, for
-// kAudioHardwarePropertyServiceRestarted and on each output's data source /
-// jack state, because all three want the same re-evaluation.
+// kAudioHardwarePropertyServiceRestarted, on each output's data source /
+// jack state and on the combined device's shape, because all of them want the
+// same re-evaluation.
 OSStatus deviceListChanged (AudioObjectID, UInt32 numAddresses,
                             const AudioObjectPropertyAddress* addresses, void* clientData)
 {
@@ -542,9 +543,38 @@ AudioObjectPropertyAddress serviceRestartedAddress()
 constexpr AudioObjectPropertySelector kOutputRouteSelectors[] = { kAudioDevicePropertyDataSource,
                                                                   kAudioDevicePropertyJackIsConnected };
 
-AudioObjectPropertyAddress outputRouteAddress (AudioObjectPropertySelector selector)
+AudioObjectPropertyAddress watchedAddress (AudioObjectPropertySelector selector, AudioObjectPropertyScope scope)
 {
-    return { selector, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain };
+    return { selector, scope, kAudioObjectPropertyElementMain };
+}
+
+/// What the app's own combined device is made of. Its output channels are
+/// numbered over the sub-devices active now, so one leaving it (a cable
+/// bumped) or joining it late (activated after the device was made) moves
+/// every later microphone's headphone jack to other channel numbers -- and
+/// neither is sure to be followed by a device-list notification: an unplug's
+/// own can arrive before the HAL has rebuilt the combined device, and a late
+/// activation has none at all. The app re-reads the layout, and lays the
+/// per-jack headphone gains again, on these.
+struct WatchedProperty
+{
+    AudioObjectPropertySelector selector;
+    AudioObjectPropertyScope scope;
+};
+
+constexpr WatchedProperty kCombinedDeviceLayoutProperties[] = {
+    { kAudioAggregateDevicePropertyActiveSubDeviceList, kAudioObjectPropertyScopeGlobal },
+    { kAudioDevicePropertyStreamConfiguration, kAudioObjectPropertyScopeOutput },
+};
+
+/// The app's own combined device. Only an aggregate has an active sub-device
+/// list, so only an aggregate's UID is read.
+bool isOurCombinedDevice (AudioObjectID device)
+{
+    auto address = watchedAddress (kAudioAggregateDevicePropertyActiveSubDeviceList,
+                                   kAudioObjectPropertyScopeGlobal);
+    return AudioObjectHasProperty (device, &address)
+        && readStringProperty (device, kAudioDevicePropertyDeviceUID) == kOurAggregateUid;
 }
 
 /// Every AudioObjectID the HAL lists now, or empty when it cannot be read.
@@ -1633,7 +1663,7 @@ void CoreAudioBackend::syncOutputRouteListeners()
                             if (listed (registration.device))
                                 return false;
 
-                            auto address = outputRouteAddress (registration.selector);
+                            auto address = watchedAddress (registration.selector, registration.scope);
                             (void) AudioObjectRemovePropertyListener (registration.device, &address,
                                                                       deviceListChanged,
                                                                       deviceListListenerState.get());
@@ -1641,33 +1671,42 @@ void CoreAudioBackend::syncOutputRouteListeners()
                         }),
         outputRouteListeners.end());
 
+    const auto watch = [this] (AudioObjectID device, AudioObjectPropertySelector selector,
+                               AudioObjectPropertyScope scope)
+    {
+        const bool alreadyWatched = std::any_of (
+            outputRouteListeners.begin(), outputRouteListeners.end(),
+            [device, selector, scope] (const OutputRouteListener& registration)
+            {
+                return registration.device == device && registration.selector == selector
+                    && registration.scope == scope;
+            });
+
+        if (alreadyWatched)
+            return;
+
+        auto address = watchedAddress (selector, scope);
+        if (! AudioObjectHasProperty (device, &address))
+            return;
+
+        if (AudioObjectAddPropertyListener (device, &address, deviceListChanged,
+                                            deviceListListenerState.get()) == noErr)
+            outputRouteListeners.push_back ({ device, selector, scope });
+    };
+
     for (auto device : devices)
     {
-        if (countChannels (device, false) <= 0)
-            continue;
+        // Most outputs have neither route property; only one that does can
+        // change route without changing the device list.
+        if (countChannels (device, false) > 0)
+            for (auto selector : kOutputRouteSelectors)
+                watch (device, selector, kAudioObjectPropertyScopeOutput);
 
-        for (auto selector : kOutputRouteSelectors)
-        {
-            const bool alreadyWatched = std::any_of (
-                outputRouteListeners.begin(), outputRouteListeners.end(),
-                [device, selector] (const OutputRouteListener& registration)
-                {
-                    return registration.device == device && registration.selector == selector;
-                });
-
-            if (alreadyWatched)
-                continue;
-
-            // Most outputs have neither property; only one that does can
-            // change route without changing the device list.
-            auto address = outputRouteAddress (selector);
-            if (! AudioObjectHasProperty (device, &address))
-                continue;
-
-            if (AudioObjectAddPropertyListener (device, &address, deviceListChanged,
-                                                deviceListListenerState.get()) == noErr)
-                outputRouteListeners.push_back ({ device, selector });
-        }
+        // Whether or not it has outputs yet: one made before its microphones
+        // activate reports none until they do.
+        if (isOurCombinedDevice (device))
+            for (const auto& property : kCombinedDeviceLayoutProperties)
+                watch (device, property.selector, property.scope);
     }
 }
 
@@ -1682,7 +1721,7 @@ void CoreAudioBackend::removeDeviceListListener()
     // refuses the remove, which is expected; the retirement below covers it.
     for (const auto& registration : outputRouteListeners)
     {
-        auto routeAddress = outputRouteAddress (registration.selector);
+        auto routeAddress = watchedAddress (registration.selector, registration.scope);
         (void) AudioObjectRemovePropertyListener (registration.device, &routeAddress, deviceListChanged,
                                                   deviceListListenerState.get());
     }

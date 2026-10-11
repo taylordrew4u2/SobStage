@@ -1094,8 +1094,13 @@ void Application::restartCapture()
         ++speakerHandoversForMonitorOpen;
     }
 
-    applyHeadphoneGains();
+    // Before the open, for the device being opened, so its first callback
+    // already keeps the mix off a switched-off jack; after it, for whatever
+    // actually opened (nothing, if the output refused and the rig went
+    // input-only).
+    applyHeadphoneGainsFor (selectedOutputDeviceId);
     const bool started = capture->startMonitoring (channels, selectedOutputDeviceId);
+    applyHeadphoneGains();
 
     // What a later device-list notification compares against: only a rig
     // that came up whole is worth not reopening.
@@ -1920,17 +1925,23 @@ std::string Application::describeRig() const
 
 void Application::applyHeadphoneGains()
 {
+    if (capture != nullptr)
+        applyHeadphoneGainsFor (capture->getOutputDeviceId());
+}
+
+void Application::applyHeadphoneGainsFor (const std::string& outputDeviceId)
+{
     if (capture == nullptr)
         return;
 
-    if (! isMonitoringThroughCombinedDevice())
-    {
-        capture->setOutputChannelGains ({});
-        return;
-    }
-
-    capture->setOutputChannelGains (headphoneChannelGains (
-        combinedOutputLayout,
+    // The output that is open (or about to be), not the one selected: mid-take
+    // the selection can move onto or off the combined device while the stream
+    // stays where it was until Stop. The per-jack gains belong to the combined
+    // device's channels only. Laid over another device's they silence the
+    // wrong channels, and cleared while the combined device still plays they
+    // give the mix back to whoever switched theirs off.
+    capture->setOutputChannelGains (headphoneChannelGainsForOutput (
+        outputDeviceId, kOurAggregateUid, combinedOutputLayout,
         [this] (const std::string& uid)
         {
             for (const auto& d : deviceManager.getDevices())
@@ -2046,6 +2057,16 @@ void Application::reselectOutputDevice()
     combinedOutputLayout = systemAggregate != nullptr && systemAggregate->isPublished()
                          ? systemAggregate->getOutputLayout()
                          : std::vector<CombinedDeviceOutputs> {};
+
+    // The per-jack gains are by channel number, and the combined device
+    // numbers its channels over the sub-devices that are active now. One
+    // leaving (a cable bumped mid-take) or joining late (slower than the
+    // publish wait) moves every later jack, and nothing else re-laid the
+    // gains: mid-take the reopen waits for Stop, and between takes an
+    // unchanged rig is not reopened. The next person along lost the mix for
+    // the rest of the take while the one who had switched theirs off heard
+    // it. Atomics, so changing them under a running stream is safe.
+    applyHeadphoneGains();
 
     if (combinedDeviceHasHeadphones (combinedOutputLayout))
     {

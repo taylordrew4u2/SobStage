@@ -834,6 +834,12 @@ Boolean AudioObjectHasProperty (AudioObjectID object, const AudioObjectPropertyA
             return (address->mScope == kAudioObjectPropertyScopeOutput
                     && device->spec.jackConnected >= 0) ? 1 : 0;
 
+        // Every aggregate has the list, filled in yet or not. Asking whether
+        // it exists is not a read of it, so it does not use up one of the
+        // reads a slow-to-build aggregate answers empty.
+        case kAudioAggregateDevicePropertyActiveSubDeviceList:
+            return device->spec.subDeviceUids.empty() ? 0 : 1;
+
         default:
         {
             UInt32 size = 0;
@@ -1152,6 +1158,18 @@ bool setJackConnected (AudioObjectID device, bool connected)
 
     d->spec.jackConnected = connected ? 1 : 0;
     firePropertyListeners (device, kAudioDevicePropertyJackIsConnected, kAudioObjectPropertyScopeOutput);
+    return true;
+}
+
+bool activateSubDevices (AudioObjectID aggregate)
+{
+    auto* d = find (aggregate);
+    if (d == nullptr || d->spec.subDeviceUids.empty())
+        return false;
+
+    d->subDeviceReadsUntilActive = 0;
+    firePropertyListeners (aggregate, kAudioAggregateDevicePropertyActiveSubDeviceList);
+    firePropertyListeners (aggregate, kAudioDevicePropertyStreamConfiguration, kAudioObjectPropertyScopeOutput);
     return true;
 }
 

@@ -191,6 +191,13 @@ bool setOutputDataSource (AudioObjectID device, UInt32 dataSource);
 /// listeners. Also without any device-list change.
 bool setJackConnected (AudioObjectID device, bool connected);
 
+/// The HAL finishing an aggregate it was slow to build: its sub-devices that
+/// are present become active at once, and the only word of it is on the
+/// aggregate itself -- its active sub-device list (global scope) and its
+/// output stream configuration. The device list does not change, so a client
+/// listening only to that never hears it.
+bool activateSubDevices (AudioObjectID aggregate);
+
 /// Models `sudo killall coreaudiod`: every aggregate created through
 /// AudioHardwareCreateAggregateDevice is gone, and the ONLY notification is
 /// kAudioHardwarePropertyServiceRestarted on the system object -- the worst

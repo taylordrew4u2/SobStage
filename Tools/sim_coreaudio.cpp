@@ -655,6 +655,112 @@ void aCombinedDeviceThatActivatesLateIsWaitedFor()
            "each with its own two output channels");
 }
 
+/// The combined device's headphone channels are numbered over the microphones
+/// active in it now. One the HAL activates after the device was made (slower
+/// than the publish wait and the one recheck after it), or one that drops out
+/// of it, moves every later jack onto other channel numbers -- and the device
+/// list does not change, so a client listening only to that kept the per-jack
+/// headphone gains laid over the wrong people. The backend watches the
+/// combined device's own shape and reports it through the same callback.
+void theCombinedDeviceChangingShapeReachesTheApp()
+{
+    std::printf ("\nThe combined device changing shape without a device-list change\n");
+    fakeca::reset();
+    namespace q = mma::macaudio;
+
+    auto yetiA = microphone ("Yeti", "uid-yeti-a", 1, fakeca::BufferShape::oneChannelPerBuffer);
+    yetiA.outputChannels = 2;
+    const auto yetiAId = fakeca::addDevice (yetiA);
+    auto yetiB = microphone ("Yeti", "uid-yeti-b", 1, fakeca::BufferShape::oneChannelPerBuffer);
+    yetiB.outputChannels = 2;
+    fakeca::addDevice (yetiB);
+
+    // Made, but its microphones not active in it yet, and not about to be on
+    // their own.
+    fakeca::DeviceSpec combined;
+    combined.name = "SobStage";
+    combined.uid = mma::kOurAggregateUid;
+    combined.transportType = kAudioDeviceTransportTypeAggregate;
+    combined.subDeviceUids = { "uid-yeti-a", "uid-yeti-b" };
+    combined.subDeviceActivationDelayReads = 1000000;
+    const auto combinedId = fakeca::addDevice (combined);
+
+    // Someone's own aggregate from Audio MIDI Setup: not the app's business.
+    fakeca::DeviceSpec theirs;
+    theirs.name = "Aggregate Device";
+    theirs.uid = "user-made-aggregate";
+    theirs.outputChannels = 2;
+    theirs.transportType = kAudioDeviceTransportTypeAggregate;
+    theirs.subDeviceUids = { "uid-yeti-a" };
+    const auto theirsId = fakeca::addDevice (theirs);
+
+    std::atomic<int> notifications { 0 };
+    AudioObjectID remadeId = kAudioObjectUnknown;
+
+    {
+        mma::CoreAudioBackend backend;
+        backend.setDeviceChangeCallback ([&notifications]
+        {
+            notifications.fetch_add (1, std::memory_order_relaxed);
+        });
+
+        (void) backend.enumerateOutputDevices(); // the rescan's pass
+        check (q::readActiveSubDevices (combinedId).empty(),
+               "the combined device has no active microphones yet, so no headphone jacks");
+        check (fakeca::propertyListenerCount (combinedId) == 2,
+               "its active microphones and its output layout are watched, though it has no outputs yet");
+        check (fakeca::propertyListenerCount (theirsId) == 0, "another aggregate is not watched");
+        check (fakeca::propertyListenerCount (yetiAId) == 0, "nor is a microphone's own layout");
+
+        auto before = notifications.load();
+        fakeca::activateSubDevices (combinedId);
+        check (notifications.load() > before,
+               "its microphones activating late reaches the app with no device-list change");
+        check (q::readActiveSubDevices (combinedId).size() == 2,
+               "and the re-read that follows finds both jacks");
+
+        (void) backend.enumerateOutputDevices();
+        check (fakeca::propertyListenerCount (combinedId) == 2, "a later rescan does not watch it twice");
+
+        // coreaudiod restarts: listeners on devices go with the old service.
+        fakeca::restartService();
+        check (fakeca::propertyListenerCount (combinedId) == 0, "a coreaudiod restart drops the watch");
+        (void) backend.enumerateOutputDevices(); // the rescan the restart causes
+        check (fakeca::propertyListenerCount (combinedId) == 2, "and the rescan after it watches it again");
+
+        before = notifications.load();
+        fakeca::activateSubDevices (combinedId);
+        check (notifications.load() > before, "so a change after the restart is heard too");
+
+        backend.setDeviceChangeCallback (nullptr);
+        check (fakeca::propertyListenerCount (combinedId) == 0, "removing the callback removes the watch");
+
+        before = notifications.load();
+        fakeca::activateSubDevices (combinedId);
+        check (notifications.load() == before, "and a later change calls nobody");
+
+        backend.setDeviceChangeCallback ([&notifications]
+        {
+            notifications.fetch_add (1, std::memory_order_relaxed);
+        });
+        check (fakeca::propertyListenerCount (combinedId) == 2, "a new callback watches it again straight away");
+
+        // Replaced (a rename, or a rig change, destroys and re-makes it): the
+        // old one's registration goes on the next rescan, and the new one is
+        // watched.
+        fakeca::removeDevice (combinedId);
+        remadeId = fakeca::addDevice (combined);
+        (void) backend.enumerateOutputDevices();
+        check (fakeca::propertyListenerCount (remadeId) == 2, "a re-made combined device is watched");
+    }
+
+    check (fakeca::propertyListenerCount (remadeId) == 0, "destroying the backend removes the watch");
+
+    const auto before = notifications.load();
+    fakeca::activateSubDevices (remadeId);
+    check (notifications.load() == before, "and a change after the backend is gone reaches nothing");
+}
+
 /// Re-checking an output this app already holds must report it as available.
 /// The hog-mode property reports an owning pid, and "owned by us" and "owned by
 /// someone else" are the same value shape -- so telling them apart is the
@@ -2741,6 +2847,7 @@ int main()
     hogModeIsTakenAndReleased();
     hogModeIsNotTakenOnAMicrophonesOwnOutput();
     aCombinedDeviceThatActivatesLateIsWaitedFor();
+    theCombinedDeviceChangingShapeReachesTheApp();
     theReportedLatencyIsTheRoundTrip();
     aFixedRateOutputIsNotPromisedForMonitoring();
     anOutputThatSupportsTheRateIsStillOffered();

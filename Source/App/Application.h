@@ -953,7 +953,10 @@ private:
     /// The combined device's jacks as of the last output selection, so the
     /// Settings refresh does not ask the HAL twice a second.
     std::vector<CombinedDeviceOutputs> combinedOutputLayout;
+    /// Lays the per-jack headphone gains onto the output stream that is open
+    /// now (applyHeadphoneGains) or about to open (applyHeadphoneGainsFor).
     void applyHeadphoneGains();
+    void applyHeadphoneGainsFor (const std::string& outputDeviceId);
 
     /// Everything a rig rebuild opens, as text. A device-list notification
     /// that leaves this unchanged on a healthy rig -- the app's own combined

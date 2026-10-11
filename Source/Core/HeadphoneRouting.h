@@ -37,6 +37,28 @@ inline std::vector<float> headphoneChannelGains (const std::vector<CombinedDevic
     return gains;
 }
 
+/// The gains for the output stream that is actually open. Only the combined
+/// device (`combinedDeviceId`) is laid out as the microphones' jacks; any
+/// other output, or none, gets the mix on every channel (an empty list).
+///
+/// Keyed on the stream that is open rather than the output chosen: mid-take
+/// the choice can move while the reopen waits for Stop, and per-jack gains
+/// laid onto another device's channels -- or taken off the combined device
+/// still playing -- would silence the wrong person or un-silence the right
+/// one. Worked out again whenever the combined device's layout is read: a
+/// sub-device leaving it, or joining it late, moves every later jack's
+/// channels.
+inline std::vector<float> headphoneChannelGainsForOutput (const std::string& openOutputId,
+                                                          const std::string& combinedDeviceId,
+                                                          const std::vector<CombinedDeviceOutputs>& layout,
+                                                          const std::function<bool (const std::string&)>& hearsMix)
+{
+    if (openOutputId.empty() || openOutputId != combinedDeviceId)
+        return {};
+
+    return headphoneChannelGains (layout, hearsMix);
+}
+
 /// True when at least one microphone in the combined device has a headphone
 /// jack to send the mix to. A rig of microphones with no outputs has nothing
 /// for the combined device to play through.
