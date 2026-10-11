@@ -9,6 +9,8 @@
 #include "MacCoreAudioQueries.h"
 
 #include <CoreAudio/CoreAudio.h>
+#include <CoreAudio/HostTime.h>            // AudioGetCurrentHostTime(): the callback watchdog's clock
+#include <CoreFoundation/CoreFoundation.h> // CFAbsoluteTimeGetCurrent()
 #include <AudioToolbox/AudioToolbox.h>
 #include <unistd.h> // getpid() for hog-mode ownership
 #include <algorithm>
@@ -61,6 +63,10 @@ struct CoreAudioStream
     /// only way this backend can tell is to remember when it was last called
     /// and let the message thread ask. Without it macOS was the one platform
     /// where a stream that stopped after opening produced nothing at all.
+    ///
+    /// Both times are on the host clock (hostClockSeconds()), which stops
+    /// while the Mac sleeps, so a night with the lid closed is not a night of
+    /// silence.
     std::string uid;
     double expectedSampleRate = 0.0;
     double startedSeconds = 0.0;
@@ -184,6 +190,29 @@ static_assert (kOutputHalTransactionTimeout > kRateSettleTimeout + std::chrono::
                "an output open must be allowed to finish settling its sample rate and start");
 static_assert (kOutputHalTransactionTimeout >= kHalTransactionTimeout,
                "the output open does at least as much HAL work as an input open");
+
+/// The callback watchdog's clock: seconds on the Mac's host clock
+/// (mach_absolute_time, which CoreAudio stamps its own IO with). It stops while
+/// the Mac sleeps. steady_clock does not -- libc++ builds it on
+/// CLOCK_MONOTONIC_RAW, which keeps counting through sleep -- and an hour with
+/// the lid closed read as an hour of every IOProc being silent. See
+/// CallbackWatchdogSleepGuard.
+///
+/// Called from the IOProc. §11 allows it: a clock read and a fixed conversion,
+/// with no allocation, lock or logging.
+double hostClockSeconds() noexcept
+{
+    return static_cast<double> (AudioConvertHostTimeToNanos (AudioGetCurrentHostTime())) * 1.0e-9;
+}
+
+/// A clock that keeps counting while the Mac sleeps, set against
+/// hostClockSeconds() only to notice that it slept. The wall clock: a time
+/// sync or someone changing the time can step it, and the worst that does is
+/// look like a short sleep, which only gives the watchdog its grace again.
+double sleepCountingSeconds() noexcept
+{
+    return CFAbsoluteTimeGetCurrent();
+}
 
 bool tryAcquireCallbackLease (CoreAudioStream& stream) noexcept
 {
@@ -1008,10 +1037,8 @@ OSStatus ioProcTrampoline (AudioObjectID /*device*/,
 
     // A timestamp, taken before any work, so the message thread can tell a
     // stream that is running from one the HAL has stopped calling. §11 allows
-    // this: steady_clock::now() allocates nothing and takes no lock.
-    stream->lastCallbackSeconds.store (
-        std::chrono::duration<double> (std::chrono::steady_clock::now().time_since_epoch()).count(),
-        std::memory_order_relaxed);
+    // this: the host clock allocates nothing and takes no lock.
+    stream->lastCallbackSeconds.store (hostClockSeconds(), std::memory_order_relaxed);
 
     // A device that was called dead and has started running again is alive, and
     // the latch has to let go or the next genuine death is never reported.
@@ -1296,8 +1323,7 @@ CoreAudioOpenResult createAndStartStream (CoreAudioStream& stream)
                  cleanup.cleanupSucceeded };
     }
 
-    stream.startedSeconds = std::chrono::duration<double> (
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+    stream.startedSeconds = hostClockSeconds();
     return { true, {}, true, true };
 }
 
@@ -2030,8 +2056,24 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
     // unplugging hardware that is fine.
     constexpr double kSilentSecondsBeforeGivingUp = 5.0;
 
-    const double now = std::chrono::duration<double> (
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+    // On the host clock, as every callback stamp is: it stops while the Mac
+    // sleeps.
+    const double now = hostClockSeconds();
+
+    // Sleep stops every IOProc at once, and the awake seconds around it -- IO
+    // stopping before the Mac sleeps, USB devices starting again after it
+    // wakes, a dark wake with the lid shut -- are not a device failing. The
+    // guard notices the sleep and holds the watchdog until audio runs again.
+    {
+        double latestCallback = 0.0;
+
+        for (const auto& stream : openStreams)
+            if (stream != nullptr && stream->ioProcId != nullptr)
+                latestCallback = std::max (latestCallback,
+                                           stream->lastCallbackSeconds.load (std::memory_order_relaxed));
+
+        watchdogSleepGuard.poll (now, sleepCountingSeconds(), latestCallback);
+    }
 
     for (const auto& stream : openStreams)
     {
@@ -2157,11 +2199,13 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
         if (stream->deviceUnavailableReported)
             continue;
 
-        const double last = stream->lastCallbackSeconds.load (std::memory_order_relaxed);
-        const double silenceBegan = last > 0.0 ? last : stream->startedSeconds;
-
         // Before the first callback, measure from the successful Start call.
-        // Afterward, measure from the most recent callback as before.
+        // Afterward, measure from the most recent callback as before. After a
+        // sleep, from no earlier than audio running again; while waiting for
+        // that, not at all (0).
+        const double silenceBegan = watchdogSleepGuard.silenceBegan (
+            stream->lastCallbackSeconds.load (std::memory_order_relaxed), stream->startedSeconds);
+
         if (silenceBegan <= 0.0 || now - silenceBegan < kSilentSecondsBeforeGivingUp)
             continue;
 

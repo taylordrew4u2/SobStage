@@ -1217,6 +1217,205 @@ void aMicrophoneWhoseFirstCallbackNeverArrivesIsReported()
            "the missing first callback is not repeated on every poll");
 }
 
+/// A microphone and a pair of headphones open together, with a way to run one
+/// IOProc on each, for the sleep scenarios below.
+struct SleepRig
+{
+    AudioObjectID mic = kAudioObjectUnknown;
+    AudioObjectID phones = kAudioObjectUnknown;
+    std::string micUid;
+    Capture capture;
+
+    void open (mma::CoreAudioBackend& backend, const std::string& name)
+    {
+        micUid = "uid-" + name + "-mic";
+        mic = fakeca::addDevice (microphone (name + " Mic", micUid, 1,
+                                             fakeca::BufferShape::oneChannelPerBuffer));
+        phones = fakeca::addDevice (headphones (name + " Phones", "uid-" + name + "-out", 2,
+                                                fakeca::BufferShape::oneChannelPerBuffer));
+
+        check (backend.openInputStream (micUid, 48000.0, 256, capture.callback()), "the mic opens");
+        check (backend.openExclusiveOutputStream (
+                   "uid-" + name + "-out", 48000.0, 256,
+                   [] (const float* const*, int, float* const* outputs, int numOutputs, int numSamples)
+                   {
+                       for (int ch = 0; ch < numOutputs; ++ch)
+                           std::fill (outputs[ch], outputs[ch] + numSamples, 0.0f);
+                   }),
+               "the headphones open");
+    }
+
+    void runMic() { fakeca::pumpInput (mic, { std::vector<float> (256, 0.25f) }); }
+
+    void runPhones()
+    {
+        std::vector<std::vector<float>> written;
+        fakeca::pumpOutput (phones, 256, written);
+    }
+};
+
+/// Sleep stops every IOProc, and the watchdog used a clock that kept counting
+/// through it: an hour with the lid closed read as an hour of silence, so on
+/// waking every mic was "stopped sending audio. Unplug it and plug it back
+/// in.", the headphones "stopped accepting audio", and the app tore the whole
+/// rig down and reopened it while its USB devices were still waking up. The
+/// awake seconds around the sleep -- the Mac taking a moment to fall asleep
+/// after IO stopped, the devices taking a moment to start again after waking
+/// -- added up to the same false report.
+void aMacThatSleepsAndWakesDoesNotAccuseItsDevices()
+{
+    std::printf ("\nThe Mac sleeps with the rig open, then wakes\n");
+    fakeca::reset();
+
+    mma::CoreAudioBackend backend;
+    SleepRig rig;
+    rig.open (backend, "sleepy");
+
+    rig.runMic();
+    rig.runPhones();
+    check (backend.takeStreamFailures().empty(), "a running rig is not accused");
+
+    // The lid closes. The HAL stops IO, and the Mac takes a few seconds,
+    // awake, to actually go to sleep.
+    fakeca::passTime (3.0);
+    check (backend.takeStreamFailures().empty(), "the moments before the Mac falls asleep are not a failure");
+
+    fakeca::sleepSystem (3600.0);
+    check (backend.takeStreamFailures().empty(),
+           "waking after an hour asleep does not call every device dead");
+
+    // USB devices take their time to start again after a wake.
+    fakeca::passTime (4.0);
+    check (backend.takeStreamFailures().empty(), "nor while the devices are starting again");
+    fakeca::passTime (4.0);
+    check (backend.takeStreamFailures().empty(), "however long they take");
+
+    rig.runMic();
+    rig.runPhones();
+    check (backend.takeStreamFailures().empty(),
+           "audio coming back is not news, since nothing was said about it going");
+
+    // After a wake the watchdog is as watchful as before.
+    fakeca::passTime (5.5);
+    const auto reported = backend.takeStreamFailures();
+    check (reported.size() == 2, "a rig that stops after waking is still reported, both devices");
+    backend.closeAllStreams();
+}
+
+/// A dark wake: the Mac wakes with the lid shut for maintenance, the app runs
+/// and polls, and audio stays off -- for a minute, sometimes. That is not every
+/// device failing either. Once the Mac is properly awake and the rest of the
+/// rig is running again, a mic that did not come back is reported as usual.
+void aDarkWakeIsNotAFailureButAMicThatNeverReturnsIs()
+{
+    std::printf ("\nA dark wake with the lid shut, then a mic that never comes back\n");
+    fakeca::reset();
+
+    mma::CoreAudioBackend backend;
+    SleepRig rig;
+    rig.open (backend, "dark");
+
+    rig.runMic();
+    rig.runPhones();
+    check (backend.takeStreamFailures().empty(), "a running rig is not accused");
+
+    fakeca::sleepSystem (1800.0);
+
+    bool quiet = true;
+    for (int second = 0; second < 45; ++second)
+    {
+        fakeca::passTime (1.0);
+        quiet = quiet && backend.takeStreamFailures().empty();
+    }
+
+    check (quiet, "45 seconds of a dark wake, audio off, are not a failure");
+
+    fakeca::sleepSystem (1800.0);
+    check (backend.takeStreamFailures().empty(), "nor is going back to sleep and then waking properly");
+
+    // Properly awake: the headphones start again, the mic never does.
+    rig.runPhones();
+    check (backend.takeStreamFailures().empty(), "the headphones starting again is not news");
+
+    fakeca::passTime (5.5);
+    rig.runPhones();
+    const auto reported = backend.takeStreamFailures();
+    check (reported.size() == 1 && reported.front().deviceId == rig.micUid,
+           "the mic that never came back is reported once the rest of the rig is running");
+    check (! reported.empty()
+               && reported.front().reason.find ("stopped sending audio") != std::string::npos,
+           "with the usual advice");
+    backend.closeAllStreams();
+}
+
+/// Holding the watchdog until audio runs again must not hold it forever: a Mac
+/// whose audio never starts again after waking still hears about it.
+void aWakeAfterWhichNothingStartsAgainIsStillReported()
+{
+    std::printf ("\nA Mac that wakes and whose audio never starts again\n");
+    fakeca::reset();
+
+    const auto id = fakeca::addDevice (microphone ("Stuck Mic", "uid-stuck-after-wake", 1,
+                                                   fakeca::BufferShape::oneChannelPerBuffer));
+    mma::CoreAudioBackend backend;
+    Capture capture;
+
+    check (backend.openInputStream ("uid-stuck-after-wake", 48000.0, 256, capture.callback()), "the mic opens");
+    fakeca::pumpInput (id, { std::vector<float> (256, 0.25f) });
+    check (backend.takeStreamFailures().empty(), "a running mic is not accused");
+
+    fakeca::sleepSystem (600.0);
+    check (backend.takeStreamFailures().empty(), "waking is not a failure");
+
+    constexpr double kWait = mma::CallbackWatchdogSleepGuard::kMaxWaitForAudioSeconds;
+    fakeca::passTime (kWait - 1.0);
+    check (backend.takeStreamFailures().empty(), "the watchdog waits for audio to start again");
+
+    fakeca::passTime (2.0);
+    check (backend.takeStreamFailures().empty(), "then gives the mic the usual few seconds");
+
+    fakeca::passTime (5.5);
+    const auto reported = backend.takeStreamFailures();
+    check (reported.size() == 1 && reported.front().deviceId == "uid-stuck-after-wake",
+           "and a mic that never came back is reported");
+    backend.closeAllStreams();
+}
+
+/// A mic that really had stopped before the Mac slept, and is sending again
+/// after it wakes, has to be told as sending again -- its channel was
+/// silenced on the dead report, and only the resume gives it back. The resume
+/// compares the report and the callback on one clock; re-arming the watchdog
+/// by rewriting stamps would have broken that.
+void aMicCalledDeadBeforeSleepThatReturnsAfterWakeIsResumed()
+{
+    std::printf ("\nA mic called dead before the Mac slept, back after it wakes\n");
+    fakeca::reset();
+
+    const auto id = fakeca::addDevice (microphone ("Napping Mic", "uid-napping", 1,
+                                                   fakeca::BufferShape::oneChannelPerBuffer));
+    mma::CoreAudioBackend backend;
+    Capture capture;
+
+    check (backend.openInputStream ("uid-napping", 48000.0, 256, capture.callback()), "the mic opens");
+    fakeca::pumpInput (id, { std::vector<float> (256, 0.25f) });
+    check (backend.takeStreamFailures().empty(), "a running mic is not accused");
+
+    fakeca::passTime (5.5);
+    const auto dead = backend.takeStreamFailures();
+    check (dead.size() == 1 && dead.front().kind != mma::StreamFailureKind::resumed,
+           "a mic that stops while the Mac is awake is reported");
+
+    fakeca::sleepSystem (600.0);
+    check (backend.takeStreamFailures().empty(), "and is not reported again on waking");
+
+    fakeca::pumpInput (id, { std::vector<float> (256, 0.25f) });
+    const auto resumed = backend.takeStreamFailures();
+    check (resumed.size() == 1 && resumed.front().kind == mma::StreamFailureKind::resumed
+               && resumed.front().deviceId == "uid-napping",
+           "its audio after the wake is reported as the mic sending again");
+    backend.closeAllStreams();
+}
+
 /// Some class-compliant USB drivers block the caller inside AudioDeviceStart
 /// for minutes. The app window is created only after audio initialisation, so
 /// an unbounded call makes the whole application appear never to launch.
@@ -2480,6 +2679,10 @@ int main()
     aMacThatWillNotWatchTheRigSaysSo();
     aMicrophoneThatGoesQuietAfterOpeningIsReported();
     aMicrophoneWhoseFirstCallbackNeverArrivesIsReported();
+    aMacThatSleepsAndWakesDoesNotAccuseItsDevices();
+    aDarkWakeIsNotAFailureButAMicThatNeverReturnsIs();
+    aWakeAfterWhichNothingStartsAgainIsStillReported();
+    aMicCalledDeadBeforeSleepThatReturnsAfterWakeIsResumed();
     aStuckInputStartIsBoundedAndCleanedUp();
     aDriverThatRetainsListenerClientDataIsQuarantined();
     anUnpluggedInterfaceDoesNotQuarantineTheSurvivor();

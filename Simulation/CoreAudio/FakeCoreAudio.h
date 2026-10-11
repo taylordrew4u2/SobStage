@@ -135,7 +135,20 @@ struct DeviceSpec
 };
 
 /// Clears every device, listener and IOProc. Call between scenarios.
+///
+/// The clocks are not reset: like the Mac's, they only ever move forward.
 void reset();
+
+/// Awake time passing at once, without the harness waiting for it: the host
+/// clock (AudioGetCurrentHostTime) and the wall clock (CFAbsoluteTimeGetCurrent)
+/// both move on by `seconds`. Nothing is delivered meanwhile -- an IOProc runs
+/// only when pumped -- so this is also every device going quiet for that long.
+void passTime (double seconds);
+
+/// The Mac sleeping for `seconds`: the wall clock moves on and the host clock
+/// does not, which is what sleep does to mach_absolute_time and the time of
+/// day. No IOProc runs across it.
+void sleepSystem (double seconds);
 
 /// false makes AudioObjectAddPropertyListener fail, which models a Mac that
 /// will not tell the app about devices coming and going.

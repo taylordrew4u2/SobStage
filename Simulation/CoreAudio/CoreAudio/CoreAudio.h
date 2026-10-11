@@ -29,6 +29,7 @@ constexpr uint32_t mmaFourCC (char a, char b, char c, char d)
 
 using OSStatus = int32_t;
 using UInt32   = uint32_t;
+using UInt64   = uint64_t;
 using SInt32   = int32_t;
 using Float64  = double;
 using Boolean  = unsigned char;
@@ -94,6 +95,19 @@ void CFDictionarySetValue (CFMutableDictionaryRef dictionary, const void* key, c
 CFNumberRef CFNumberCreate (CFAllocatorRef allocator, CFNumberType type, const void* valuePtr);
 
 void CFRelease (CFTypeRef value);
+
+/// The wall clock, in seconds since 2001. It keeps counting while the Mac
+/// sleeps; fakeca::sleepSystem() moves it on without moving the host clock.
+using CFTimeInterval = double;
+using CFAbsoluteTime = CFTimeInterval;
+CFAbsoluteTime CFAbsoluteTimeGetCurrent();
+
+// --- Host time (<CoreAudio/HostTime.h>) ---------------------------------------
+// mach_absolute_time, which CoreAudio stamps its IO with. It stops while the
+// Mac sleeps. Here a host tick is a nanosecond (on Apple Silicon it is not,
+// which is why callers convert rather than assume).
+UInt64 AudioGetCurrentHostTime();
+UInt64 AudioConvertHostTimeToNanos (UInt64 hostTime);
 
 // --- Objects and properties -------------------------------------------------
 using AudioObjectID = UInt32;

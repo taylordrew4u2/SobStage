@@ -255,6 +255,10 @@ files really are empty and the card says so instead of calling it saved.
   the folder becomes `2026-08-27_1030_<name>`. Leaving it empty is fine.
 - **Spacebar** mutes and unmutes the headphones instantly. Recording is never
   affected by muting.
+- **The Mac sleeping between takes (macOS).** Close the lid with the app open
+  and, when the Mac wakes, the app waits for your microphones and headphones
+  to start again rather than calling them unplugged. One that still hasn't, a
+  few seconds after the rest, is reported as usual.
 - **Help** is in the masthead beside Settings. If a meter is flat or a take
   came out silent, start there: it lists the causes in the order they actually
   turn up, with what to do about each.

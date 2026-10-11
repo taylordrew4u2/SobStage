@@ -229,6 +229,7 @@ Run on volume selection and again on arming; cache per volume ID with a 30-day e
   before recording can begin.
 - Discard any recovered file containing under 1 second of audio; report it as empty rather than presenting an unplayable stub.
 - **Inhibit system sleep, screensaver, and display sleep for the duration of a recording.** A laptop sleeping mid-take is a common and total failure.
+- A Mac that sleeps anyway (its lid closed between takes, or on battery mid-take, which no assertion prevents) must not wake to a rig of "unplugged" devices. CoreAudio says nothing when a device stops calling its IOProc, so the backend calls a stream dead after 5 s without a callback; that watchdog runs on the host clock, which stops during sleep. Sleep itself is noticed by the wall clock gaining on the host clock between polls, and the watchdog then waits until audio runs on any open device (the Mac fully awake, audio back on: not a dark wake with the lid shut) before giving every device its 5 s again. If nothing runs within a minute it resumes anyway, so a rig that never comes back is still reported.
 - Monitor for thermal throttling and sustained CPU pressure above 80% for 30 seconds; warn before it causes dropouts.
 ---
 ## 7. App-facing device strategy

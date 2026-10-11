@@ -51,6 +51,7 @@ add_executable(mma_core_tests
     test_FilesystemStatusProbe.cpp
     test_DetachedRefreshCache.cpp
     test_StreamFailurePolicy.cpp
+    test_CallbackWatchdogSleepGuard.cpp
     test_FfmpegLocator.cpp
     test_AlarmTone.cpp
     test_QuitGate.cpp

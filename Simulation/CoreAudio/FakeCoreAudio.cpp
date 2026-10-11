@@ -5,7 +5,9 @@
 #include <unistd.h> // pid_t, and getpid() where the platform has it
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -147,6 +149,24 @@ State& state()
 {
     static State s;
     return s;
+}
+
+// The Mac's two clocks. The host clock is real time plus the awake time
+// passTime() skipped; the wall clock is that plus every simulated sleep.
+// Atomics, and outside State, because the IOProc reads the host clock on
+// whichever thread pumps it.
+std::atomic<int64_t> skippedAwakeNanos { 0 };
+std::atomic<int64_t> sleptNanos { 0 };
+
+int64_t realNanos()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds> (
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+int64_t toNanos (double seconds)
+{
+    return seconds > 0.0 ? static_cast<int64_t> (std::llround (seconds * 1.0e9)) : 0;
 }
 
 /// A device's stream object. Derived rather than registered: CoreAudio hands
@@ -363,6 +383,27 @@ CFNumberRef CFNumberCreate (CFAllocatorRef, CFNumberType type, const void* value
     auto* n = new FakeNumber();
     std::memcpy (&n->value, valuePtr, sizeof (int));
     return toRef<CFNumberRef> (n);
+}
+
+CFAbsoluteTime CFAbsoluteTimeGetCurrent()
+{
+    // Seconds since 2001 for a Mac today. Being nowhere near the host clock's
+    // values also makes a mix-up between the two clocks fail loudly.
+    constexpr double kSecondsSince2001 = 8.0e8;
+
+    return kSecondsSince2001
+         + static_cast<double> (realNanos() + skippedAwakeNanos.load (std::memory_order_relaxed)
+                                + sleptNanos.load (std::memory_order_relaxed)) * 1.0e-9;
+}
+
+UInt64 AudioGetCurrentHostTime()
+{
+    return static_cast<UInt64> (realNanos() + skippedAwakeNanos.load (std::memory_order_relaxed));
+}
+
+UInt64 AudioConvertHostTimeToNanos (UInt64 hostTime)
+{
+    return hostTime;
 }
 
 void CFRelease (CFTypeRef value)
@@ -1008,6 +1049,16 @@ void reset()
     state().allowPropertyListeners = true;
     state().allowSystemPropertyListenerRemoval = true;
     state().aggregatesCreated = 0;
+}
+
+void passTime (double seconds)
+{
+    skippedAwakeNanos.fetch_add (toNanos (seconds), std::memory_order_relaxed);
+}
+
+void sleepSystem (double seconds)
+{
+    sleptNanos.fetch_add (toNanos (seconds), std::memory_order_relaxed);
 }
 
 void setPropertyListenersAllowed (bool allowed)

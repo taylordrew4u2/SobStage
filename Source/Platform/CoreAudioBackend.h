@@ -5,6 +5,7 @@
 
 #if JUCE_MAC
 
+#include "CallbackWatchdogSleepGuard.h"
 #include <memory>
 #include <string>
 
@@ -104,6 +105,11 @@ private:
     /// takeStreamFailures(); both are message-thread today, and this makes the
     /// flag correct without depending on that staying true.
     std::atomic<bool> bufferSizeWasRefused { false };
+
+    /// Keeps the callback watchdog in takeStreamFailures() from calling the
+    /// rig dead because the Mac slept. Message thread, as that is.
+    CallbackWatchdogSleepGuard watchdogSleepGuard;
+
     // A timed-out HAL call is deliberately left on its worker until CoreAudio
     // returns and that worker can tear the IOProc down. The registry outlives
     // this backend when necessary and stops device-list churn from launching a
