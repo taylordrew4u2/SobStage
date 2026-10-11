@@ -332,9 +332,11 @@ this feature works out for you.
 - On a Mac, a camera or capture card that sends only black (no signal, wrong
   input mode, or an HDCP-protected source) is named on its tile after about
   1.5 s, and an HDMI capture dongle is switched to a 30 fps mode when the one
-  picked by default is slower. A camera with a 4K mode that runs at 30 fps
-  (Continuity Camera, a 4K webcam, a USB 3 capture card) records in 4K; a
-  USB 2 capture dongle tops out at 1080p whatever its HDMI input accepts.
+  picked by default is slower. It is switched again each time it reopens (a
+  Quality change, or switching it off and on). A camera with a 4K mode that
+  runs at 30 fps (Continuity Camera, a 4K webcam, a USB 3 capture card)
+  records in 4K; a USB 2 capture dongle tops out at 1080p whatever its HDMI
+  input accepts.
 - **Quality, per camera** (Cameras panel): **Best (up to 4K)**, **1080p** or
   **720p (smaller files)**. Each camera row says what it is actually running at
   ("Running at 3840 x 2160, 30 fps"), and the free-space and card-speed checks
