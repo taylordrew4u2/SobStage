@@ -1126,6 +1126,12 @@ void MainComponent::refreshStatus()
                 savingLine = "Writing " + juce::String ((int) files.size()) + " files, "
                            + juce::File::descriptionOfSizeInBytes (total) + " so far";
         }
+        else
+        {
+            // Between takes the line is otherwise empty: a quit waiting for
+            // the combined video or podcast copy is said here.
+            savingLine = quitPendingNote;
+        }
 
         if (savingLine != lastSavingLine)
         {
@@ -1987,6 +1993,22 @@ void MainComponent::growWindowToFitWidth (int contentWidth)
                                    window->getX());
 
     window->setTopLeftPosition (left, window->getY());
+}
+
+void MainComponent::setQuitPendingNote (const juce::String& note)
+{
+    if (note == quitPendingNote)
+        return;
+
+    quitPendingNote = note;
+
+    // Now rather than at the next status tick, so the line appears with the
+    // answer that caused it. During a take the line belongs to the files.
+    if (! application.isRecording() && note != lastSavingLine)
+    {
+        lastSavingLine = note;
+        mainScreen.setFilesBeingSavedText (note);
+    }
 }
 
 void MainComponent::paint (juce::Graphics& g)

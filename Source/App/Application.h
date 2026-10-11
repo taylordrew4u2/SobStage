@@ -144,6 +144,18 @@ public:
     /// Quitting cancels it, so the user is asked before it is thrown away.
     juce::String unfinishedAfterTakeWork() const;
 
+    /// What went wrong with the take that just stopped, in words for a quit
+    /// question: the card stopped answering, the files hold no sound, a
+    /// camera could not finish its movie. Empty when nothing did, or when the
+    /// saved-take card already showed it before the quit was asked for. A
+    /// take stopped on the way out used to quit before that card could open.
+    juce::String unseenProblemWithLastTake() const;
+
+    /// The user chose to stay open after asking to quit. A take the quit
+    /// stopped is the saved-take card's to report from here on, so a later
+    /// quit does not ask about it again.
+    void quitCalledOff();
+
     /// A take is being written right now.
     bool isRecording() const { return recordingEngine.getState() == RecordingState::Recording; }
 
@@ -804,6 +816,11 @@ private:
 
     // §6.2: a take has finished and the UI has not yet shown where it went.
     bool savedTakePending = false;
+
+    // The last take was stopped by a quit, or finished while a quit waited
+    // for it: its result counts as unseen even once the card has opened.
+    // See prepareToQuit() and unseenProblemWithLastTake().
+    bool lastTakeFinishedWhileQuitting = false;
 
     // setProofStarvedForTesting(): the UI walk's take that writes nothing.
     bool proofStarvedForTesting = false;

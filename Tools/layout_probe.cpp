@@ -8,6 +8,7 @@
 #include "UI/SetupGuidePanel.h"
 #include "UI/RecoveredTakesPanel.h"
 #include "UI/CameraPreviewCover.h"
+#include "Core/QuitQuestions.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -767,6 +768,42 @@ int main()
                              slider != nullptr ? slider->getWidth() : 0);
                 failures += ok ? 0 : 1;
             }
+        }
+    }
+
+    // --- A quit waiting for the after-take work says so, whole --------------
+    //
+    // "Quit When Done" used to leave the screen exactly as it was, so the
+    // natural next move was to quit again -- which cancelled the combined
+    // video. The line under the record button now says the app is waiting,
+    // and it has to be readable at the narrowest window, longest wording.
+    {
+        std::printf ("\nA pending quit is readable under the record button\n");
+
+        const juce::String pending (mma::QuitQuestions::pendingQuitLine (
+            "the podcast copy and the combined video"));
+
+        for (const int width : { 1180, 707, 560 })
+        {
+            mma::MainScreen s;
+            s.setMicCount (2);
+            s.setFilesBeingSavedText (pending);
+
+            s.setVisibleHeight (560);
+            s.setSize (width, juce::jmax (560, s.getRequiredHeight()));
+            s.resized();
+
+            auto* label = findLabel (s, pending);
+            const int labelWidth = label != nullptr ? label->getWidth() : 0;
+            const int needed = label != nullptr
+                                   ? juce::roundToInt (label->getFont().getStringWidthFloat (pending))
+                                         + label->getBorderSize().getLeftAndRight()
+                                   : 1;
+            const bool ok = label != nullptr && label->isVisible() && labelWidth >= needed;
+
+            std::printf ("  %s  %4dpx: line %3dpx, sentence needs %3dpx\n",
+                         ok ? "PASS" : "FAIL", width, labelWidth, needed);
+            failures += ok ? 0 : 1;
         }
     }
 

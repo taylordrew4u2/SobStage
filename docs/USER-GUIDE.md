@@ -279,6 +279,19 @@ files really are empty and the card says so instead of calling it saved.
   naming every file that was written, with its size, plus the backup copy's
   location and an **Open the folder** button. If the files came out empty it
   says so, and says to check the mute switches on the mics.
+- **Quitting asks before it costs you anything.** During a take, quitting
+  asks first (*Keep Recording* is the default). If the take it stops turns out
+  to have a problem — the card stopped answering, the files hold no sound, a
+  camera couldn't finish its movie — the app says so before it closes;
+  *Don't Quit* keeps it open and shows the take. If the combined video or the
+  podcast-ready copy is still being made, *Quit When Done* closes the app by
+  itself once it is finished, and the line under the record button says so
+  meanwhile ("SobStage will quit once it has finished the combined video.").
+  Quitting again while it waits asks again; only *Quit Now* cancels that file.
+  If SobStage is hidden or behind another app when you quit it from the Dock,
+  it comes to the front (or its Dock icon bounces) to ask. On a Mac, a Shut
+  Down, Restart or Log Out stops when SobStage asks a question: once SobStage
+  has closed, choose it again.
 
 ## Loudness — aiming at where the take is going
 

@@ -21,6 +21,7 @@
 #include "../Core/UpdateCheck.h"
 #include "../Core/ShowTemplate.h"
 #include "../Core/SlowMicrophoneNotice.h"
+#include "../Core/QuitQuestions.h"
 #include "../Platform/NullBackend.h"
 #include "CheckedTextWrite.h"
 #include <algorithm>
@@ -2799,6 +2800,7 @@ void Application::toggleRecording()
 
                 recordStartProblem.clear();
                 takeCardUnresponsive = false;
+                lastTakeFinishedWhileQuitting = false;
                 mirrorMissingReported = false;
                 mirrorFinalizeFailureReported = false;
                 mirrorLowSpaceNoticePending = false;
@@ -3357,6 +3359,13 @@ bool Application::pollCameraFinalization()
 
 bool Application::prepareToQuit()
 {
+    // A take this quit stops, or one whose movies are still being finished,
+    // reports how it went while the app is on its way out. The saved-take
+    // card may open for it in that moment -- the screen keeps refreshing
+    // while the quit waits -- but nobody has had a chance to read it.
+    if (isRecording() || pendingStoppedTakeCompletion != nullptr)
+        lastTakeFinishedWhileQuitting = true;
+
     if (isRecording())
     {
         if (stopReason.isEmpty())
@@ -3378,6 +3387,35 @@ juce::String Application::unfinishedAfterTakeWork() const
     if (podcast)             return "the podcast copy";
     if (combined)            return "the combined video";
     return {};
+}
+
+juce::String Application::unseenProblemWithLastTake() const
+{
+    StoppedTakeOutcome outcome;
+
+    // The two notices are consumed together, by the saved-take card as it
+    // opens. A take that finished during the quit counts as unseen even so:
+    // the card can open in the moment before the app closes over it.
+    outcome.alreadyShown = ! savedTakePending && ! cardRemovalPending
+                        && ! lastTakeFinishedWhileQuitting;
+
+    if (cardRemovalPending)
+        outcome.cardNotice = cardRemovalNotice.message;
+
+    outcome.cardStoppedAnswering = takeCardUnresponsive;
+    outcome.verdict = lastTakeVerdict;
+    outcome.folderName = juce::File (lastSessionFolder).getFileName().toStdString();
+
+    // Kept by the camera side until the next take starts, so it is this one's.
+    outcome.cameraProblem = cameraController.getRecordingFinalizationProblem().toStdString();
+
+    return juce::String (describeUnseenTakeProblem (outcome));
+}
+
+void Application::quitCalledOff()
+{
+    // Staying open: the saved-take card shows the take, as for any other stop.
+    lastTakeFinishedWhileQuitting = false;
 }
 
 juce::String Application::resolveSessionFolderName (juce::Time now, const juce::String& name) const

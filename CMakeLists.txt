@@ -69,6 +69,7 @@ add_library(mma_core STATIC
     Source/Core/ActivityJournal.cpp
     Source/Core/CardRemovalNotice.cpp
     Source/Core/QuitGate.cpp
+    Source/Core/QuitQuestions.cpp
     Source/Core/FailedOpenRetry.cpp
     Source/Core/BatteryRecordingNotice.cpp
     Source/Core/PreflightThroughputTest.cpp
@@ -285,6 +286,13 @@ if (MMA_BUILD_APP)
         set_source_files_properties(Source/Platform/WindowOcclusion.mm
                                     PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
         target_link_libraries(SobStage PRIVATE "-framework AppKit")
+
+        # A quit question asked while the app is hidden or behind another app
+        # unhides it and bounces its Dock icon. Elsewhere the header's inline
+        # stub does nothing.
+        target_sources(SobStage PRIVATE Source/Platform/AppActivation.mm)
+        set_source_files_properties(Source/Platform/AppActivation.mm
+                                    PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 
         add_executable(mac_movie_combiner_check
             Tools/mac_movie_combiner_check.mm

@@ -55,6 +55,7 @@ add_executable(mma_core_tests
     test_FfmpegLocator.cpp
     test_AlarmTone.cpp
     test_QuitGate.cpp
+    test_QuitQuestions.cpp
     test_WriteSafetyActions.cpp
     test_FailedOpenRetry.cpp
     test_BatteryRecordingNotice.cpp
