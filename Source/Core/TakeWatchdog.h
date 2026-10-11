@@ -19,7 +19,7 @@ struct TakeHealth
     /// other's: a twin that never started looked like a loss at the start of
     /// the take, and the latch then hid the real loss of the other. Empty
     /// falls back to the name. Last, so `{ name, present }` still builds.
-    struct Camera { std::string name; bool present = true; std::string id; };
+    struct Camera { std::string name; bool present = true; std::string id {}; };
 
     std::vector<Mic> mics;
     std::vector<Camera> cameras;
