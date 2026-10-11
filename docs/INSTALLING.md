@@ -237,8 +237,10 @@ ID signed build keeps the permission across updates.
   destination-status polling use the same detached, one-at-a-time pattern, and
   a result for a destination you have since changed is ignored. The app
   benchmarks a new destination away from the window thread before enabling the
-  record button (§6.4). The benchmark measures the card once; whether that is
-  fast enough is decided fresh each time you reach for record, so switching a
+  record button (§6.4). The benchmark measures the card once (another card put
+  in at the same `/Volumes` name is a different card, and is measured afresh);
+  whether that is fast enough is decided fresh each time you reach for record,
+  so switching a
   camera on can block arming a card that was fine for the microphones alone —
   and the message says the cameras are what did it. A benchmark that cannot be
   started or completed blocks recording with an explanation; it cannot silently

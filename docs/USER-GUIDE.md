@@ -398,6 +398,13 @@ this feature works out for you.
   includes the video, because a card that keeps up with eight microphones can
   still be too slow once a camera is writing alongside them. Refusing before the
   take is the entire point — §6.4 says never degrade mid-take.
+- **Swapping cards between sets is noticed.** A Mac puts every card at
+  `/Volumes/<its name>`, so two cards with the same name (say, both formatted
+  in the same camera) land at the same save location. When the card there is
+  taken out or replaced, SobStage says so, and checks the new card's speed and
+  format and looks for interrupted takes on it before Record turns back on — a
+  FAT32 card no longer slips in on the last card's results and stops the
+  camera 4 GB into the show. Record also looks once more as you press it.
 - **Each camera says what it will write** — `Writes V01_Kitchen-Cam.mov`,
   under its name, updating as you rename it. Renaming is the moment you want to
   know what the name does. During a take it says `Recording to` the file it is

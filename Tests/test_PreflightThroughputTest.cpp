@@ -259,3 +259,49 @@ TEST_CASE (PreflightThroughputTest_AReadOnlyWindowsDriveIsNotCalledALockedCard)
     REQUIRE (PreflightThroughputTest::writeFailureReason (ENOSPC, Kind::NTFS).find ("full")
              != std::string::npos);
 }
+
+// §6.4's verdict is about the card it measured. A different card at the same
+// path -- or no card -- makes it say nothing, but only on evidence gathered
+// after the verdict: a look begun while the check was still running, or a
+// status worker stuck on an old answer, must not keep throwing fresh verdicts
+// away.
+TEST_CASE (PreflightThroughputTest_AVerdictIsOnlyForTheCardItMeasured)
+{
+    using Clock = std::chrono::steady_clock;
+
+    VolumeFingerprint exfatCard;
+    exfatCard.known = true;
+    exfatCard.mountRoot = "/Volumes/NO NAME";
+    exfatCard.fsType = "exfat";
+    exfatCard.device = "/dev/disk4s1";
+    exfatCard.uuid = "6A1F-0C22";
+    exfatCard.totalBytes = 64ull * 1000 * 1000 * 1000;
+
+    auto fat32Card = exfatCard;
+    fat32Card.fsType = "msdos";
+    fat32Card.uuid = "51B0-9E14";
+    fat32Card.totalBytes = 32ull * 1000 * 1000 * 1000;
+
+    PreflightResult verdict;
+    verdict.passed = true;
+    verdict.measuredVolume = exfatCard;
+    verdict.measuredVolumeConfirmedAt = Clock::now();
+
+    const auto after = verdict.measuredVolumeConfirmedAt + std::chrono::milliseconds (500);
+    const auto before = verdict.measuredVolumeConfirmedAt - std::chrono::milliseconds (500);
+
+    REQUIRE_FALSE (PreflightThroughputTest::measuredAnotherDrive (verdict, exfatCard, after));
+    REQUIRE (PreflightThroughputTest::measuredAnotherDrive (verdict, fat32Card, after));
+
+    // Older than the verdict: not weighed against it.
+    REQUIRE_FALSE (PreflightThroughputTest::measuredAnotherDrive (verdict, fat32Card, before));
+    REQUIRE_FALSE (PreflightThroughputTest::measuredAnotherDrive (
+        verdict, fat32Card, verdict.measuredVolumeConfirmedAt));
+
+    // Nothing to compare: a verdict that measured nothing, or a look that
+    // could not tell.
+    PreflightResult nothingMeasured;
+    nothingMeasured.couldNotWrite = true;
+    REQUIRE_FALSE (PreflightThroughputTest::measuredAnotherDrive (nothingMeasured, fat32Card, after));
+    REQUIRE_FALSE (PreflightThroughputTest::measuredAnotherDrive (verdict, VolumeFingerprint {}, after));
+}

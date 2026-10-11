@@ -1383,6 +1383,28 @@ private:
     /// Runs the destination scan again once the drive check has written to a
     /// destination that was missing when it was scanned.
     void rescanDestinationIfItHasAppeared();
+
+    /// §6.4: a drive check describes the card it measured, and the save
+    /// location is a path that another card can take over -- macOS mounts
+    /// every card at /Volumes/<its label>. True when the status probe, in a
+    /// look begun after `verdict` was reached, found a different volume there
+    /// (or none). Reads only the probe's last answer, never the drive.
+    bool probeSeesAnotherDriveThanChecked (const PreflightResult& verdict) const;
+    /// Between takes, from the status tick: when the probe sees a different
+    /// drive at the save location than the one checked, forgets that check and
+    /// checks the drive that is there now, for speed, format and interrupted
+    /// takes alike.
+    void recheckDestinationIfItsDriveChanged();
+    /// What applyDestinationFolder does for a fresh claim about the same
+    /// path: drops the drive check and the interrupted-take scan, and starts
+    /// both again for whatever is there now. Says so in the activity list.
+    void forgetCheckedDriveAtDestination();
+    /// At Record, the drive at the save location is looked at once more, under
+    /// a deadline, and compared with the one checked: the probe's last look
+    /// can be half a second old. Empty when it is the same drive (or nothing
+    /// can be told); otherwise why the take can't start, with the check
+    /// already restarted for the drive that is there.
+    juce::String confirmDestinationIsTheCheckedDrive();
     mutable std::vector<RecoveredSession> recoveredSessions;
     /// Folders of same-named copies hidden behind a shown recovered take.
     mutable std::vector<std::string> hiddenRecoveredFolders;

@@ -2725,6 +2725,14 @@ void Application::toggleRecording()
             return;
         }
 
+        // The drive check above may be up to one probe tick old; the card
+        // could have been swapped in that time.
+        if (const auto changed = confirmDestinationIsTheCheckedDrive(); changed.isNotEmpty())
+        {
+            recordStartProblem = changed;
+            return;
+        }
+
         std::vector<RecordingChannel> channels;
         for (const auto& d : deviceManager.getDevices())
         {
@@ -3944,6 +3952,13 @@ juce::String Application::getRecordDisabledReason() const
             : juce::String ("Couldn't confirm this drive is fast enough yet. Choose another "
                             "location, or reconnect this drive and try again.");
 
+    // The verdict is for the card that was measured, and the probe has since
+    // found another one -- or none -- at this path. The status tick is about
+    // to throw it away and check the drive that is there; until then it arms
+    // nothing.
+    if (probeSeesAnotherDriveThanChecked (it->second))
+        return "Checking this drive is fast enough...";
+
     if (it != preflightResults.end())
     {
         // The benchmark measured the card; the gate is about this take. They
@@ -4174,6 +4189,13 @@ Application::PreflightBackgroundResult Application::runPreflight (
     if (cancelled.load (std::memory_order_acquire))
         return completed;
 
+    // Which card this measures, read before the test file goes on it. The
+    // verdict is kept for the path, and the same path can later hold another
+    // card; the status probe and Record compare what is there with this, so a
+    // swapped card is checked again rather than armed on the old one's speed
+    // and format.
+    const auto measuredVolume = volumeFingerprintOf (completed.destination);
+
     // Whatever an interrupted earlier check left here goes first. This worker
     // holds the destination's lease, so no other check can be writing one.
     for (const auto& f : folder.findChildFiles (juce::File::findFiles,
@@ -4313,6 +4335,13 @@ Application::PreflightBackgroundResult Application::runPreflight (
     }
 
     result.limitedTo4GiBFiles = PreflightThroughputTest::needsReformat (filesystemKind);
+
+    // Stamped once the test file is gone. A card swapped while it was being
+    // measured is still described by the card it began on, so the probe's
+    // first look after this finds a different one there and has it checked
+    // from the start -- and Record compares again before it arms.
+    result.measuredVolume = measuredVolume;
+    result.measuredVolumeConfirmedAt = std::chrono::steady_clock::now();
 
     completed.result = std::move (result);
     completed.couldNotWrite = couldNotWrite;
@@ -5502,6 +5531,11 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // A save location that was not mounted when it was checked for an
     // interrupted take is checked again once it is.
     rescanDestinationIfItHasAppeared();
+
+    // A different card put in at the save location's path -- or the card
+    // taken out -- is checked from scratch rather than armed on the old one's
+    // speed and format.
+    recheckDestinationIfItsDriveChanged();
 
     // Before anything reads the take's files: a folder renamed in Finder
     // mid-take is followed here, well inside the growth check's six seconds.
@@ -7738,6 +7772,105 @@ void Application::rescanDestinationIfItHasAppeared()
     destinationRecoveryRoot.clear();
     destinationRecoveryStatus = RecoveryScanStatus::NotStarted;
     startDestinationRecoveryScan();
+}
+
+bool Application::probeSeesAnotherDriveThanChecked (const PreflightResult& verdict) const
+{
+    // Whatever the probe saw last; never a filesystem call here, because this
+    // is asked by the record button's state on every status tick.
+    const auto snapshot = filesystemStatusProbe.getSnapshot();
+
+    return snapshot.ready
+        && snapshot.request.destinationPath == destinationFolder
+        && snapshot.request.sessionFolder.empty()
+        && PreflightThroughputTest::measuredAnotherDrive (verdict, snapshot.destinationVolume,
+                                                          snapshot.sampleStartedAt);
+}
+
+void Application::recheckDestinationIfItsDriveChanged()
+{
+    if (destinationFolder.empty() || recordingEngine.getState() != RecordingState::Idle)
+        return;
+
+    publishCompletedPreflight();
+    const auto verdict = preflightResults.find (destinationFolder);
+
+    if (verdict == preflightResults.end())
+        return;
+
+    // Keeps the probe looking at the save location between takes even when
+    // nothing else on screen is asking about it.
+    filesystemStatusProbe.setRequest (currentFilesystemProbeRequest());
+
+    if (! probeSeesAnotherDriveThanChecked (verdict->second))
+        return;
+
+    forgetCheckedDriveAtDestination();
+}
+
+void Application::forgetCheckedDriveAtDestination()
+{
+    noteActivity (ActivityLevel::Warning, "Save location",
+                  "The drive at " + juce::String (destinationFolder) + " isn't the one that was "
+                  "checked (it was taken out, or another was put in), so it is being checked "
+                  "again before the next take.");
+
+    // Exactly what choosing the location again does (applyDestinationFolder):
+    // the card now at this path has its own interrupted takes, speed and
+    // format. Workers stuck on the old card are abandoned, never joined.
+    if (destinationRecoveryRoot == destinationFolder)
+    {
+        destinationRecoveryTask.abandon();
+        destinationRecoveryRoot.clear();
+        destinationRecoveryStatus = RecoveryScanStatus::NotStarted;
+    }
+
+    startDestinationRecoveryScan();
+
+    preflightResults.erase (destinationFolder);
+    preflightVerdictAtMs.erase (destinationFolder);
+    if (preflightTaskDestination == destinationFolder)
+    {
+        preflightTask.abandon();
+        preflightTaskDestination.clear();
+    }
+
+    beginPreflightForDestination();
+}
+
+juce::String Application::confirmDestinationIsTheCheckedDrive()
+{
+    const auto verdict = preflightResults.find (destinationFolder);
+
+    // A platform that can't tell one volume from another (Windows), or a
+    // verdict that measured nothing, has nothing to compare.
+    if (verdict == preflightResults.end() || ! verdict->second.measuredVolume.known)
+        return {};
+
+    // Under the same deadline as the other card steps at Record: a card that
+    // has stopped answering holds a statfs as long as it holds anything else.
+    const std::string destination = destinationFolder;
+    const auto now = runWithDeadline<VolumeFingerprint> ([destination]
+    {
+        return volumeFingerprintOf (destination);
+    }, kRemovableVolumeDeadline);
+
+    if (! now.has_value())
+    {
+        // The same account, and the only one, that the folder step below
+        // would have given after the same wait.
+        const auto problem = "The card at " + juce::String (destinationFolder) + " stopped answering, "
+                             "so the take couldn't start. Check the card is plugged in, or choose "
+                             "somewhere else.";
+        noteActivity (ActivityLevel::Failed, "Recording", problem);
+        return problem;
+    }
+
+    if (! volumesDiffer (verdict->second.measuredVolume, *now))
+        return {};
+
+    forgetCheckedDriveAtDestination();
+    return "A different drive is at this save location now. Checking it is fast enough...";
 }
 
 void Application::startMirrorRecoveryScan()

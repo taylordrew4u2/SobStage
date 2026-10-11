@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 #include "Core/FilesystemStatusProbe.h"
+#include "Platform/VolumeCapacity.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -504,4 +505,46 @@ TEST_CASE (FilesystemStatusProbe_DoesNotJudgeTheBackupsDiskUnlessAsked)
     FilesystemStatusProbe::Snapshot snapshot;
     REQUIRE (probe.waitForRevisionAfter (0, snapshot, std::chrono::seconds (2)));
     REQUIRE (snapshot.backupSharesDisk == -1);
+}
+
+// A card swapped for another with the same name sits at the same path, so
+// the probe says which volume is there -- between takes, which is when the
+// answer decides whether the old card's drive check still holds.
+TEST_CASE (FilesystemStatusProbe_SaysWhichVolumeIsAtTheDestinationBetweenTakes)
+{
+    TemporaryFolder folder;
+    FilesystemStatusProbe probe (std::chrono::milliseconds (20));
+
+    FilesystemStatusProbe::Request between;
+    between.destinationPath = folder.path.string();
+    between.bytesPerSecond = 1000.0;
+
+    const auto submittedAt = std::chrono::steady_clock::now();
+    probe.setRequest (between);
+
+    FilesystemStatusProbe::Snapshot snapshot;
+    REQUIRE (probe.waitForRevisionAfter (0, snapshot, std::chrono::seconds (2)));
+    REQUIRE (snapshot.request == between);
+   #if ! defined (_WIN32)
+    REQUIRE (snapshot.destinationVolume.known);
+    REQUIRE (! volumesDiffer (snapshot.destinationVolume, volumeFingerprintOf (folder.path.string())));
+   #endif
+
+    // When the look began, so evidence older than a drive check's verdict can
+    // be told from evidence newer than it.
+    REQUIRE (snapshot.sampleStartedAt >= submittedAt);
+
+    // During a take the destination is the take's folder, and nothing is done
+    // with the answer: not asked.
+    FilesystemStatusProbe::Request during = between;
+    during.sessionFolder = folder.path.string();
+    probe.setRequest (during);
+
+    const auto before = snapshot.revision;
+    for (int attempt = 0; attempt < 20 && ! (snapshot.request == during); ++attempt)
+        REQUIRE (probe.waitForRevisionAfter (snapshot.revision, snapshot, std::chrono::seconds (2)));
+
+    REQUIRE (snapshot.revision > before);
+    REQUIRE (snapshot.request == during);
+    REQUIRE (! snapshot.destinationVolume.known);
 }

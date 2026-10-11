@@ -144,6 +144,16 @@ bool PreflightThroughputTest::shouldRetryCached (const PreflightResult& cached, 
         && secondsSinceVerdict >= kWriteFailureRetrySeconds;
 }
 
+bool PreflightThroughputTest::measuredAnotherDrive (const PreflightResult& cached,
+                                                    const VolumeFingerprint& observed,
+                                                    std::chrono::steady_clock::time_point observedFrom) noexcept
+{
+    if (observedFrom <= cached.measuredVolumeConfirmedAt)
+        return false;
+
+    return volumesDiffer (cached.measuredVolume, observed);
+}
+
 std::string PreflightThroughputTest::formatRemainingTime (uint64_t freeBytes, double requiredBytesPerSecPerFile) noexcept
 {
     if (requiredBytesPerSecPerFile <= 0.0)

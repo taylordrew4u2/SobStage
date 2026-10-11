@@ -207,6 +207,14 @@ A novice losing track of their recording is a total product failure even when th
 - If internal space drops below 1 GB during recording, stop the mirror, keep the card write going, and note it in `session.json`. Do not interrupt the recording and do not show a modal.
 ### 6.4 Pre-flight
 Run on volume selection and again on arming; cache per volume ID with a 30-day expiry.
+- A result belongs to the volume it measured, not the path: a different card
+  can mount at the same `/Volumes/<name>`. Record the measured volume's identity
+  (mount point, filesystem type, device, volume UUID, size) with the result.
+  Between takes, the status worker reads the identity at the destination; when
+  a look begun after the result shows a different volume, or none, discard the
+  result and run the check and the interrupted-take scan again for whatever is
+  there. At arming, read the identity once more under the card deadline and
+  refuse if it differs.
 - Run the filesystem work away from the window thread. Only one check for the
   current destination may publish; changing destinations abandons the old
   result, and launch, destination changes and shutdown never join the worker.
