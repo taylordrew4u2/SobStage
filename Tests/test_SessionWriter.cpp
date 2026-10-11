@@ -406,4 +406,84 @@ TEST_CASE (SessionWriter_RenamingTheTakeFolderMidTakeDoesNotFailTheWriter)
 
     fs::remove_all (after, ec);
 }
+
+// The 3.9 GB roll-over built the next file's name from the path the take was
+// opened with. After a mid-take folder rename that folder no longer existed,
+// the next file could not be created, and the take stopped under "the card may
+// be full" -- the one write path that did not follow the folder.
+TEST_CASE (SessionWriter_RollOverAfterTheTakeFolderWasRenamedLandsInTheRenamedFolder)
+{
+    namespace fs = std::filesystem;
+    const fs::path before = tempBasePath ("mma_test_split_rename_before");
+    const fs::path after = tempBasePath ("mma_test_split_rename_after");
+    std::error_code ec;
+    fs::remove_all (before, ec);
+    fs::remove_all (after, ec);
+    REQUIRE (fs::create_directory (before));
+
+    SessionWriter writer;
+    SessionWriterTestAccess::useSplitSize (writer, 4); // mono 16-bit: two frames per file
+    REQUIRE (writer.open ((before / "01_Guest").string(), 48000.0, 1, 16, "2026-10-11T19:30:00Z"));
+
+    const float frames[5] = { 0.1f, 0.2f, 0.3f, 0.4f, 0.5f };
+    REQUIRE (writer.writeInterleaved (frames, 2)); // fills the first file exactly
+
+    fs::rename (before, after, ec);
+    REQUIRE (! ec);
+
+    REQUIRE (writer.writeInterleaved (frames + 2, 3)); // two roll-overs
+    REQUIRE (writer.getWriteProblem().empty());
+    REQUIRE (writer.getSplitFileCount() == 2);
+    REQUIRE (writer.close());
+
+    REQUIRE (! fs::exists (before));
+    REQUIRE (fs::exists (after / "01_Guest.wav"));
+    REQUIRE (fs::exists (after / "01_Guest_001.wav"));
+    REQUIRE (fs::exists (after / "01_Guest_002.wav"));
+
+    // Each part finished with its own size, and the continuations still carry
+    // their place on the session timeline.
+    const std::streampos dataSizePos = 12 + (8 + 16) + (8 + 602) + 4;
+    const std::streampos timeReferencePos = 12 + 24 + 8 + 338;
+    {
+        std::ifstream first ((after / "01_Guest.wav").string(), std::ios::binary);
+        std::ifstream second ((after / "01_Guest_001.wav").string(), std::ios::binary);
+        std::ifstream third ((after / "01_Guest_002.wav").string(), std::ios::binary);
+        REQUIRE (readU32LE (first, dataSizePos) == 4u);
+        REQUIRE (readU32LE (second, dataSizePos) == 4u);
+        REQUIRE (readU32LE (third, dataSizePos) == 2u);
+        REQUIRE (readU64LE (second, timeReferencePos) == 2);
+        REQUIRE (readU64LE (third, timeReferencePos) == 4);
+    }
+
+    fs::remove_all (after, ec);
+}
+
+// A folder that is simply gone (deleted, or dragged to another drive, which
+// copies and deletes) is not a full card, and saying so sent people to the
+// wrong thing.
+TEST_CASE (SessionWriter_RollOverIntoAFolderThatIsGoneSaysSoRatherThanBlamingTheCard)
+{
+    namespace fs = std::filesystem;
+    const fs::path folder = tempBasePath ("mma_test_split_folder_gone");
+    std::error_code ec;
+    fs::remove_all (folder, ec);
+    REQUIRE (fs::create_directory (folder));
+
+    SessionWriter writer;
+    SessionWriterTestAccess::useSplitSize (writer, 4);
+    REQUIRE (writer.open ((folder / "01_Guest").string(), 48000.0, 1, 16, "2026-10-11T19:30:00Z"));
+
+    const float frames[3] = { 0.1f, 0.2f, 0.3f };
+    REQUIRE (writer.writeInterleaved (frames, 2));
+
+    fs::remove_all (folder, ec);
+    REQUIRE (! ec);
+
+    REQUIRE (! writer.writeInterleaved (frames + 2, 1));
+    const auto& why = writer.getWriteProblem();
+    REQUIRE (why.find ("can no longer be found") != std::string::npos);
+    REQUIRE (why.find ("card may be full") == std::string::npos);
+    REQUIRE (! fs::exists (folder));
+}
 #endif
