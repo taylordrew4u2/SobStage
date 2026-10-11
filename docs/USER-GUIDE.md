@@ -370,7 +370,9 @@ this feature works out for you.
   take is the entire point — §6.4 says never degrade mid-take.
 - **Each camera says what it will write** — `Writes V01_Kitchen-Cam.mov`,
   under its name, updating as you rename it. Renaming is the moment you want to
-  know what the name does.
+  know what the name does. During a take it says `Recording to` the file it is
+  actually writing, and that name stays put if another camera is unplugged or
+  plugged in mid-take.
 - **Every camera plugged in records**, each to its own file for the whole
   take, without a trip to this panel first. Switching one off here is the
   exception, and that choice is remembered across an unplug and a relaunch.

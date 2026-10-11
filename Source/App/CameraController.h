@@ -251,7 +251,8 @@ public:
     juce::StringArray getPlannedFileNames() const;
 
     /// The file one camera will write, extension included, or empty when that
-    /// camera is not in the take.
+    /// camera is not in the take. During a take, a camera in it gets the file
+    /// it is actually writing, fixed at Record, however the list moves since.
     juce::String getPlannedFileNameFor (const std::string& deviceId) const;
 
     /// §10.6: whatever is currently wrong with the cameras, in plain language.

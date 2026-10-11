@@ -1465,6 +1465,23 @@ juce::String CameraController::getPlannedFileNameFor (const std::string& deviceI
 {
     const auto extension = getMovieFileExtension();
 
+    // During a take, the file this camera is actually writing. The numbering
+    // below is rebuilt from the live list, which keeps moving mid-take: unplug
+    // V01's camera and V02's row read "Recording to V01_....mov" while the
+    // movie on the card was still V02. Gated on the take only, not on its
+    // finalization: after Stop the row says "Writes ..." about the NEXT take,
+    // which is numbered afresh from the live list.
+    if (takeActive)
+    {
+        for (const auto& recording : takeRecordings)
+            if (recording.deviceId == deviceId)
+                return recording.file.getFileName();
+
+        for (const auto& plan : takePlans)
+            if (plan.deviceId == deviceId)
+                return juce::String (plan.fileName) + extension;
+    }
+
     for (const auto& plan : selection.buildPlans())
         if (plan.deviceId == deviceId)
             return juce::String (plan.fileName) + extension;
