@@ -34,7 +34,9 @@ Builds for macOS, Windows and Linux are produced by the
   commit.
 
 Each archive and the disk image contain the application, this README, `LICENSE`,
-`LICENSING.md`, `SUPPORT.md`, `PRIVACY.md` and the release checklist.
+`LICENSING.md`, `SUPPORT.md`, `PRIVACY.md` and the release checklist. In the
+disk image, everything after `LICENSE` is in a **More documents** folder, so no
+icon covers the install steps shown in its window.
 Tagged releases also carry `SobStage-<version>-source.zip`, containing the exact
 SobStage and pinned JUCE source revisions, and `SHA256SUMS` covering every
 download.
@@ -127,8 +129,9 @@ unsigned on Windows; the workflow signs and notarizes once the credentials in
 
 ### macOS
 
-1. Double-click `SobStage-macOS.dmg`. A window opens showing the app
-   and an arrow pointing at your **Applications** folder.
+1. Double-click `SobStage-macOS.dmg`. A window opens showing the app,
+   an arrow pointing at your **Applications** folder, and the Terminal
+   command for step 3.
 2. Drag the crying face onto **Applications**. That is the install.
 3. Open **Terminal** and run this once before first launch:
 

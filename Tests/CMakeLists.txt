@@ -70,3 +70,12 @@ target_link_libraries(mma_core_tests PRIVATE mma_core mma_warnings)
 target_include_directories(mma_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_test(NAME mma_core_tests COMMAND mma_core_tests)
+
+# Release packaging checks written in Python (standard library only, so any
+# Python 3 runs them): the macOS disk-image window must never put an icon on
+# the first-launch command drawn on its background.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if (Python3_Interpreter_FOUND)
+    add_test(NAME dmg_layout
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_dmg_layout.py)
+endif()

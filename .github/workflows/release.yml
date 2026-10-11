@@ -588,11 +588,19 @@ jobs:
           # attributes and the signature; cp -R is what broke the signature the
           # first time this shipped.
           ditto "$app" "$staging/$appname"
-          cp out/README.md out/LICENSE out/LICENSING.md \
-            out/SUPPORT.md out/PRIVACY.md out/RELEASE_CHECKLIST.md \
-            "$staging/"
+          # README.md and LICENSE beside the app, the other four documents in
+          # one "More documents" folder. Six loose documents do not fit under
+          # the instructions drawn on the background.
+          python3 Tools/dmg_layout.py stage-documents out "$staging"
           cp Resources/DmgBackground.png "$staging/.background/background.png"
           ln -s /Applications "$staging/Applications"
+
+          # Every visible item needs a place in the window. v1.13.25 staged six
+          # documents and placed three; Finder put the other three wherever it
+          # liked, two of them on the xattr command the background exists to
+          # show. Tools/dmg_layout.py holds the one list of places, and an
+          # item missing from it stops the build here.
+          python3 Tools/dmg_layout.py check-staging "$staging" --app "$appname"
 
           # Build read-write first: the window layout below is Finder state
           # stored in the volume, so it has to be written before the image is
@@ -615,31 +623,15 @@ jobs:
 
           # Lay the window out so opening the image *is* the instructions: the
           # app on the left, Applications on the right, and the background art
-          # carrying the arrow and the first-launch step between them.
+          # carrying the arrow and the first-launch step between them. The
+          # window size, icon size and every position come from
+          # Tools/dmg_layout.py, the same table both checks use.
           #
-          # osascript -e rather than a heredoc: a heredoc terminator has to sit
+          # A script file rather than a heredoc: a heredoc terminator has to sit
           # at column 0, which would end this YAML block scalar early.
-          osascript \
-            -e 'tell application "Finder"' \
-            -e '  tell disk "SobStage"' \
-            -e '    open' \
-            -e '    set current view of container window to icon view' \
-            -e '    set toolbar visible of container window to false' \
-            -e '    set statusbar visible of container window to false' \
-            -e '    set the bounds of container window to {200, 120, 860, 640}' \
-            -e '    set opts to the icon view options of container window' \
-            -e '    set arrangement of opts to not arranged' \
-            -e '    set icon size of opts to 110' \
-            -e '    set background picture of opts to file ".background:background.png"' \
-            -e "    set position of item \"$appname\" of container window to {165, 195}" \
-            -e '    set position of item "Applications" of container window to {495, 195}' \
-            -e '    set position of item "README.md" of container window to {130, 450}' \
-            -e '    set position of item "LICENSE" of container window to {330, 450}' \
-            -e '    set position of item "LICENSING.md" of container window to {530, 450}' \
-            -e '    update without registering applications' \
-            -e '    close' \
-            -e '  end tell' \
-            -e 'end tell' \
+          layout_script="${RUNNER_TEMP}/dmg-layout.applescript"
+          python3 Tools/dmg_layout.py applescript --app "$appname" > "$layout_script"
+          osascript "$layout_script" \
             || echo "::warning::Finder layout failed; shipping a plain image instead"
 
           # Deliberately non-fatal. The window layout is presentation; the image
@@ -689,10 +681,14 @@ jobs:
             || { echo "::error::Applications link missing from macOS disk image"; exit 1; }
           [[ "$(readlink "$verify/Applications")" == "/Applications" ]] \
             || { echo "::error::Applications link has the wrong target"; exit 1; }
-          for document in README.md LICENSE LICENSING.md SUPPORT.md PRIVACY.md RELEASE_CHECKLIST.md; do
-            test -f "$verify/$document" \
-              || { echo "::error::$document missing from macOS disk image"; exit 1; }
-          done
+
+          # Read the window back from the finished image, not from the script
+          # that was meant to make it: every document is in its place, every
+          # visible icon has a saved position, and none of them covers the
+          # instructions on the background. An icon on the xattr command fails
+          # the build. A plain window (Finder had no GUI to lay it out) has
+          # nothing drawn behind its icons, so that stays a warning.
+          python3 Tools/dmg_layout.py check-image "$verify" --app "$appname"
 
           # Report what is actually true. The previous version printed
           # "window layout verified" unconditionally, while only checking that
@@ -701,7 +697,7 @@ jobs:
           # there at all. The layout lives in .DS_Store; its presence is the
           # only evidence the window was actually arranged.
           if [ -f "$verify/.DS_Store" ]; then
-            echo "Signature verified; window layout present in the image."
+            echo "Signature verified; window layout present in the image and checked."
           else
             echo "::warning::Signature verified, but no window layout -- plain image"
           fi

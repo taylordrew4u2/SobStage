@@ -86,8 +86,10 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] The macOS app is universal (`arm64` and `x86_64`), has a macOS 13.0 minimum,
   reports 1.13.25 in its bundle, and passes `Tools/verify_macos_release.sh` both
   before and after ZIP/DMG round trips.
-- [ ] The DMG opens with current SobStage artwork, a working Applications link
-  and no historical “Multi-Mic Aggregator” name or command.
+- [ ] The DMG opens with current SobStage artwork, a working Applications link,
+  no icon over the first-launch Terminal command (the release build checks the
+  saved icon positions; look at the window on a real Mac too) and no historical
+  “Multi-Mic Aggregator” name or command.
 - [ ] Windows and Linux packages contain the executable, README, GPL license and
   licensing notice and start from their documented paths; the Linux executable
   retains its execute bit after the final ZIP round trip.
