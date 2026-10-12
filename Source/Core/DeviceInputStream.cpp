@@ -95,6 +95,7 @@ void DeviceInputStream::resetInterpolator() noexcept
     phase = 0.0;
     primed = false;
     carrySample = 0.0f;
+    carryPhase = 0.0;
     carryPending = false;
     heldLast = false;
 }
@@ -655,7 +656,17 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
 
         if (primedFromCarry)
         {
-            currentSample = carrySample;
+            // The pair and the phase the gap interrupted, exactly: the carried
+            // sample and the one after it, the output landing between them
+            // where the next one would have. Priming on the carried sample
+            // alone -- both ends of the pair the same sample, phase zero --
+            // played it twice and dropped the fraction of a sample the
+            // resampler had reached, so the channel came back up to two
+            // samples later than the silence written for the gap: its stem
+            // out of step with every other by that much after each gap.
+            previousSample = carrySample;
+            readOne (currentSample); // there is one: checked above
+            phase = carryPhase;
             carryPending = false;
         }
         else if (! readOne (currentSample))
@@ -665,9 +676,12 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
             noteSilence (numSamples);
             return;
         }
+        else
+        {
+            previousSample = currentSample;
+            phase = 0.0;
+        }
 
-        previousSample = currentSample;
-        phase = 0.0;
         primed = true;
         primes.fetch_add (1, std::memory_order_relaxed);
     }
@@ -737,11 +751,17 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
                 // sample already played it.
                 const bool carry = ! heldLast;
                 const float carried = previousSample;
+
+                // And how far past it this output had got: the resampler's
+                // fraction of a sample, which the output after the gap picks
+                // up from rather than from zero.
+                const double carriedPhase = std::clamp (phase - 1.0, 0.0, 0.999999);
                 resetInterpolator();
 
                 if (carry)
                 {
                     carrySample = carried;
+                    carryPhase = carriedPhase;
                     carryPending = true;
                 }
 

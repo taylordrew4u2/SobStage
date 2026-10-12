@@ -434,6 +434,7 @@ private:
     // captured sample at every gap; the next prime starts from it instead.
     // `heldLast` marks a pull that ended on a held sample, which was played.
     float carrySample = 0.0f;
+    double carryPhase = 0.0;
     bool carryPending = false;
     bool heldLast = false;
     void resetInterpolator() noexcept;
