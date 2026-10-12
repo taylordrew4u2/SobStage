@@ -1045,6 +1045,10 @@ void Application::restartCapture()
         capture->getMonitorBus().setGlobalMute (monitorMuted);
         if (wasRunawayCut)
             capture->getMonitorBus().engageRunawayCut();
+
+        // And whose headphones are switched off: a fresh coordinator starts
+        // with the mix on every channel.
+        headphoneJacks.lay();
         ++captureGeneration;
 
         captureRate = currentSampleRate;
@@ -1094,13 +1098,10 @@ void Application::restartCapture()
         ++speakerHandoversForMonitorOpen;
     }
 
-    // Before the open, for the device being opened, so its first callback
-    // already keeps the mix off a switched-off jack; after it, for whatever
-    // actually opened (nothing, if the output refused and the rig went
-    // input-only).
-    applyHeadphoneGainsFor (selectedOutputDeviceId);
+    // The per-jack headphone gains need nothing here: the coordinator lays
+    // the combined device's own on its stream before it opens, and the mix on
+    // every channel of any other output.
     const bool started = capture->startMonitoring (channels, selectedOutputDeviceId);
-    applyHeadphoneGains();
 
     // What a later device-list notification compares against: only a rig
     // that came up whole is worth not reopening.
@@ -1936,34 +1937,6 @@ std::string Application::describeRig() const
     return rig;
 }
 
-void Application::applyHeadphoneGains()
-{
-    if (capture != nullptr)
-        applyHeadphoneGainsFor (capture->getOutputDeviceId());
-}
-
-void Application::applyHeadphoneGainsFor (const std::string& outputDeviceId)
-{
-    if (capture == nullptr)
-        return;
-
-    // The output that is open (or about to be), not the one selected: mid-take
-    // the selection can move onto or off the combined device while the stream
-    // stays where it was until Stop. The per-jack gains belong to the combined
-    // device's channels only. Laid over another device's they silence the
-    // wrong channels, and cleared while the combined device still plays they
-    // give the mix back to whoever switched theirs off.
-    capture->setOutputChannelGains (headphoneChannelGainsForOutput (
-        outputDeviceId, kOurAggregateUid, combinedOutputLayout,
-        [this] (const std::string& uid)
-        {
-            for (const auto& d : deviceManager.getDevices())
-                if (d.identity.locationId == uid)
-                    return headphonesOffKeys.count (d.identity.key()) == 0;
-            return true;
-        }));
-}
-
 std::vector<Application::HeadphoneChoice> Application::getHeadphoneChoices() const
 {
     std::vector<HeadphoneChoice> out;
@@ -1971,7 +1944,7 @@ std::vector<Application::HeadphoneChoice> Application::getHeadphoneChoices() con
     if (! isMonitoringThroughCombinedDevice())
         return out;
 
-    for (const auto& sub : combinedOutputLayout)
+    for (const auto& sub : headphoneJacks.getLayout())
     {
         if (sub.outputChannels <= 0)
             continue;
@@ -2005,7 +1978,7 @@ void Application::setHeadphonesOn (const juce::String& deviceKey, bool on)
         if (on) headphonesOffKeys.erase (key);
         else    headphonesOffKeys.insert (key);
 
-        applyHeadphoneGains();
+        headphoneJacks.lay();
         saveSettings();
 
         noteActivity (ActivityLevel::Started, juce::String (d.displayName),
@@ -2067,21 +2040,19 @@ void Application::reselectOutputDevice()
     // headphone jack, all fed the one mix, so everyone hears everyone. Offered
     // only when it exists and at least one microphone has a jack to play into.
     std::string combinedLabel;
-    combinedOutputLayout = systemAggregate != nullptr && systemAggregate->isPublished()
-                         ? systemAggregate->getOutputLayout()
-                         : std::vector<CombinedDeviceOutputs> {};
 
     // The per-jack gains are by channel number, and the combined device
     // numbers its channels over the sub-devices that are active now. One
     // leaving (a cable bumped mid-take) or joining late (slower than the
-    // publish wait) moves every later jack, and nothing else re-laid the
-    // gains: mid-take the reopen waits for Stop, and between takes an
-    // unchanged rig is not reopened. The next person along lost the mix for
-    // the rest of the take while the one who had switched theirs off heard
-    // it. Atomics, so changing them under a running stream is safe.
-    applyHeadphoneGains();
+    // publish wait) moves every later jack, so the read lays them again
+    // (HeadphoneJacks): mid-take the reopen waits for Stop, and between takes
+    // an unchanged rig is not reopened. Atomics, so changing them under a
+    // running stream is safe.
+    headphoneJacks.layoutRead (systemAggregate != nullptr && systemAggregate->isPublished()
+                                   ? systemAggregate->getOutputLayout()
+                                   : std::vector<CombinedDeviceOutputs> {});
 
-    if (combinedDeviceHasHeadphones (combinedOutputLayout))
+    if (combinedDeviceHasHeadphones (headphoneJacks.getLayout()))
     {
         combinedLabel = aggregateName.toStdString();
         while (outputDeviceIdByLabel.count (combinedLabel) > 0)
@@ -7487,7 +7458,7 @@ bool Application::applyTemplate (const juce::String& name)
     if (destinationChanged && ! s.destinationFolder.empty())
         setDestinationFolder (juce::File (juce::String (s.destinationFolder)));
 
-    applyHeadphoneGains();
+    headphoneJacks.lay();
     reselectOutputDevice();
 
     // A new rate reopens the streams through the hot-plug path, as the rate

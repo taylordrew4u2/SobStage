@@ -339,15 +339,35 @@ public:
     /// (none asked for, or it refused and the rig went input-only).
     const std::string& getOutputDeviceId() const noexcept { return openOutputDeviceId; }
 
-    /// Per output channel: 1 sends the mix there, 0 keeps the mix off it.
-    /// Lets the combined device feed every microphone's headphone jack while
-    /// each person can still be switched off. A switched-off channel still
-    /// gets the app's own sounds (getAlarm(): the start and stop chirps and
-    /// the fault siren), so turning every jack off cannot silence an alarm.
-    /// Channels past the list, and every channel by default, get the mix.
-    /// Safe to call while running.
+    /// The open output stream is on `deviceId`. Mid-take the output the user
+    /// has chosen can move while the stream stays where it is until Stop, so
+    /// anything that depends on what is playing through a device -- its
+    /// per-jack gains, or whether it can be destroyed -- asks this, not the
+    /// choice.
+    bool isOutputOpenOn (const std::string& deviceId) const noexcept
+    {
+        return ! deviceId.empty() && openOutputDeviceId == deviceId;
+    }
+
+    /// The per-jack headphone gains of one output device's channels, per
+    /// output channel: 1 sends the mix there, 0 keeps the mix off it. Lets the
+    /// combined device feed every microphone's headphone jack while each
+    /// person can still be switched off. A switched-off channel still gets
+    /// the app's own sounds (getAlarm(): the start and stop chirps and the
+    /// fault siren), so turning every jack off cannot silence an alarm.
+    /// Channels past the list get the mix.
+    ///
+    /// Kept for that device and laid on the output stream only while the
+    /// stream is open on it (isOutputOpenOn): from the first callback of a
+    /// stream startMonitoring() opens on it, at once if it is open already.
+    /// A stream on any other device, or none, gets the mix on every channel.
+    /// Which device is open is this class's to say, never the caller's: laid
+    /// over another device's channels the gains would silence the wrong
+    /// ones, and taken off the combined device while it still plays they
+    /// would give the mix back to whoever switched theirs off. Message
+    /// thread; safe while running.
     static constexpr int kMaxOutputChannelGains = 64;
-    void setOutputChannelGains (const std::vector<float>& gains) noexcept;
+    void setHeadphoneJackGains (const std::string& outputDeviceId, std::vector<float> gains);
 
     /// On by default. Off for harnesses that drive the output callback in
     /// simulated time, where a real-time thread deciding the output has
@@ -702,6 +722,14 @@ private:
     /// software clock pulls instead, however recently the output called back.
     std::atomic<bool> outputAbandoned { false };
     std::array<std::atomic<float>, kMaxOutputChannelGains> outputChannelGains;
+    /// setHeadphoneJackGains(): which device's channels the gains describe,
+    /// and the gains. Message thread only; the callback reads the atomics.
+    std::string jackGainsDeviceId;
+    std::vector<float> jackGains;
+    /// Lays the jack gains on the output channels if `outputDeviceId` is the
+    /// device they belong to, and the mix on every channel otherwise.
+    void layJackGainsFor (const std::string& outputDeviceId) noexcept;
+    void setOutputChannelGains (const std::vector<float>& gains) noexcept;
     std::atomic<int64_t> lastOutputCallbackNs { 0 };
     bool outputStreamOpen = false;
     bool outputCarriesChannels = false;

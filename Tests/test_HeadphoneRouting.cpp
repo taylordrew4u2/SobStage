@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 #include "Core/HeadphoneRouting.h"
+#include <set>
 
 using namespace mma;
 
@@ -83,58 +84,101 @@ TEST_CASE (HeadphoneRouting_ASubDeviceThatNeverActivatesCostsOnlyTheBound)
     REQUIRE (pauses == 0);
 }
 
+namespace
+{
+    /// Everything HeadphoneJacks hands on, in order.
+    struct LaidGains
+    {
+        std::string deviceId;
+        std::vector<float> gains;
+    };
+
+    struct Recorder
+    {
+        std::vector<LaidGains> laid;
+
+        HeadphoneJacks::LayGains sink()
+        {
+            return [this] (const std::string& id, const std::vector<float>& gains) { laid.push_back ({ id, gains }); };
+        }
+
+        const LaidGains& last() const
+        {
+            REQUIRE_FALSE (laid.empty());
+            return laid.back();
+        }
+    };
+}
+
 TEST_CASE (HeadphoneRouting_GainsFollowAJackThatMovesWhenAMicLeavesTheCombinedDevice)
 {
     // A, B and C each have a jack; B has switched theirs off. Mid-take A's
     // cable is bumped and the combined device drops it, so B's jack moves to
     // channels 0-1 and C's to 2-3. Gains worked out for the old layout would
-    // now silence C and play the mix to B -- they have to be worked out again
-    // from the layout as it is now.
-    const auto bIsOff = [] (const std::string& id) { return id != "yeti-b"; };
+    // now silence C and play the mix to B: reading the layout lays them again,
+    // with nothing else asked of the caller.
+    Recorder recorder;
+    HeadphoneJacks jacks ("combined", [] (const std::string& id) { return id != "yeti-b"; }, recorder.sink());
 
-    const auto before = headphoneChannelGainsForOutput ("combined", "combined",
-                                                        { { "yeti-a", 2 }, { "yeti-b", 2 }, { "yeti-c", 2 } },
-                                                        bIsOff);
-    REQUIRE (before == std::vector<float> ({ 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f }));
+    jacks.layoutRead ({ { "yeti-a", 2 }, { "yeti-b", 2 }, { "yeti-c", 2 } });
+    REQUIRE (recorder.laid.size() == 1u);
+    REQUIRE (recorder.last().deviceId == "combined");
+    REQUIRE (recorder.last().gains == std::vector<float> ({ 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f }));
 
-    const auto after = headphoneChannelGainsForOutput ("combined", "combined",
-                                                       { { "yeti-b", 2 }, { "yeti-c", 2 } }, bIsOff);
-    REQUIRE (after == std::vector<float> ({ 0.0f, 0.0f, 1.0f, 1.0f }));
+    jacks.layoutRead ({ { "yeti-b", 2 }, { "yeti-c", 2 } });
+    REQUIRE (recorder.laid.size() == 2u);
+    REQUIRE (recorder.last().deviceId == "combined");
+    REQUIRE (recorder.last().gains == std::vector<float> ({ 0.0f, 0.0f, 1.0f, 1.0f }));
 }
 
 TEST_CASE (HeadphoneRouting_GainsFollowAJackThatJoinsTheCombinedDeviceLate)
 {
     // A is switched off; B's microphone is slow and joins after the device
     // was made, in front of C. C's jack moves from channels 2-3 to 4-5, and B
-    // must not inherit the gains A's neighbour had.
-    const auto aIsOff = [] (const std::string& id) { return id != "yeti-a"; };
+    // must not inherit the gains A's neighbour had. The rig is unchanged, so
+    // nothing reopens: the late read is the only thing that lays them.
+    Recorder recorder;
+    HeadphoneJacks jacks ("combined", [] (const std::string& id) { return id != "yeti-a"; }, recorder.sink());
 
-    const auto early = headphoneChannelGainsForOutput ("combined", "combined",
-                                                       { { "yeti-a", 2 }, { "yeti-c", 2 } }, aIsOff);
-    REQUIRE (early == std::vector<float> ({ 0.0f, 0.0f, 1.0f, 1.0f }));
+    jacks.layoutRead ({ { "yeti-a", 2 }, { "yeti-c", 2 } });
+    REQUIRE (recorder.last().gains == std::vector<float> ({ 0.0f, 0.0f, 1.0f, 1.0f }));
 
-    const auto whole = headphoneChannelGainsForOutput ("combined", "combined",
-                                                       { { "yeti-a", 2 }, { "yeti-b", 2 }, { "yeti-c", 2 } },
-                                                       aIsOff);
-    REQUIRE (whole == std::vector<float> ({ 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f }));
+    jacks.layoutRead ({ { "yeti-a", 2 }, { "yeti-b", 2 }, { "yeti-c", 2 } });
+    REQUIRE (recorder.laid.size() == 2u);
+    REQUIRE (recorder.last().gains == std::vector<float> ({ 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f }));
+    REQUIRE (jacks.getLayout().size() == 3u);
 }
 
-TEST_CASE (HeadphoneRouting_OnlyTheCombinedDeviceStillOpenGetsPerJackGains)
+TEST_CASE (HeadphoneRouting_EveryReadAndEverySwitchLaysTheGainsForTheCombinedDeviceOnly)
 {
-    // The gains describe the stream that is open, not the output chosen:
-    // mid-take the choice can move while the reopen waits for Stop.
-    const std::vector<CombinedDeviceOutputs> layout { { "yeti-a", 2 }, { "yeti-b", 2 } };
-    const auto bIsOff = [] (const std::string& id) { return id != "yeti-b"; };
+    // Who hears the mix changes outside the layout; switching someone off
+    // lays the gains from the layout as last read. However the output choice
+    // moves meanwhile (mid-take it can, while the stream stays put until
+    // Stop), the gains are always handed on as the combined device's own:
+    // which stream they reach is the coordinator's to say.
+    std::set<std::string> off;
+    Recorder recorder;
+    HeadphoneJacks jacks ("combined", [&off] (const std::string& id) { return off.count (id) == 0; },
+                          recorder.sink());
 
-    // Still playing through the combined device: B stays silent.
-    REQUIRE (headphoneChannelGainsForOutput ("combined", "combined", layout, bIsOff)
-             == std::vector<float> ({ 1.0f, 1.0f, 0.0f, 0.0f }));
+    jacks.layoutRead ({ { "yeti-a", 2 }, { "yeti-b", 2 } });
+    REQUIRE (recorder.last().gains == std::vector<float> ({ 1.0f, 1.0f, 1.0f, 1.0f }));
 
-    // A six-channel interface still open while the combined device waits to
-    // take over: its channels 2-3 are not B's jack, and get the mix.
-    REQUIRE (headphoneChannelGainsForOutput ("scarlett", "combined", layout, bIsOff).empty());
+    // An unchanged layout read again still lays them: cheap, and nothing
+    // has to know whether it changed.
+    jacks.layoutRead ({ { "yeti-a", 2 }, { "yeti-b", 2 } });
+    REQUIRE (recorder.laid.size() == 2u);
 
-    // No output open at all.
-    REQUIRE (headphoneChannelGainsForOutput ("", "combined", layout, bIsOff).empty());
-    REQUIRE (headphoneChannelGainsForOutput ("", "", layout, bIsOff).empty());
+    off.insert ("yeti-b");
+    jacks.lay();
+    REQUIRE (recorder.laid.size() == 3u);
+    REQUIRE (recorder.last().gains == std::vector<float> ({ 1.0f, 1.0f, 0.0f, 0.0f }));
+
+    // The combined device gone (or not published): the mix everywhere.
+    jacks.layoutRead ({});
+    REQUIRE (recorder.last().gains.empty());
+    REQUIRE (jacks.getLayout().empty());
+
+    for (const auto& laid : recorder.laid)
+        REQUIRE (laid.deviceId == "combined");
 }

@@ -1667,7 +1667,7 @@ TEST_CASE (CaptureCoordinator_ASwitchedOffHeadphoneJackGetsSilenceAndTheRestTheM
 
     // Two microphones' jacks on the combined device, two channels each; the
     // second person has switched theirs off.
-    c.setOutputChannelGains ({ 1.0f, 1.0f, 0.0f, 0.0f });
+    c.setHeadphoneJackGains ("out-device", { 1.0f, 1.0f, 0.0f, 0.0f });
 
     std::vector<float> a (64, 0.15f), b (64, 0.15f);
     std::vector<float> o0 (64, 0.5f), o1 (64, 0.5f), o2 (64, 0.5f), o3 (64, 0.5f);
@@ -1682,7 +1682,7 @@ TEST_CASE (CaptureCoordinator_ASwitchedOffHeadphoneJackGetsSilenceAndTheRestTheM
     REQUIRE (o3[10] == 0.0f);
 
     // Switched back on while running.
-    c.setOutputChannelGains ({});
+    c.setHeadphoneJackGains ("out-device", {});
     c.processAudioBlock (ins, 2, outs, 4, 64);
     REQUIRE_NEAR (o3[10], o0[10], 1e-9);
 }
@@ -1710,8 +1710,8 @@ TEST_CASE (CaptureCoordinator_ASwitchedOffJackStillGetsTheAlarmButNeverTheMix)
     reference.setSoftwareClockEnabled (false);
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     REQUIRE (reference.startMonitoring (twoMics(), "out-device"));
-    c.setOutputChannelGains ({ 1.0f, 1.0f, 0.0f, 0.0f });
-    reference.setOutputChannelGains ({ 1.0f, 1.0f, 0.0f, 0.0f });
+    c.setHeadphoneJackGains ("out-device", { 1.0f, 1.0f, 0.0f, 0.0f });
+    reference.setHeadphoneJackGains ("out-device", { 1.0f, 1.0f, 0.0f, 0.0f });
 
     std::vector<float> a (64, 0.15f), b (64, 0.15f);
     const float* ins[] = { a.data(), b.data() };
@@ -1768,7 +1768,7 @@ TEST_CASE (CaptureCoordinator_EveryJackSwitchedOffStillSoundsTheAlarm)
     CaptureCoordinator c (backend, 48000.0, 64);
     c.setSoftwareClockEnabled (false);
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
-    c.setOutputChannelGains ({ 0.0f, 0.0f, 0.0f, 0.0f });
+    c.setHeadphoneJackGains ("out-device", { 0.0f, 0.0f, 0.0f, 0.0f });
 
     std::vector<float> a (64, 0.3f), b (64, 0.3f);
     const float* ins[] = { a.data(), b.data() };
@@ -1807,6 +1807,71 @@ TEST_CASE (CaptureCoordinator_EveryJackSwitchedOffStillSoundsTheAlarm)
     c.getAlarm().setFault (false);
     for (float peak : peaksOver (2))
         REQUIRE (peak == 0.0f);
+}
+
+TEST_CASE (CaptureCoordinator_JackGainsReachOnlyTheStreamOpenOnTheirDevice)
+{
+    // The per-jack gains describe the combined device's channels, and which
+    // device the output stream is open on is the coordinator's to know, not
+    // the caller's: mid-take the output chosen can move while the stream
+    // stays where it is until Stop, and a refused output leaves none open.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    std::vector<float> a (64, 0.15f), b (64, 0.15f);
+    const float* ins[] = { a.data(), b.data() };
+    std::vector<float> o0 (64), o1 (64), o2 (64), o3 (64);
+    float* outs[] = { o0.data(), o1.data(), o2.data(), o3.data() };
+
+    // Which of four output channels get the mix in one block.
+    using Hearing = std::vector<bool>;
+    const auto hearing = [&]
+    {
+        c.processAudioBlock (ins, 2, outs, 4, 64);
+        return Hearing { loudestOf (o0) > 0.01f, loudestOf (o1) > 0.01f,
+                         loudestOf (o2) > 0.01f, loudestOf (o3) > 0.01f };
+    };
+
+    // Laid before anything is open, as a layout read can be: the stream then
+    // opened on the combined device has them from its first block.
+    c.setHeadphoneJackGains ("combined", { 1.0f, 1.0f, 0.0f, 0.0f });
+    REQUIRE (c.startMonitoring (twoMics(), "combined"));
+    REQUIRE (c.isOutputOpenOn ("combined"));
+    REQUIRE (hearing() == Hearing ({ true, true, false, false }));
+
+    // Mid-take a microphone drops out of the combined device and the jacks
+    // move: laid again at once on the stream still running, whatever output
+    // has been chosen meanwhile.
+    c.setHeadphoneJackGains ("combined", { 0.0f, 0.0f, 1.0f, 1.0f });
+    REQUIRE (hearing() == Hearing ({ false, false, true, true }));
+
+    // Reopened on another output (the choice moved, and Stop paid the
+    // reopen): its channels 2-3 are nobody's jack, and get the mix without a
+    // word from the caller.
+    REQUIRE (c.startMonitoring (twoMics(), "scarlett"));
+    REQUIRE_FALSE (c.isOutputOpenOn ("combined"));
+    REQUIRE (c.isOutputOpenOn ("scarlett"));
+    REQUIRE (hearing() == Hearing ({ true, true, true, true }));
+
+    // The combined device's layout read again while the interface plays: not
+    // laid over the interface's channels.
+    c.setHeadphoneJackGains ("combined", { 1.0f, 1.0f, 0.0f, 0.0f });
+    REQUIRE (hearing() == Hearing ({ true, true, true, true }));
+
+    // Back on the combined device: the gains as last laid, from its first
+    // block.
+    REQUIRE (c.startMonitoring (twoMics(), "combined"));
+    REQUIRE (hearing() == Hearing ({ true, true, false, false }));
+
+    // Stopped, or the output refused and the rig input-only: nothing is open
+    // on any device.
+    c.stopMonitoring();
+    REQUIRE_FALSE (c.isOutputOpenOn ("combined"));
+    backend.failOutputOpen = true;
+    REQUIRE (c.startMonitoring (twoMics(), "combined"));
+    REQUIRE_FALSE (c.isOutputOpenOn ("combined"));
+    REQUIRE_FALSE (c.isOutputOpenOn (""));
 }
 
 // A mic still handing over audio is plainly plugged in. One device-list pass

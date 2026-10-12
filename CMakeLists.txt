@@ -490,6 +490,16 @@ if (MMA_BUILD_APP)
             -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckOutputRateHold.cmake)
 
+    # The combined device's per-jack headphone gains follow every read of its
+    # layout and reach only the stream open on it. HeadphoneJacks and the
+    # coordinator are unit-tested; this pins that Application goes through
+    # them.
+    add_test(NAME headphone_jack_wiring
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -DAPPLICATION_H=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.h
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckHeadphoneJackWiring.cmake)
+
     # A rig with no microphone open is retried from the status poll; the
     # policy is unit-tested, this pins that the poll runs it.
     add_test(NAME failed_open_retry_poll

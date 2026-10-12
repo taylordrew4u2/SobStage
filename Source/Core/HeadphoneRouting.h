@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mma {
@@ -37,27 +38,58 @@ inline std::vector<float> headphoneChannelGains (const std::vector<CombinedDevic
     return gains;
 }
 
-/// The gains for the output stream that is actually open. Only the combined
-/// device (`combinedDeviceId`) is laid out as the microphones' jacks; any
-/// other output, or none, gets the mix on every channel (an empty list).
+/// The combined device's headphone jacks as the app knows them: its layout
+/// as last read, and who hears the mix. Every layout read, and every lay()
+/// (someone switched on or off), hands the gains on through the LayGains
+/// given at construction, always as the combined device's own -- which stream
+/// they reach is CaptureCoordinator::setHeadphoneJackGains()'s to decide, from
+/// the stream that is actually open, never from the output chosen.
 ///
-/// Keyed on the stream that is open rather than the output chosen: mid-take
-/// the choice can move while the reopen waits for Stop, and per-jack gains
-/// laid onto another device's channels -- or taken off the combined device
-/// still playing -- would silence the wrong person or un-silence the right
-/// one. Worked out again whenever the combined device's layout is read: a
-/// sub-device leaving it, or joining it late, moves every later jack's
-/// channels.
-inline std::vector<float> headphoneChannelGainsForOutput (const std::string& openOutputId,
-                                                          const std::string& combinedDeviceId,
-                                                          const std::vector<CombinedDeviceOutputs>& layout,
-                                                          const std::function<bool (const std::string&)>& hearsMix)
+/// The layout is only ever stored through layoutRead(), which lays the gains
+/// every time, so no read of it can leave them behind: a sub-device leaving
+/// the combined device (a cable bumped mid-take) or joining it late (slower
+/// than the publish wait) moves every later jack's channels, and nothing else
+/// lays them again -- mid-take the reopen waits for Stop, and between takes an
+/// unchanged rig is not reopened.
+class HeadphoneJacks
 {
-    if (openOutputId.empty() || openOutputId != combinedDeviceId)
-        return {};
+public:
+    /// Whether the wearer of the microphone with this sub-device id hears the mix.
+    using HearsMix = std::function<bool (const std::string& subDeviceId)>;
+    /// Hands the gains on: the device whose channels they describe, and the gains.
+    using LayGains = std::function<void (const std::string& outputDeviceId, const std::vector<float>& gains)>;
 
-    return headphoneChannelGains (layout, hearsMix);
-}
+    HeadphoneJacks (std::string combinedDeviceIdToUse, HearsMix hearsMixToUse, LayGains layToUse)
+        : combinedDeviceId (std::move (combinedDeviceIdToUse)),
+          hearsMix (std::move (hearsMixToUse)),
+          layGains (std::move (layToUse))
+    {
+    }
+
+    /// The combined device's layout, just read (empty when there is none).
+    /// Lays the gains again whether or not it changed.
+    void layoutRead (std::vector<CombinedDeviceOutputs> newLayout)
+    {
+        layout = std::move (newLayout);
+        lay();
+    }
+
+    /// Lays the gains again from the layout as last read: after someone's
+    /// headphones are switched on or off, or onto a new coordinator.
+    void lay() const
+    {
+        if (layGains != nullptr)
+            layGains (combinedDeviceId, headphoneChannelGains (layout, hearsMix));
+    }
+
+    const std::vector<CombinedDeviceOutputs>& getLayout() const noexcept { return layout; }
+
+private:
+    std::string combinedDeviceId;
+    HearsMix hearsMix;
+    LayGains layGains;
+    std::vector<CombinedDeviceOutputs> layout;
+};
 
 /// True when at least one microphone in the combined device has a headphone
 /// jack to send the mix to. A rig of microphones with no outputs has nothing

@@ -963,13 +963,26 @@ private:
     bool monitorThroughCombinedDevice = true;
     std::set<std::string> headphonesOffKeys;
 
-    /// The combined device's jacks as of the last output selection, so the
-    /// Settings refresh does not ask the HAL twice a second.
-    std::vector<CombinedDeviceOutputs> combinedOutputLayout;
-    /// Lays the per-jack headphone gains onto the output stream that is open
-    /// now (applyHeadphoneGains) or about to open (applyHeadphoneGainsFor).
-    void applyHeadphoneGains();
-    void applyHeadphoneGainsFor (const std::string& outputDeviceId);
+    /// The combined device's jacks as of the last output selection (so the
+    /// Settings refresh does not ask the HAL twice a second) and who hears the
+    /// mix. Every layout read lays the per-jack gains again, onto `capture`,
+    /// which applies them only while its output stream is open on the
+    /// combined device.
+    HeadphoneJacks headphoneJacks {
+        kOurAggregateUid,
+        [this] (const std::string& uid)
+        {
+            for (const auto& d : deviceManager.getDevices())
+                if (d.identity.locationId == uid)
+                    return headphonesOffKeys.count (d.identity.key()) == 0;
+            return true;
+        },
+        [this] (const std::string& outputDeviceId, const std::vector<float>& gains)
+        {
+            if (capture != nullptr)
+                capture->setHeadphoneJackGains (outputDeviceId, gains);
+        }
+    };
 
     /// Everything a rig rebuild opens, as text. A device-list notification
     /// that leaves this unchanged on a healthy rig -- the app's own combined

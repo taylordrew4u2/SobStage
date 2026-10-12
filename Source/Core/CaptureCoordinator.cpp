@@ -29,6 +29,25 @@ void CaptureCoordinator::setOutputChannelGains (const std::vector<float>& gains)
         outputChannelGains[ch].store (ch < gains.size() ? gains[ch] : 1.0f, std::memory_order_relaxed);
 }
 
+void CaptureCoordinator::layJackGainsFor (const std::string& outputDeviceId) noexcept
+{
+    if (! outputDeviceId.empty() && outputDeviceId == jackGainsDeviceId)
+        setOutputChannelGains (jackGains);
+    else
+        setOutputChannelGains ({});
+}
+
+void CaptureCoordinator::setHeadphoneJackGains (const std::string& outputDeviceId, std::vector<float> gains)
+{
+    jackGainsDeviceId = outputDeviceId;
+    jackGains = std::move (gains);
+
+    // Onto the stream open now, whatever output is chosen: mid-take a
+    // sub-device leaving the combined device moves every later jack, and
+    // these are the gains for where they are now.
+    layJackGainsFor (openOutputDeviceId);
+}
+
 CaptureCoordinator::~CaptureCoordinator()
 {
     stopRecording();
@@ -49,6 +68,12 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     outputAbandoned.store (false, std::memory_order_release);
     outputCarriesChannels = false;
     openOutputDeviceId.clear();
+
+    // The jack gains of the device about to open, before it opens, so its
+    // first callback already keeps the mix off a switched-off jack; any other
+    // device gets the mix on every channel. An output that refuses comes back
+    // through here with none (continueInputOnly).
+    layJackGainsFor (outputDeviceId);
 
     channelMeters.clear();
     for (size_t i = 0; i < channels.size(); ++i)
