@@ -22,6 +22,19 @@
 #include <unordered_set>
 #include <vector>
 
+// The Mac's power state: whether its audio is on, which it is not in a dark
+// wake (awake with the lid shut for Power Nap or a backup) or on the way to
+// sleep. IOKit's power-management SPI, declared in IOPMLibPrivate.h, which is
+// not in the SDK; IOKit.framework has exported it since macOS 10.7 and the
+// SDK's IOKit.tbd lists it. Imported weakly, so a macOS without it still
+// launches, and the callback watchdog then just cannot ask (see
+// systemAudioIsOff()). The simulation's virtual HAL defines it instead.
+#if defined (MMA_SIMULATE_MAC)
+extern "C" uint32_t IOPMConnectionGetSystemCapabilities (void);
+#else
+extern "C" uint32_t IOPMConnectionGetSystemCapabilities (void) __attribute__ ((weak_import));
+#endif
+
 namespace mma {
 
 struct CoreAudioStream
@@ -212,6 +225,30 @@ double hostClockSeconds() noexcept
 double sleepCountingSeconds() noexcept
 {
     return CFAbsoluteTimeGetCurrent();
+}
+
+/// True when the Mac says its audio is off right now: a dark wake, where the
+/// app runs and polls with the lid shut while CoreAudio runs no IOProc, for
+/// minutes at a time; or the way down into sleep. No device can be judged by
+/// its silence then. False when its audio is on, or the Mac cannot be asked.
+///
+/// An IPC to the power manager, not a clock read: message thread only, and
+/// only while the callback watchdog is held or about to call something dead.
+bool systemAudioIsOff() noexcept
+{
+    // IOPMLibPrivate.h's kIOPMCapabilityAudio, "audio output is supported";
+    // spelled here because that header is not in the SDK.
+    constexpr uint32_t kCapabilityAudio = 0x4;
+
+    // A weak import's address is null on a macOS that does not have it. (Not
+    // const: the simulation's is an ordinary definition, and a compiler that
+    // folds the address warns that the check can never fail there.)
+    auto* getSystemCapabilities = &IOPMConnectionGetSystemCapabilities;
+
+    if (getSystemCapabilities == nullptr)
+        return false;
+
+    return (getSystemCapabilities() & kCapabilityAudio) == 0;
 }
 
 bool tryAcquireCallbackLease (CoreAudioStream& stream) noexcept
@@ -2102,7 +2139,8 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
     // Sleep stops every IOProc at once, and the awake seconds around it -- IO
     // stopping before the Mac sleeps, USB devices starting again after it
     // wakes, a dark wake with the lid shut -- are not a device failing. The
-    // guard notices the sleep and holds the watchdog until audio runs again.
+    // guard notices the sleep and holds the watchdog until audio runs again,
+    // for as long as the Mac says its audio is off.
     {
         double latestCallback = 0.0;
 
@@ -2111,8 +2149,11 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
                 latestCallback = std::max (latestCallback,
                                            stream->lastCallbackSeconds.load (std::memory_order_relaxed));
 
-        watchdogSleepGuard.poll (now, sleepCountingSeconds(), latestCallback);
+        watchdogSleepGuard.poll (now, sleepCountingSeconds(), latestCallback, systemAudioIsOff);
     }
+
+    // Asked at most once a poll, and only of a stream about to be called dead.
+    bool systemAudioAsked = false;
 
     for (const auto& stream : openStreams)
     {
@@ -2261,6 +2302,24 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
             stream->lastCallbackSeconds.load (std::memory_order_relaxed), stream->startedSeconds);
 
         if (silenceBegan <= 0.0 || now - silenceBegan < kSilentSecondsBeforeGivingUp)
+            continue;
+
+        if (stream->reportedDead.load (std::memory_order_relaxed))
+            continue;
+
+        // The Mac turning its audio off stops every IOProc, and it does that
+        // on its way to sleep, which can take longer than these few seconds,
+        // before any sleep has been seen. Nothing is dead then: held, as for
+        // a sleep, until audio runs again.
+        if (! systemAudioAsked)
+        {
+            systemAudioAsked = true;
+
+            if (systemAudioIsOff())
+                watchdogSleepGuard.holdWhileSystemAudioIsOff (now);
+        }
+
+        if (watchdogSleepGuard.isWaitingForAudio())
             continue;
 
         // Once per stream. The condition stays true for as long as the device

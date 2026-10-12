@@ -158,6 +158,13 @@ State& state()
 std::atomic<int64_t> skippedAwakeNanos { 0 };
 std::atomic<int64_t> sleptNanos { 0 };
 
+// What the power manager says the Mac can do right now (IOPMLibPrivate.h's
+// IOPMCapabilityBits), and how often it has been asked.
+constexpr uint32_t kFullWakeCapabilities = 0x1 | 0x2 | 0x4 | 0x8 | 0x10; // CPU, video, audio, network, disk
+constexpr uint32_t kDarkWakeCapabilities = 0x1 | 0x8 | 0x10;             // CPU, network, disk
+std::atomic<uint32_t> systemCapabilities { kFullWakeCapabilities };
+std::atomic<int> systemCapabilityQueries { 0 };
+
 int64_t realNanos()
 {
     return std::chrono::duration_cast<std::chrono::nanoseconds> (
@@ -404,6 +411,12 @@ UInt64 AudioGetCurrentHostTime()
 UInt64 AudioConvertHostTimeToNanos (UInt64 hostTime)
 {
     return hostTime;
+}
+
+extern "C" uint32_t IOPMConnectionGetSystemCapabilities (void)
+{
+    systemCapabilityQueries.fetch_add (1, std::memory_order_relaxed);
+    return systemCapabilities.load (std::memory_order_relaxed);
 }
 
 void CFRelease (CFTypeRef value)
@@ -1055,6 +1068,8 @@ void reset()
     state().allowPropertyListeners = true;
     state().allowSystemPropertyListenerRemoval = true;
     state().aggregatesCreated = 0;
+    systemCapabilities.store (kFullWakeCapabilities, std::memory_order_relaxed);
+    systemCapabilityQueries.store (0, std::memory_order_relaxed);
 }
 
 void passTime (double seconds)
@@ -1065,6 +1080,17 @@ void passTime (double seconds)
 void sleepSystem (double seconds)
 {
     sleptNanos.fetch_add (toNanos (seconds), std::memory_order_relaxed);
+}
+
+void setSystemAudioOn (bool on)
+{
+    systemCapabilities.store (on ? kFullWakeCapabilities : kDarkWakeCapabilities,
+                              std::memory_order_relaxed);
+}
+
+int systemCapabilityQueryCount()
+{
+    return systemCapabilityQueries.load (std::memory_order_relaxed);
 }
 
 void setPropertyListenersAllowed (bool allowed)

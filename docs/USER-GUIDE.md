@@ -259,7 +259,9 @@ files really are empty and the card says so instead of calling it saved.
   affected by muting.
 - **The Mac sleeping between takes (macOS).** Close the lid with the app open
   and, when the Mac wakes, the app waits for your microphones and headphones
-  to start again rather than calling them unplugged. One that still hasn't, a
+  to start again rather than calling them unplugged. The same goes for the
+  Mac waking with the lid shut to back up or sync, for as long as that takes,
+  and for a Mac that is slow to fall asleep. One that still hasn't started, a
   few seconds after the rest, is reported as usual.
 - **Something switching your headphones to another sample rate (macOS).**
   Audio MIDI Setup, a music player or another audio app can change the

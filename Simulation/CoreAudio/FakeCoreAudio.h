@@ -150,6 +150,16 @@ void passTime (double seconds);
 /// day. No IOProc runs across it.
 void sleepSystem (double seconds);
 
+/// What the power manager says about the Mac's audio
+/// (IOPMConnectionGetSystemCapabilities()): on, as when fully awake (the reset
+/// state), or off, as in a dark wake -- awake with the lid shut, display and
+/// audio off -- or on the way down into sleep. Only what is reported: no
+/// IOProc is stopped or started by it.
+void setSystemAudioOn (bool on);
+
+/// How many times the backend has asked the power manager since reset().
+int systemCapabilityQueryCount();
+
 /// false makes AudioObjectAddPropertyListener fail, which models a Mac that
 /// will not tell the app about devices coming and going.
 void setPropertyListenersAllowed (bool allowed);
@@ -288,3 +298,8 @@ bool pumpInputBuffers (AudioObjectID device, const std::vector<InputBuffer>& buf
 bool pumpOutput (AudioObjectID device, int frames, std::vector<std::vector<float>>& out);
 
 } // namespace fakeca
+
+/// IOKit's power-management SPI as the virtual HAL answers it: the backend
+/// declares it itself, as the real one is in no SDK header. See
+/// fakeca::setSystemAudioOn().
+extern "C" uint32_t IOPMConnectionGetSystemCapabilities (void);

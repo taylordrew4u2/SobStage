@@ -1485,13 +1485,16 @@ void aMacThatSleepsAndWakesDoesNotAccuseItsDevices()
     backend.closeAllStreams();
 }
 
-/// A dark wake: the Mac wakes with the lid shut for maintenance, the app runs
-/// and polls, and audio stays off -- for a minute, sometimes. That is not every
-/// device failing either. Once the Mac is properly awake and the rest of the
-/// rig is running again, a mic that did not come back is reported as usual.
+/// A dark wake: the Mac wakes with the lid shut for maintenance -- Power Nap, a
+/// Time Machine backup, iCloud -- the app runs and polls, and the Mac's audio
+/// stays off, for minutes at a time. That is not every device failing. The
+/// watchdog used to give up waiting a minute in, and five seconds later every
+/// mic was "stopped sending audio" and the app reopened the rig in the dark
+/// wake. Once the Mac is properly awake and the rest of the rig is running
+/// again, a mic that did not come back is reported as usual.
 void aDarkWakeIsNotAFailureButAMicThatNeverReturnsIs()
 {
-    std::printf ("\nA dark wake with the lid shut, then a mic that never comes back\n");
+    std::printf ("\nA long dark wake with the lid shut, then a mic that never comes back\n");
     fakeca::reset();
 
     mma::CoreAudioBackend backend;
@@ -1503,20 +1506,33 @@ void aDarkWakeIsNotAFailureButAMicThatNeverReturnsIs()
     check (backend.takeStreamFailures().empty(), "a running rig is not accused");
 
     fakeca::sleepSystem (1800.0);
+    fakeca::setSystemAudioOn (false);
 
+    // Ten minutes, polled twice a second as the app does.
     bool quiet = true;
-    for (int second = 0; second < 45; ++second)
+    for (int poll = 0; poll < 1200; ++poll)
     {
-        fakeca::passTime (1.0);
+        fakeca::passTime (0.5);
         quiet = quiet && backend.takeStreamFailures().empty();
     }
 
-    check (quiet, "45 seconds of a dark wake, audio off, are not a failure");
+    check (quiet, "ten minutes of a dark wake, the Mac's audio off, are not a failure");
 
     fakeca::sleepSystem (1800.0);
-    check (backend.takeStreamFailures().empty(), "nor is going back to sleep and then waking properly");
+    for (int poll = 0; poll < 240; ++poll)
+    {
+        fakeca::passTime (0.5);
+        quiet = quiet && backend.takeStreamFailures().empty();
+    }
+
+    check (quiet, "nor is going back to sleep and dark-waking again");
 
     // Properly awake: the headphones start again, the mic never does.
+    fakeca::sleepSystem (1800.0);
+    fakeca::setSystemAudioOn (true);
+    fakeca::passTime (2.0);
+    check (backend.takeStreamFailures().empty(), "waking properly is not news");
+
     rig.runPhones();
     check (backend.takeStreamFailures().empty(), "the headphones starting again is not news");
 
@@ -1528,6 +1544,104 @@ void aDarkWakeIsNotAFailureButAMicThatNeverReturnsIs()
     check (! reported.empty()
                && reported.front().reason.find ("stopped sending audio") != std::string::npos,
            "with the usual advice");
+    backend.closeAllStreams();
+}
+
+/// A dark wake that ends in a full wake where nothing at all starts again:
+/// still reported, a minute after the Mac's audio is back on -- not a minute
+/// after it first woke, which a long dark wake had used up.
+void aLongDarkWakeThenNothingStartingIsReportedAMinuteAfterTheAudioIsBack()
+{
+    std::printf ("\nA long dark wake, then a full wake where nothing starts again\n");
+    fakeca::reset();
+
+    mma::CoreAudioBackend backend;
+    SleepRig rig;
+    rig.open (backend, "nothing");
+
+    rig.runMic();
+    rig.runPhones();
+    check (backend.takeStreamFailures().empty(), "a running rig is not accused");
+
+    fakeca::sleepSystem (600.0);
+    fakeca::setSystemAudioOn (false);
+
+    bool quiet = true;
+    for (int poll = 0; poll < 360; ++poll) // three minutes
+    {
+        fakeca::passTime (0.5);
+        quiet = quiet && backend.takeStreamFailures().empty();
+    }
+
+    check (quiet, "three minutes of a dark wake are not a failure");
+
+    fakeca::setSystemAudioOn (true);
+
+    constexpr double kWait = mma::CallbackWatchdogSleepGuard::kMaxWaitForAudioSeconds;
+    for (double waited = 0.0; waited < kWait + 4.0; waited += 0.5)
+    {
+        fakeca::passTime (0.5);
+        quiet = quiet && backend.takeStreamFailures().empty();
+    }
+
+    check (quiet, "the watchdog waits a minute, with the audio on, for the rig to start again");
+
+    fakeca::passTime (2.0);
+    const auto reported = backend.takeStreamFailures();
+    check (reported.size() == 2, "then reports both devices that never came back");
+    backend.closeAllStreams();
+}
+
+/// The lid closes, the HAL stops IO with the Mac's audio, and the Mac takes
+/// longer, awake, than the watchdog's few seconds to actually go to sleep. No
+/// sleep has been seen yet, so only the Mac saying its audio is off keeps the
+/// rig from being called dead -- and reopened -- on the way down.
+void aMacSlowToFallAsleepDoesNotAccuseItsDevices()
+{
+    std::printf ("\nThe Mac takes its time falling asleep after its audio stops\n");
+    fakeca::reset();
+
+    mma::CoreAudioBackend backend;
+    SleepRig rig;
+    rig.open (backend, "slow");
+
+    bool running = true;
+    for (int poll = 0; poll < 10; ++poll)
+    {
+        rig.runMic();
+        rig.runPhones();
+        fakeca::passTime (0.5);
+        running = running && backend.takeStreamFailures().empty();
+    }
+
+    check (running, "a running rig is not accused");
+    check (fakeca::systemCapabilityQueryCount() == 0,
+           "and the power manager is not asked on every poll of a running rig");
+
+    fakeca::setSystemAudioOn (false);
+
+    bool quiet = true;
+    for (int poll = 0; poll < 30; ++poll) // fifteen seconds
+    {
+        fakeca::passTime (0.5);
+        quiet = quiet && backend.takeStreamFailures().empty();
+    }
+
+    check (quiet, "fifteen seconds, awake, with the Mac's audio off are not a failure");
+
+    fakeca::sleepSystem (3600.0);
+    fakeca::setSystemAudioOn (true);
+    fakeca::passTime (1.0);
+    check (backend.takeStreamFailures().empty(), "nor is waking an hour later");
+
+    rig.runMic();
+    rig.runPhones();
+    check (backend.takeStreamFailures().empty(), "nor the rig starting again");
+
+    // Awake and running, the watchdog is as watchful as ever.
+    fakeca::passTime (5.5);
+    const auto reported = backend.takeStreamFailures();
+    check (reported.size() == 2, "a rig that stops after waking is still reported, both devices");
     backend.closeAllStreams();
 }
 
@@ -2866,6 +2980,8 @@ int main()
     aMicrophoneWhoseFirstCallbackNeverArrivesIsReported();
     aMacThatSleepsAndWakesDoesNotAccuseItsDevices();
     aDarkWakeIsNotAFailureButAMicThatNeverReturnsIs();
+    aLongDarkWakeThenNothingStartingIsReportedAMinuteAfterTheAudioIsBack();
+    aMacSlowToFallAsleepDoesNotAccuseItsDevices();
     aWakeAfterWhichNothingStartsAgainIsStillReported();
     aMicCalledDeadBeforeSleepThatReturnsAfterWakeIsResumed();
     aStuckInputStartIsBoundedAndCleanedUp();

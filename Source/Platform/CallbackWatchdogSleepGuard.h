@@ -19,13 +19,20 @@ namespace mma {
 /// take out the awake time around it: the seconds between the HAL stopping IO
 /// and the Mac actually sleeping, the seconds a USB interface needs to start
 /// again after waking, and a dark wake -- the Mac waking with the lid shut for
-/// maintenance, app running, audio still off -- which can last a minute. So
-/// this also notices the sleep, by comparing the awake clock with one that
-/// keeps counting, and then holds the watchdog until audio is running again on
-/// any open device (proof the Mac is fully awake and its audio back on). From
-/// that moment every device gets the watchdog's usual grace to follow. If
-/// nothing runs again at all, the watchdog resumes after a minute regardless,
-/// so a rig that never comes back is still reported.
+/// maintenance (Power Nap, a Time Machine backup, iCloud), app running, audio
+/// still off -- which can last minutes. So this also notices the sleep, by
+/// comparing the awake clock with one that keeps counting, and then holds the
+/// watchdog until audio is running again on any open device (proof the Mac is
+/// fully awake and its audio back on). From that moment every device gets the
+/// watchdog's usual grace to follow.
+///
+/// If nothing runs again at all, the watchdog resumes after a minute
+/// regardless, so a rig that never comes back is still reported -- a minute
+/// with the Mac's audio on. While the Mac says its audio is off, which is what
+/// a dark wake is, that minute does not run and the hold does not end, however
+/// long the dark wake lasts. The watchdog is likewise held when it is about to
+/// call a device dead and the Mac says its audio is off with no sleep seen yet:
+/// IO stopped because the Mac is on its way to sleep.
 ///
 /// Message thread only; no clock of its own, so it can be tested.
 class CallbackWatchdogSleepGuard
@@ -35,8 +42,9 @@ public:
     /// between two polls for it to be a sleep. Awake, the two run together.
     static constexpr double kSleepDetectionSeconds = 1.0;
 
-    /// After a sleep, how long (awake) to wait for audio to run again before
-    /// judging the streams anyway. Longer than a typical dark wake.
+    /// After a sleep, how long (awake, with the Mac's audio on) to wait for
+    /// audio to run again before judging the streams anyway. A dark wake is
+    /// no part of it.
     static constexpr double kMaxWaitForAudioSeconds = 60.0;
 
     /// Once per watchdog poll, before any stream is judged.
@@ -45,25 +53,52 @@ public:
     /// the Mac sleeps. `sleepCountingNow`: now, on a clock that keeps counting
     /// through sleep. `latestCallback`: the most recent IOProc stamp across
     /// every open stream, on the awake clock (0: none yet).
-    void poll (double awakeNow, double sleepCountingNow, double latestCallback) noexcept
+    ///
+    /// `systemAudioIsOff`: called with no arguments, true when the Mac says
+    /// its audio is off right now (a dark wake, or on its way to sleep), false
+    /// when it is on or the Mac cannot say. Asked only while the watchdog is
+    /// held and no audio has run yet, since asking is a question to the power
+    /// manager rather than a clock read.
+    template <typename SystemAudioIsOff>
+    void poll (double awakeNow, double sleepCountingNow, double latestCallback,
+               SystemAudioIsOff&& systemAudioIsOff) noexcept
     {
         if (polled
             && (sleepCountingNow - lastSleepCounting) - (awakeNow - lastAwake) > kSleepDetectionSeconds)
-        {
-            wokeAt = awakeNow;
-            waitingForAudio = true;
-        }
+            hold (awakeNow);
 
         polled = true;
         lastAwake = awakeNow;
         lastSleepCounting = sleepCountingNow;
 
-        if (waitingForAudio
-            && (latestCallback > wokeAt || awakeNow - wokeAt >= kMaxWaitForAudioSeconds))
+        if (! waitingForAudio)
+            return;
+
+        if (latestCallback > heldAt)
         {
-            waitingForAudio = false;
-            rearmedAt = awakeNow;
+            resume (awakeNow);
+            return;
         }
+
+        // A dark wake: awake, polling, and audio off for as long as the Mac
+        // likes. None of it counts towards giving up.
+        if (systemAudioIsOff())
+        {
+            waitCountsFrom = awakeNow;
+            return;
+        }
+
+        if (awakeNow - waitCountsFrom >= kMaxWaitForAudioSeconds)
+            resume (awakeNow);
+    }
+
+    /// The watchdog was about to call a stream dead, and the Mac says its
+    /// audio is off: every IOProc stopped because the Mac is going to sleep
+    /// (or is in a dark wake no sleep was seen before). Held as for a sleep.
+    void holdWhileSystemAudioIsOff (double awakeNow) noexcept
+    {
+        if (! waitingForAudio)
+            hold (awakeNow);
     }
 
     /// True between noticing a sleep and audio running again (or the wait
@@ -90,8 +125,22 @@ private:
     double lastSleepCounting = 0.0;
 
     bool waitingForAudio = false;
-    double wokeAt = 0.0;
+    double heldAt = 0.0;         // the latest sleep noticed: audio has to run after this
+    double waitCountsFrom = 0.0; // the wait's minute runs from here, with the Mac's audio on
     double rearmedAt = 0.0;
+
+    void hold (double awakeNow) noexcept
+    {
+        waitingForAudio = true;
+        heldAt = awakeNow;
+        waitCountsFrom = awakeNow;
+    }
+
+    void resume (double awakeNow) noexcept
+    {
+        waitingForAudio = false;
+        rearmedAt = awakeNow;
+    }
 };
 
 } // namespace mma
