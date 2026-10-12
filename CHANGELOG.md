@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.13.26 -- 2026-10-12 (release candidate)
+
+Mac fixes: headphone rate changes, sleep, combined video, quitting, cards and cameras.
+
+### Fixed
+
+- **A sample-rate change on the headphones no longer stops the take.**
+  Bluetooth headphones switching to call mode, or another app setting the
+  headphone interface to 44.1 kHz, used to end the recording; now the mics
+  keep recording and the headphones come back after Stop. Between takes
+  SobStage sets the output back to its own rate instead of blaming the CPU.
+- **Mac sleep:** after the Mac wakes, the mics are no longer reported dead and
+  reopened. A sleep during a take is noted in session.json.
+- **Headphones on the combined device:** switched-off headphones stay off, and
+  the right people keep the mix, when a mic drops out of the combined device
+  or joins it late. The alarm and the start/stop chirps still play on a
+  switched-off jack, so a fault is always heard.
+- **Combined video waits for the next take** instead of competing with it for
+  the card, and checks there is room first. Renaming the take folder in
+  Finder while the combined video or podcast copy is being made no longer
+  loses it.
+- **Quitting:** after "Quit When Done", a second Cmd-Q asks again instead of
+  cancelling the combined video, and a line says a quit is waiting. Quit
+  questions bring SobStage to the front (the Dock icon bounces if macOS won't
+  let it). "Stop and Quit" shows any problem with the take before quitting.
+- **Cards:** a different card with the same name is speed- and format-checked
+  again. A long take keeps recording past the 3.9 GB file split even if its
+  folder was renamed. A take stored only in iCloud while you're offline is
+  never overwritten.
+- **Cameras:** two identical cameras no longer give a false "gone away" alert
+  (or miss a real one); a capture dongle keeps its 30 fps mode when it
+  reopens; "Recording to" names the file actually being written.
+- **Less CPU in silence** on Intel Macs.
+- **Disk image:** no icon covers the first-launch Terminal command any more.
+
 ## v1.13.25 -- 2026-10-09 (release candidate)
 
 Headphones-first monitoring, Mac fixes and crash recovery.
