@@ -302,7 +302,7 @@ double DeviceInputStream::fillErrorNow (size_t available) noexcept
     // Smoothed a little: a delivery that lands late by a fraction of a block
     // reads as a dip until it arrives, and the loop should see the trend
     // rather than the tremor. Thirty-two blocks is 43 ms at 64/48k, nothing
-    // against a loop whose slew takes thirty seconds to cross 150 PPM.
+    // against a loop whose slew takes seven seconds to cross 150 PPM.
     if (! fillAverageValid)
     {
         fillAverage = virtualFill;
@@ -430,8 +430,8 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     // ring has already run dry for most of the difference by the time the
     // block lands -- the gap no buffering could have avoided, counted as it
     // happened -- and whatever is still short of the new target is buffered
-    // here, once and exactly, rather than left to the loop at 5 PPM/s with no
-    // cushion at all. The silence already written stood in for the delay, not
+    // here, once and exactly, rather than left to the slew-limited loop with
+    // no cushion at all. The silence already written stood in for the delay, not
     // for late audio, so none of the block is skipped. A block no larger than
     // what is held (a device going back to a size it ran at before) changes
     // nothing at all: the headroom was kept for it.
@@ -601,7 +601,7 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
 
         // Start exactly at the target, not up to a pull past it. The level at
         // the first pull is where this channel sits in time against every
-        // other one, and the loop moves it at 5 PPM/s: starting a pull deep
+        // other one, and the loop moves it only slowly: starting a pull deep
         // left a channel up to a block behind its neighbours for a minute,
         // and its place in time -- which the writer lines the stems up by --
         // only as accurate as the pull that happened to cross the target. What

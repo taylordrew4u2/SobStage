@@ -197,7 +197,7 @@ TEST_CASE (DeviceInputStream_CorrectionStaysInsideTheSafetyClamp)
     // A device this far out is broken, not drifting. §3.2 clamps at +/-200 PPM
     // so a bad measurement can never turn into an audible pitch shift. The
     // clamp is what is under test, so this runs long enough to reach it: the
-    // 5 PPM/s slew is deliberately slow, which is the point.
+    // slew is deliberately gradual, which is the point.
     runClockRatio (s, 128, 64, 60000);
 
     REQUIRE (std::abs (s.getDriftPpm()) <= DriftCompensator::kMaxRatioDeviationPpm + 1e-9);
@@ -420,9 +420,8 @@ TEST_CASE (DeviceInputStream_MeasuresADeviceClockWithinTwoPpmInAMinute)
     double nextPushS = 0.0, nextPullS = pullPeriodS * 0.5, nextTickS = 0.1;
     double nowS = 0.0;
 
-    // Long enough for the loop too: at the spec's 5 PPM/s slew, 150 PPM is
-    // reached at 30 s and the level it accumulated meanwhile takes another
-    // minute or so to drain through the clamp.
+    // Long enough for the loop too: at the spec's slew 150 PPM is reached in
+    // seconds, and the level it accumulated meanwhile drains back after it.
     while (nowS < 160.0)
     {
         if (nextPushS <= nextPullS)
@@ -674,9 +673,9 @@ TEST_CASE (DeviceInputStream_RingIsHeldAtTargetEvenAtAWideClockOffset)
     // being dropped a sample at a time with the underrun counter reading zero
     // throughout. Corrected, it parks at its pre-roll target and stays there.
     //
-    // Five minutes because §3.2 caps the loop's slew at 5 PPM/s: reaching
-    // 100 PPM and settling takes a couple of minutes, and sampling before then
-    // measures the slew rather than the steady state.
+    // Five minutes because §3.2 caps the loop's slew: reaching 100 PPM and
+    // settling takes a while, and sampling before then measures the slew
+    // rather than the steady state.
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
@@ -1633,90 +1632,115 @@ TEST_CASE (DeviceInputStream_AfterAGapTheChannelResumesExactlyWhereItStopped)
     // samples later than the silence written for it, its stem out of step
     // with every other stem by that much after each gap.
     //
-    // The device runs 150 PPM fast, so by the gap the loop has the resampler
-    // well between two samples: a ramp's output then carries that fraction,
-    // and it must carry on after the gap.
-    ScopedSimulatedClock clock;
-    DeviceInputStream s (48000.0);
-    s.prepare (48000.0, 64);
-
-    const double deviceRate = 48000.0 * (1.0 + 150.0e-6);
-    std::vector<float> in (1156), out (64);
-    long long produced = 0;
-    double blockStart = 0.0, nextOut = 0.0005;
-    double delayBefore = -1.0, delayAfter = -1.0, fractionBefore = -1.0, fractionAfter = -1.0;
-    float previous = 0.0f;
-    int repeats = 0;
-    bool gapSeen = false;
-
-    while (nextOut < 4.0)
+    // The device runs 150 PPM fast, so the loop moves the resampler between
+    // two samples; a ramp's output carries that fraction, and it must carry
+    // on after the gap. The gap is tried at several moments so that at least
+    // one finds the resampler well between two samples, whatever the loop's
+    // own pace.
+    struct Result
     {
-        const int block = blockStart < 2.5 ? 64 : 1156;
+        double delayBefore = -1.0, delayAfter = -1.0, fractionBefore = -1.0, fractionAfter = -1.0;
+        int repeats = 0;
+        bool gapSeen = false;
+        uint64_t silence = 0;
+    };
 
-        if (blockStart + block / deviceRate <= nextOut)
+    const auto run = [] (double growAt)
+    {
+        ScopedSimulatedClock clock;
+        DeviceInputStream s (48000.0);
+        s.prepare (48000.0, 64);
+
+        const double deviceRate = 48000.0 * (1.0 + 150.0e-6);
+        std::vector<float> in (1156), out (64);
+        long long produced = 0;
+        double blockStart = 0.0, nextOut = 0.0005;
+        float previous = 0.0f;
+        Result r;
+
+        while (nextOut < growAt + 1.0)
         {
-            blockStart += block / deviceRate;
-            simulatedNs = static_cast<int64_t> (blockStart * 1.0e9) + 1;
-            for (int i = 0; i < block; ++i)
-                in[static_cast<size_t> (i)] = static_cast<float> (produced + i + 1);
-            s.pushBlock (in.data(), block);
-            produced += block;
-            continue;
-        }
+            const int block = blockStart < growAt ? 64 : 1156;
 
-        simulatedNs = static_cast<int64_t> (nextOut * 1.0e9) + 1;
-        s.pull (out.data(), 64);
-
-        for (int i = 0; i < 64; ++i)
-        {
-            const float x = out[static_cast<size_t> (i)];
-
-            if (x == 0.0f)
-                gapSeen = gapSeen || s.getUnderrunSamples() > 0;
-            else if (gapSeen && previous != 0.0f && x - previous < 0.5f)
-                ++repeats;
-
-            // The last sample heard before the gap and the first after it:
-            // where the channel sits, and how far between two of the
-            // device's samples the resampler is.
-            if (x != 0.0f)
+            if (blockStart + block / deviceRate <= nextOut)
             {
-                const double delay = (nextOut * 48000.0 + i) - (static_cast<double> (x) - 1.0);
-                const double fraction = static_cast<double> (x) - std::floor (static_cast<double> (x));
-
-                if (! gapSeen)
-                {
-                    delayBefore = delay;
-                    fractionBefore = fraction;
-                }
-                else if (delayAfter < 0.0)
-                {
-                    delayAfter = delay;
-                    fractionAfter = fraction;
-                }
+                blockStart += block / deviceRate;
+                simulatedNs = static_cast<int64_t> (blockStart * 1.0e9) + 1;
+                for (int i = 0; i < block; ++i)
+                    in[static_cast<size_t> (i)] = static_cast<float> (produced + i + 1);
+                s.pushBlock (in.data(), block);
+                produced += block;
+                continue;
             }
 
-            previous = x;
+            simulatedNs = static_cast<int64_t> (nextOut * 1.0e9) + 1;
+            s.pull (out.data(), 64);
+
+            for (int i = 0; i < 64; ++i)
+            {
+                const float x = out[static_cast<size_t> (i)];
+
+                if (x == 0.0f)
+                    r.gapSeen = r.gapSeen || s.getUnderrunSamples() > 0;
+                else if (r.gapSeen && previous != 0.0f && x - previous < 0.5f)
+                    ++r.repeats;
+
+                // The last sample heard before the gap and the first after
+                // it: where the channel sits, and how far between two of the
+                // device's samples the resampler is.
+                if (x != 0.0f)
+                {
+                    const double delay = (nextOut * 48000.0 + i) - (static_cast<double> (x) - 1.0);
+                    const double fraction = static_cast<double> (x) - std::floor (static_cast<double> (x));
+
+                    if (! r.gapSeen)
+                    {
+                        r.delayBefore = delay;
+                        r.fractionBefore = fraction;
+                    }
+                    else if (r.delayAfter < 0.0)
+                    {
+                        r.delayAfter = delay;
+                        r.fractionAfter = fraction;
+                    }
+                }
+
+                previous = x;
+            }
+
+            nextOut += 64 / 48000.0;
         }
 
-        nextOut += 64 / 48000.0;
+        r.silence = s.getUnderrunSamples() + s.getAlignmentSilenceSamples();
+        return r;
+    };
+
+    bool wellBetween = false;
+
+    for (double growAt = 2.0; growAt < 6.0; growAt += 0.25)
+    {
+        const auto r = run (growAt);
+
+        REQUIRE (r.gapSeen);
+        REQUIRE (r.silence > 1000u);
+
+        // Not one sample played twice...
+        REQUIRE (r.repeats == 0);
+
+        // ...the resampler where it was, a sample's fraction and all...
+        const double drift = std::abs (r.fractionAfter - r.fractionBefore);
+        REQUIRE (std::min (drift, 1.0 - drift) < 0.01);
+        wellBetween = wellBetween || (r.fractionBefore > 0.25 && r.fractionBefore < 0.75);
+
+        // ...and the channel later by the silence written and nothing else
+        // (the device's clock, 150 PPM fast, moves it a fraction more over
+        // the gap).
+        REQUIRE_NEAR (r.delayAfter - r.delayBefore, static_cast<double> (r.silence), 0.5);
     }
 
-    REQUIRE (gapSeen);
-    REQUIRE (s.getUnderrunSamples() > 1000u);
-
-    // Not one sample played twice...
-    REQUIRE (repeats == 0);
-
-    // ...the resampler where it was, a sample's fraction and all (a little
-    // over 0.1 of a sample in from either end, so dropping it shows)...
-    REQUIRE (fractionBefore > 0.1);
-    REQUIRE (fractionBefore < 0.9);
-    REQUIRE_NEAR (fractionAfter, fractionBefore, 0.01);
-
-    // ...and the channel later by the silence written and nothing else (the
-    // device's clock, 150 PPM fast, moves it a fraction more over the gap).
-    REQUIRE_NEAR (delayAfter - delayBefore, static_cast<double> (s.getUnderrunSamples() + s.getAlignmentSilenceSamples()), 0.5);
+    // At least one gap found the resampler well between two samples, so a
+    // dropped fraction could not have passed unseen.
+    REQUIRE (wellBetween);
 }
 
 TEST_CASE (DeviceInputStream_AStreamsPlaceInTimeIsItsOwnDevicesBlock)

@@ -2,6 +2,7 @@
 #include "Core/DriftCompensator.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 using namespace mma;
 
@@ -120,10 +121,10 @@ TEST_CASE (DriftCompensator_SustainedExcessDriftFlagClearsWhenBackInRange)
 TEST_CASE (DriftCompensator_SettlesInsteadOfOscillating)
 {
     // The regression this exists for: the integral saturated at the +/-200 PPM
-    // clamp long before the 5 PPM/s slew-limited output could reach it, so every
-    // time the fill crossed target the loop had to unwind from saturation --
-    // at 5 PPM/s. Over hours it swung between +140 and -45 PPM instead of
-    // settling, and starved rings badly enough to underrun.
+    // clamp long before the slew-limited output (5 PPM/s then) could reach it,
+    // so every time the fill crossed target the loop had to unwind from
+    // saturation at the same slew. Over hours it swung between +140 and -45
+    // PPM instead of settling, and starved rings badly enough to underrun.
     DriftCompensator c (48000.0);
 
     // A device running 100 PPM fast: its ring fills, so the loop must raise the
@@ -171,4 +172,79 @@ TEST_CASE (DriftCompensator_DoesNotIntegrateWhileRateLimited)
     // continuing to push from a saturated integral.
     REQUIRE (a.getPpm() < 5.0);
     REQUIRE (b.getPpm() < 5.0);
+}
+
+TEST_CASE (DriftCompensator_TheIntegralStillWorksWhenTheLevelIsNoisy)
+{
+    // The level the loop reads always carries a sample or two of jitter:
+    // a device delivers a little early or late, the output pulls a little
+    // early or late. The proportional term turns that into several PPM of
+    // request on every block, and the slew allows a few hundredths of a PPM
+    // a block, so the output is rate-limited on every single block. The
+    // integral used to pause whenever the output was limited at all, which
+    // here meant forever: the loop ran on its proportional term alone and
+    // held a device 100 PPM slow 20 samples below its target for the whole
+    // session -- with gaps, not the loop, making up the difference.
+    //
+    // Pausing only when the error would push the integral further the way
+    // the output is already straining keeps the protection against windup
+    // and lets the integral carry the drift: the level settles on target.
+    DriftCompensator c (48000.0);
+
+    uint64_t seed = 0x9E3779B97F4A7C15ull;
+    const auto noise = [&seed]
+    {
+        seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+        return (static_cast<double> (seed >> 11) / 9007199254740992.0 - 0.5) * 4.0; // +/-2 samples
+    };
+
+    double fill = 0.0, sum = 0.0;
+    int counted = 0;
+    const int blocks = static_cast<int> (240.0 * 48000.0 / 64.0); // four minutes
+
+    for (int block = 0; block < blocks; ++block)
+    {
+        // A device 100 PPM slow drains the ring; the loop's correction
+        // slows the output to match.
+        fill += 64.0 * (-100.0e-6 - c.getPpm() * 1.0e-6);
+        c.update (fill + noise(), 64);
+
+        if (block > blocks / 2)
+        {
+            sum += fill;
+            ++counted;
+        }
+    }
+
+    // On the clock, and on target: not parked at the -20 samples a
+    // proportional-only loop needs for 100 PPM.
+    REQUIRE_NEAR (c.getPpm(), -100.0, 5.0);
+    REQUIRE (std::abs (sum / counted) < 3.0);
+}
+
+TEST_CASE (DriftCompensator_CatchesAFarDeviceBeforeItsRingRunsDown)
+{
+    // Every stream starts at zero PPM, and a device far off the output's
+    // clock drains its ring until the loop arrives. At 5 PPM/s a device
+    // 200 PPM slow took forty seconds to catch and ran its ring 190 samples
+    // down -- past a 64-sample block's whole cushion, a gap at the top of
+    // every take. At the slew the loop has now it is caught in ten seconds,
+    // and the ring never goes a block down.
+    DriftCompensator c (48000.0);
+
+    double fill = 0.0, lowest = 0.0;
+
+    for (int block = 0; block < static_cast<int> (60.0 * 48000.0 / 64.0); ++block)
+    {
+        fill += 64.0 * (-200.0e-6 - c.getPpm() * 1.0e-6);
+        c.update (fill, 64);
+        lowest = std::min (lowest, fill);
+    }
+
+    REQUIRE (lowest > -64.0);
+    REQUIRE_NEAR (c.getPpm(), -200.0, 1.0);
+
+    // And no faster than the slew, which keeps any change of pitch
+    // gradual: 20 PPM a second is 0.035 of a cent a second.
+    REQUIRE (DriftCompensator::kMaxSlewPpmPerSecond <= 20.0);
 }

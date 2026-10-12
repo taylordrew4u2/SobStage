@@ -29,7 +29,7 @@ and Windows. The table below lists the largest areas rather than every file:
 | `RecordingEngine` — mid-take unplug/reconnect/new-mic events | §6.5 | 15 |
 | `PreflightThroughputTest` — rolling-minimum throughput, 2x gate, FAT32 | §6.4 | 22 |
 | `SessionFolderNaming` — sanitization, truncation, collision suffixes | §6.2 | 11 |
-| `DriftCompensator` — PI loop, ±200 PPM clamp, 5 PPM/s slew | §3.2 | 11 |
+| `DriftCompensator` — PI loop, ±200 PPM clamp, 20 PPM/s slew | §3.2 | 13 |
 | `DeviceInputStream` — per-device ring, drift loop, resampler onto the pulling clock | §3.2, §3.3 | 29 |
 | `AlsaBackend` — real Linux audio: enumeration, exclusive-mode gate, capture, inotify hotplug | §2, §5.4, §11 | `live_capture` |
 | `AlsaInputPolicy` — fail-closed removable-hardware selection | §2 | 13 |
@@ -57,7 +57,11 @@ Both found real bugs that the unit-test suite did not:
   long before the deliberately slow 5 PPM/s slew could deliver it, so every
   crossing had to unwind from saturation. Over hours the loop swung between
   +140 and −45 PPM instead of settling, starved rings, and failed §3.4 at
-  3.04 ms. Integration now pauses whenever the output is rate- or clamp-limited.
+  3.04 ms. Integration then paused whenever the output was rate- or
+  clamp-limited -- which, with a level carrying a sample of jitter, was every
+  block, so the integral never moved and the loop ran proportional-only.
+  It now pauses only when the error would push the integral further the way
+  the output is already limited.
 - **Pre-roll sized from ring capacity.** Playout started at half the ring, which
   meant 1024 samples — **21 ms of monitor latency**, on its own more than twice
   the entire §5.4 budget. Pre-roll is now a fixed two blocks, and the monitor

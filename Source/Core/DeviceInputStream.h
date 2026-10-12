@@ -241,7 +241,7 @@ public:
     /// The loop's own correction against the clock that pulls this stream:
     /// what the resampler is doing right now. Positive means this device is
     /// being drained faster than nominal. This is a control state, not a
-    /// measurement -- it slews at 5 PPM/s, overshoots, and is disturbed by
+    /// measurement -- it slews from zero, overshoots, and is disturbed by
     /// every lost block -- so §3.3's reported figure comes from
     /// getMeasuredDriftPpm() instead.
     double getDriftPpm() const noexcept { return driftPpm.load (std::memory_order_relaxed); }

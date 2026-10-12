@@ -5709,7 +5709,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         // land on a device that was keeping perfect time.
         {
             // The measured figure, not the loop's state. The loop's own PPM
-            // slews at 5 PPM/s from zero, overshoots to its clamp draining
+            // slews from zero, overshoots to its clamp draining
             // what it accumulated on the way, and is knocked sideways by
             // every lost block -- so read at sixty seconds it was a snapshot
             // of a transient, and every microphone in the rig was "measured"
