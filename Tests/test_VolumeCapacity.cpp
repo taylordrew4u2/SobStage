@@ -124,9 +124,85 @@ TEST_CASE (VolumeFingerprint_WithoutAUuidTheDeviceAndSizeDecide)
     REQUIRE (volumesDiffer (noUuid, card ("", "/dev/disk5s1")));
     REQUIRE (volumesDiffer (noUuid, card ("", "/dev/disk4s1", 32ull * 1000 * 1000 * 1000)));
 
+    // A card's size is fixed when it is formatted, so even a few megabytes
+    // apart -- two "64 GB" cards from different makers -- is two cards.
+    REQUIRE (volumesDiffer (noUuid, card ("", "/dev/disk4s1", 64ull * 1000 * 1000 * 1000 - 4096ull * 1024)));
+
+    // The same for FAT32, here as Linux names it (MSDOS_SUPER_MAGIC).
+    auto fatOnLinux = noUuid;
+    fatOnLinux.mountRoot = "/media/me/NO NAME";
+    fatOnLinux.fsType = "19780";
+    fatOnLinux.device = "dev:2065";
+    auto smallerFat = fatOnLinux;
+    smallerFat.totalBytes = 32ull * 1000 * 1000 * 1000;
+    REQUIRE (volumesDiffer (fatOnLinux, smallerFat));
+
     // One side without a UUID (the system declined to say this once) is
     // judged on what both sides have, so it can't make the same card look new.
     REQUIRE_FALSE (volumesDiffer (noUuid, card ("6A1F-0C22")));
+}
+
+TEST_CASE (VolumeFingerprint_OnlyCardFormatsAreToldApartBySize)
+{
+    REQUIRE (sizeIdentifiesVolume ("msdos"));
+    REQUIRE (sizeIdentifiesVolume ("exfat"));
+    REQUIRE (sizeIdentifiesVolume ("19780"));       // Linux vfat/msdos
+    REQUIRE (sizeIdentifiesVolume ("538032816"));   // Linux exfat
+
+    REQUIRE_FALSE (sizeIdentifiesVolume ("smbfs"));
+    REQUIRE_FALSE (sizeIdentifiesVolume ("nfs"));
+    REQUIRE_FALSE (sizeIdentifiesVolume ("apfs"));
+    REQUIRE_FALSE (sizeIdentifiesVolume ("801189825")); // Linux ZFS
+    REQUIRE_FALSE (sizeIdentifiesVolume (""));
+}
+
+// A ZFS dataset's reported size is what it holds plus what the pool has free,
+// so any write anywhere in the pool changes it; a network share passes on
+// whatever its server reports. The same mounted drive, a little bigger or
+// smaller between two looks, is the same drive -- otherwise every status tick
+// threw its check away and started another.
+TEST_CASE (VolumeFingerprint_ASizeThatDriftsIsTheSameVolume)
+{
+    VolumeFingerprint zfsHome;
+    zfsHome.known = true;
+    zfsHome.mountRoot = "/home";
+    zfsHome.fsType = "801189825";   // 0x2fc12fc1, ZFS_SUPER_MAGIC
+    zfsHome.device = "dev:44";
+    zfsHome.totalBytes = 912ull * 1000 * 1000 * 1000;
+
+    auto afterSystemWrites = zfsHome;
+    afterSystemWrites.totalBytes -= 37ull * 1000 * 1000;
+    REQUIRE_FALSE (volumesDiffer (zfsHome, afterSystemWrites));
+
+    // A large move too -- a backup into another dataset of the pool.
+    auto afterBackup = zfsHome;
+    afterBackup.totalBytes -= 80ull * 1000 * 1000 * 1000;
+    REQUIRE_FALSE (volumesDiffer (zfsHome, afterBackup));
+
+    // A share on a Mac has no volume UUID; the NAS behind it is often ZFS.
+    VolumeFingerprint share;
+    share.known = true;
+    share.mountRoot = "/Volumes/Recordings";
+    share.fsType = "smbfs";
+    share.device = "//me@nas._smb._tcp.local/Recordings";
+    share.totalBytes = 7800ull * 1000 * 1000 * 1000;
+
+    auto shareLater = share;
+    shareLater.totalBytes += 200ull * 1000 * 1000;
+    REQUIRE_FALSE (volumesDiffer (share, shareLater));
+
+    // What still tells it apart: another server's share at the same name ...
+    auto otherNas = shareLater;
+    otherNas.device = "//me@other-nas._smb._tcp.local/Recordings";
+    REQUIRE (volumesDiffer (share, otherNas));
+
+    // ... and the share gone, so the startup disk answers at the path.
+    auto gone = share;
+    gone.mountRoot = "/System/Volumes/Data";
+    gone.fsType = "apfs";
+    gone.device = "/dev/disk3s5";
+    gone.uuid = "A9F7E3C0-1D2B-4C5E-8F60-0123456789AB";
+    REQUIRE (volumesDiffer (share, gone));
 }
 
 TEST_CASE (VolumeFingerprint_UnknownIsNeverADifferentVolume)
@@ -162,5 +238,9 @@ TEST_CASE (VolumeFingerprint_AnotherFilesystemIsAnotherVolume)
     REQUIRE (proc.known);
     REQUIRE (proc.mountRoot == "/proc");
     REQUIRE (volumesDiffer (temp, proc));
+
+    // The type is f_type in decimal (PROC_SUPER_MAGIC, 0x9fa0) -- the form
+    // sizeIdentifiesVolume knows Linux's FAT and ExFAT by.
+    REQUIRE (proc.fsType == "40864");
 }
 #endif

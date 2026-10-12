@@ -230,6 +230,11 @@ Run on volume selection and again on arming; cache per volume ID with a 30-day e
   result and run the check and the interrupted-take scan again for whatever is
   there. At arming, read the identity once more under the card deadline and
   refuse if it differs.
+- Size tells volumes apart only for FAT and ExFAT, whose size is fixed when
+  formatted. A ZFS dataset, a network share or a FUSE mount reports a size that
+  moves while it stays mounted (ZFS counts the pool's free space), so for those
+  a changed size alone never makes it another volume; a different mount point,
+  type, device or UUID still does.
 - Run the filesystem work away from the window thread. Only one check for the
   current destination may publish; changing destinations abandons the old
   result, and launch, destination changes and shutdown never join the worker.
