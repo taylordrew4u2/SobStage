@@ -372,7 +372,9 @@ if (MMA_BUILD_APP)
         Source/UI/ModalCard.cpp
         Source/UI/SaveLocationPrompt.cpp
         Source/UI/SetupGuidePanel.cpp
-        Source/UI/RecoveredTakesPanel.cpp)
+        Source/UI/RecoveredTakesPanel.cpp
+        Source/UI/SavedTakePanel.cpp
+        Source/UI/TakeAlertCard.cpp)
     target_compile_definitions(layout_probe PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
         JUCE_STANDALONE_APPLICATION=1)
     target_include_directories(layout_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)

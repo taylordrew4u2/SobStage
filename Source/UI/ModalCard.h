@@ -37,6 +37,15 @@ public:
     /// fits before showing it.
     int getRequiredHeight() const;
 
+    /// A line at the foot of the card about the app rather than the card:
+    /// while SobStage waits to quit until the combined video or the podcast
+    /// copy is finished, it says so here. The main screen says it too, on
+    /// the line under the record button -- but a card covers that line, and
+    /// the saved-take card is exactly what is up after a take. Empty removes
+    /// it. Counted in getRequiredHeight(), so the owner grows the window for
+    /// it the way it does for the card.
+    void setFootnote (const juce::String& text);
+
 protected:
     /// Height the subclass's own content needs: everything below the heading
     /// rows and above the card's bottom padding.
@@ -65,6 +74,8 @@ protected:
     static constexpr int kCardPadding = 22;
     static constexpr int kRowHeight   = 22;
     static constexpr int kButtonHeight = 38;
+    /// Between the card's content (its buttons, last) and setFootnote()'s line.
+    static constexpr int kFootnoteGap = 14;
 
     juce::Rectangle<int> getCardBounds() const;
     /// The card's width alone, which does not depend on its height -- so a
@@ -73,8 +84,9 @@ protected:
     int getCardWidth() const;
 
 private:
-    juce::Label headingLabel, subheadingLabel;
+    juce::Label headingLabel, subheadingLabel, footnoteLabel;
     int headingBlockHeight() const;
+    int footnoteBlockHeight() const;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ModalCard)
 };

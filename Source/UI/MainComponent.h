@@ -36,9 +36,11 @@ public:
     void paint (juce::Graphics&) override;
 
     /// While the app waits to quit until the combined video or podcast copy
-    /// is finished, the line under the record button says so; empty clears
-    /// it. Without it a pending quit looked like nothing had happened, and
-    /// quitting again was the natural next step.
+    /// is finished, the line under the record button says so, and so does
+    /// the foot of every card (the saved-take card above all), since a card
+    /// covers that line; empty clears both. Without it a pending quit looked
+    /// like nothing had happened, and quitting again was the natural next
+    /// step.
     void setQuitPendingNote (const juce::String& note);
 
 private:

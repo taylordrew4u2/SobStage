@@ -305,8 +305,10 @@ files really are empty and the card says so instead of calling it saved.
   camera couldn't finish its movie — the app says so before it closes;
   *Don't Quit* keeps it open and shows the take. If the combined video or the
   podcast-ready copy is still being made, *Quit When Done* closes the app by
-  itself once it is finished, and the line under the record button says so
-  meanwhile ("SobStage will quit once it has finished the combined video.").
+  itself once it is finished, and says so meanwhile ("SobStage will quit once
+  it has finished the combined video.") on the line under the record button
+  — and at the foot of any card covering that line, such as the saved-take
+  card.
   Quitting again while it waits asks again; only *Quit Now* cancels that file.
   If SobStage is hidden or behind another app when you quit it from the Dock,
   it comes to the front (or its Dock icon bounces) to ask. On a Mac, a Shut

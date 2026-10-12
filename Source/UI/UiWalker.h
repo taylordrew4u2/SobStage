@@ -14,6 +14,7 @@
 #include "ChannelMeterComponent.h"
 #include "MeterFaceProbe.h"
 #include "../App/Application.h"
+#include "../Core/QuitQuestions.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <algorithm>
 #include <cmath>
@@ -199,6 +200,20 @@ private:
         auto* hit = root.getComponentAt (root.getLocalBounds().getCentre());
         return hit != nullptr
             && (dynamic_cast<Panel*> (hit) != nullptr || hit->findParentComponentOfClass<Panel>() != nullptr);
+    }
+
+    /// A line reading `text` inside a showing Panel, and the frontmost thing
+    /// at its middle: what a person sees there, not merely what JUCE calls
+    /// showing -- a line under a card is showing too.
+    template <typename Panel>
+    bool lineInFront (const juce::String& text) const
+    {
+        for (auto* c : showing())
+            if (auto* label = dynamic_cast<juce::Label*> (c);
+                label != nullptr && label->getText() == text && label->findParentComponentOfClass<Panel>() != nullptr)
+                return root.getComponentAt (root.getLocalPoint (label, label->getLocalBounds().getCentre())) == label;
+
+        return false;
     }
 
     /// A showing, enabled button with this text, inside a Panel if one is
@@ -1440,6 +1455,33 @@ private:
         }, 20000);
         add ({}, [] {}, [this] { return banner() == nullptr; }, TakeBanner::kHoldMs + 2000);
         check ("the second take's saved-take card comes up", [this] { return isUp<SavedTakePanel>(); }, 30000);
+
+        // "Quit When Done" says the app is waiting on the line under the
+        // record button -- which this card covers, and this card is what is
+        // up when the quit starts waiting: "Stop and Quit" opens it behind the
+        // "Still saving" question, and Cmd-Q from it leaves it up. The card
+        // has to say it too, where it can be read, and stop when the wait
+        // ends. Set the way Main.cpp sets it; the walk never quits mid-way.
+        add ("a quit waiting for the combined video says so on the saved-take card, in front", [this]
+        {
+            if (auto* mc = dynamic_cast<MainComponent*> (mainComponent()))
+                mc->setQuitPendingNote (juce::String (QuitQuestions::pendingQuitLine ("the combined video")));
+        }, [this]
+        {
+            return onTop<SavedTakePanel>()
+                && lineInFront<SavedTakePanel> (juce::String (QuitQuestions::pendingQuitLine ("the combined video")));
+        });
+        add ({}, [this] { snapshot ("saved-take-card-quit-pending"); }, [] { return true; });
+        add ("and the card's line goes when the wait ends", [this]
+        {
+            if (auto* mc = dynamic_cast<MainComponent*> (mainComponent()))
+                mc->setQuitPendingNote ({});
+        }, [this]
+        {
+            return isUp<SavedTakePanel>()
+                && ! lineInFront<SavedTakePanel> (juce::String (QuitQuestions::pendingQuitLine ("the combined video")));
+        });
+
         add ("and its Done closes it", [this] { click<SavedTakePanel> ("Done"); },
              [this] { return ! isUp<SavedTakePanel>(); });
 
