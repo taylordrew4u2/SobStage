@@ -423,9 +423,9 @@ CFAbsoluteTime CFAbsoluteTimeGetCurrent()
                                 + wallStepNanos.load (std::memory_order_relaxed)) * 1.0e-9;
 }
 
-uint64_t clock_gettime_nsec_np (clockid_t)
+UInt64 SimulatedContinuousTimeNanos()
 {
-    return static_cast<uint64_t> (realNanos() + skippedAwakeNanos.load (std::memory_order_relaxed)
+    return static_cast<UInt64> (realNanos() + skippedAwakeNanos.load (std::memory_order_relaxed)
                                   + sleptNanos.load (std::memory_order_relaxed));
 }
 

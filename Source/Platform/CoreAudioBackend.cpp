@@ -238,7 +238,11 @@ double hostClockSeconds() noexcept
 /// session.json the audio never had.
 double sleepCountingSeconds() noexcept
 {
+   #if defined (MMA_SIMULATE_MAC)
+    return static_cast<double> (SimulatedContinuousTimeNanos()) * 1.0e-9;
+   #else
     return static_cast<double> (clock_gettime_nsec_np (CLOCK_MONOTONIC_RAW)) * 1.0e-9;
+   #endif
 }
 
 /// True when the Mac says its audio is off right now: a dark wake, where the
