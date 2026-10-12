@@ -5,9 +5,14 @@
 #include <unistd.h> // pid_t, and getpid() where the platform has it
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <map>
+#include <mutex>
+#include <set>
 #include <memory>
 #include <string>
 #include <thread>
@@ -149,6 +154,32 @@ State& state()
     return s;
 }
 
+// The Mac's two clocks. The host clock is real time plus the awake time
+// passTime() skipped; the wall clock is that plus every simulated sleep.
+// Atomics, and outside State, because the IOProc reads the host clock on
+// whichever thread pumps it.
+std::atomic<int64_t> skippedAwakeNanos { 0 };
+std::atomic<int64_t> sleptNanos { 0 };
+std::atomic<int64_t> wallStepNanos { 0 };
+
+// What the power manager says the Mac can do right now (IOPMLibPrivate.h's
+// IOPMCapabilityBits), and how often it has been asked.
+constexpr uint32_t kFullWakeCapabilities = 0x1 | 0x2 | 0x4 | 0x8 | 0x10; // CPU, video, audio, network, disk
+constexpr uint32_t kDarkWakeCapabilities = 0x1 | 0x8 | 0x10;             // CPU, network, disk
+std::atomic<uint32_t> systemCapabilities { kFullWakeCapabilities };
+std::atomic<int> systemCapabilityQueries { 0 };
+
+int64_t realNanos()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds> (
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+int64_t toNanos (double seconds)
+{
+    return seconds > 0.0 ? static_cast<int64_t> (std::llround (seconds * 1.0e9)) : 0;
+}
+
 /// A device's stream object. Derived rather than registered: CoreAudio hands
 /// out opaque AudioObjectIDs and the backend only ever uses one to ask the
 /// question below, so a reversible offset models it exactly and keeps the
@@ -158,6 +189,21 @@ constexpr AudioObjectID kStreamIdBase = 900000;
 AudioObjectID streamIdFor (AudioObjectID device) { return kStreamIdBase + device; }
 bool isStreamId (AudioObjectID object) { return object >= kStreamIdBase; }
 AudioObjectID deviceForStream (AudioObjectID stream) { return stream - kStreamIdBase; }
+
+/// Starts held by DeviceSpec::startWaitsForRelease, and the devices let go.
+struct StartGate
+{
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::set<AudioObjectID> released;
+    int generation = 0;
+};
+
+StartGate& startGate()
+{
+    static StartGate gate;
+    return gate;
+}
 
 Device* find (AudioObjectID id)
 {
@@ -363,6 +409,40 @@ CFNumberRef CFNumberCreate (CFAllocatorRef, CFNumberType type, const void* value
     auto* n = new FakeNumber();
     std::memcpy (&n->value, valuePtr, sizeof (int));
     return toRef<CFNumberRef> (n);
+}
+
+CFAbsoluteTime CFAbsoluteTimeGetCurrent()
+{
+    // Seconds since 2001 for a Mac today. Being nowhere near the host clock's
+    // values also makes a mix-up between the two clocks fail loudly.
+    constexpr double kSecondsSince2001 = 8.0e8;
+
+    return kSecondsSince2001
+         + static_cast<double> (realNanos() + skippedAwakeNanos.load (std::memory_order_relaxed)
+                                + sleptNanos.load (std::memory_order_relaxed)
+                                + wallStepNanos.load (std::memory_order_relaxed)) * 1.0e-9;
+}
+
+UInt64 SimulatedContinuousTimeNanos()
+{
+    return static_cast<UInt64> (realNanos() + skippedAwakeNanos.load (std::memory_order_relaxed)
+                                  + sleptNanos.load (std::memory_order_relaxed));
+}
+
+UInt64 AudioGetCurrentHostTime()
+{
+    return static_cast<UInt64> (realNanos() + skippedAwakeNanos.load (std::memory_order_relaxed));
+}
+
+UInt64 AudioConvertHostTimeToNanos (UInt64 hostTime)
+{
+    return hostTime;
+}
+
+extern "C" uint32_t IOPMConnectionGetSystemCapabilities (void)
+{
+    systemCapabilityQueries.fetch_add (1, std::memory_order_relaxed);
+    return systemCapabilities.load (std::memory_order_relaxed);
 }
 
 void CFRelease (CFTypeRef value)
@@ -793,6 +873,12 @@ Boolean AudioObjectHasProperty (AudioObjectID object, const AudioObjectPropertyA
             return (address->mScope == kAudioObjectPropertyScopeOutput
                     && device->spec.jackConnected >= 0) ? 1 : 0;
 
+        // Every aggregate has the list, filled in yet or not. Asking whether
+        // it exists is not a read of it, so it does not use up one of the
+        // reads a slow-to-build aggregate answers empty.
+        case kAudioAggregateDevicePropertyActiveSubDeviceList:
+            return device->spec.subDeviceUids.empty() ? 0 : 1;
+
         default:
         {
             UInt32 size = 0;
@@ -899,6 +985,17 @@ OSStatus AudioDeviceStart (AudioObjectID device, AudioDeviceIOProcID procId)
         std::this_thread::sleep_for (
             std::chrono::milliseconds (d->spec.startDelayMilliseconds));
 
+    if (d->spec.startWaitsForRelease)
+    {
+        auto& gate = startGate();
+        std::unique_lock<std::mutex> lock (gate.mutex);
+        const auto generation = gate.generation;
+        gate.changed.wait_for (lock, std::chrono::seconds (10), [&]
+        {
+            return gate.released.count (device) > 0 || gate.generation != generation;
+        });
+    }
+
     for (auto& r : d->procs)
         if (r.proc == procId)
         {
@@ -1000,6 +1097,14 @@ namespace fakeca {
 
 void reset()
 {
+    {
+        auto& gate = startGate();
+        const std::lock_guard<std::mutex> lock (gate.mutex);
+        gate.released.clear();
+        ++gate.generation;
+    }
+    startGate().changed.notify_all();
+
     state().devices.clear();
     state().order.clear();
     state().listeners.clear();
@@ -1008,6 +1113,44 @@ void reset()
     state().allowPropertyListeners = true;
     state().allowSystemPropertyListenerRemoval = true;
     state().aggregatesCreated = 0;
+    systemCapabilities.store (kFullWakeCapabilities, std::memory_order_relaxed);
+    systemCapabilityQueries.store (0, std::memory_order_relaxed);
+}
+
+void releaseStart (AudioObjectID device)
+{
+    {
+        auto& gate = startGate();
+        const std::lock_guard<std::mutex> lock (gate.mutex);
+        gate.released.insert (device);
+    }
+    startGate().changed.notify_all();
+}
+
+void stepWallClock (double seconds)
+{
+    wallStepNanos.fetch_add (toNanos (seconds), std::memory_order_relaxed);
+}
+
+void passTime (double seconds)
+{
+    skippedAwakeNanos.fetch_add (toNanos (seconds), std::memory_order_relaxed);
+}
+
+void sleepSystem (double seconds)
+{
+    sleptNanos.fetch_add (toNanos (seconds), std::memory_order_relaxed);
+}
+
+void setSystemAudioOn (bool on)
+{
+    systemCapabilities.store (on ? kFullWakeCapabilities : kDarkWakeCapabilities,
+                              std::memory_order_relaxed);
+}
+
+int systemCapabilityQueryCount()
+{
+    return systemCapabilityQueries.load (std::memory_order_relaxed);
 }
 
 void setPropertyListenersAllowed (bool allowed)
@@ -1101,6 +1244,18 @@ bool setJackConnected (AudioObjectID device, bool connected)
 
     d->spec.jackConnected = connected ? 1 : 0;
     firePropertyListeners (device, kAudioDevicePropertyJackIsConnected, kAudioObjectPropertyScopeOutput);
+    return true;
+}
+
+bool activateSubDevices (AudioObjectID aggregate)
+{
+    auto* d = find (aggregate);
+    if (d == nullptr || d->spec.subDeviceUids.empty())
+        return false;
+
+    d->subDeviceReadsUntilActive = 0;
+    firePropertyListeners (aggregate, kAudioAggregateDevicePropertyActiveSubDeviceList);
+    firePropertyListeners (aggregate, kAudioDevicePropertyStreamConfiguration, kAudioObjectPropertyScopeOutput);
     return true;
 }
 

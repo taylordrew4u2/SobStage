@@ -15,7 +15,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STR
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING
     "Minimum macOS version supported by SobStage")
 
-project(SobStage VERSION 1.13.25 LANGUAGES CXX)
+project(SobStage VERSION 1.13.26 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -69,6 +69,7 @@ add_library(mma_core STATIC
     Source/Core/ActivityJournal.cpp
     Source/Core/CardRemovalNotice.cpp
     Source/Core/QuitGate.cpp
+    Source/Core/QuitQuestions.cpp
     Source/Core/FailedOpenRetry.cpp
     Source/Core/BatteryRecordingNotice.cpp
     Source/Core/PreflightThroughputTest.cpp
@@ -286,6 +287,13 @@ if (MMA_BUILD_APP)
                                     PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
         target_link_libraries(SobStage PRIVATE "-framework AppKit")
 
+        # A quit question asked while the app is hidden or behind another app
+        # unhides it and bounces its Dock icon. Elsewhere the header's inline
+        # stub does nothing.
+        target_sources(SobStage PRIVATE Source/Platform/AppActivation.mm)
+        set_source_files_properties(Source/Platform/AppActivation.mm
+                                    PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+
         add_executable(mac_movie_combiner_check
             Tools/mac_movie_combiner_check.mm
             Source/Platform/MacMovieCombiner.mm)
@@ -364,7 +372,9 @@ if (MMA_BUILD_APP)
         Source/UI/ModalCard.cpp
         Source/UI/SaveLocationPrompt.cpp
         Source/UI/SetupGuidePanel.cpp
-        Source/UI/RecoveredTakesPanel.cpp)
+        Source/UI/RecoveredTakesPanel.cpp
+        Source/UI/SavedTakePanel.cpp
+        Source/UI/TakeAlertCard.cpp)
     target_compile_definitions(layout_probe PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
         JUCE_STANDALONE_APPLICATION=1)
     target_include_directories(layout_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
@@ -457,6 +467,47 @@ if (MMA_BUILD_APP)
             -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckWriteSafetyOrder.cmake)
 
+    # The Mac sleeping mid-take goes into the take's record and marks no
+    # microphone dead; the policy is unit-tested, this pins that the
+    # stream-failure loop applies it.
+    add_test(NAME system_slept_take_note
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckSystemSleptNote.cmake)
+
+    # A rate-change stop waits for the rest of the poll's stream reports, so
+    # none of them is applied to the streams Stop has just reopened.
+    add_test(NAME rate_change_stop_after_batch
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckRateChangeStopAfterBatch.cmake)
+
+    # The headphone output held off the clock on the platform's word of a
+    # rate change: neither lost to the rescan nor the computer's fault to the
+    # take's health and the buffer ladder.
+    add_test(NAME output_rate_hold
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckOutputRateHold.cmake)
+
+    # The combined device's per-jack headphone gains follow every read of its
+    # layout and reach only the stream open on it. HeadphoneJacks and the
+    # coordinator are unit-tested; this pins that Application goes through
+    # them.
+    add_test(NAME headphone_jack_wiring
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -DAPPLICATION_H=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.h
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckHeadphoneJackWiring.cmake)
+
+    # The combined device is never destroyed under the take's headphone mix,
+    # judged by the stream open on it rather than the output chosen. The
+    # decision is unit-tested; this pins that Application goes by it.
+    add_test(NAME combined_device_remake_guard
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckCombinedDeviceRemake.cmake)
+
     # A rig with no microphone open is retried from the status poll; the
     # policy is unit-tested, this pins that the poll runs it.
     add_test(NAME failed_open_retry_poll
@@ -491,6 +542,24 @@ if (MMA_BUILD_APP)
     target_link_libraries(sim_take_combiner PRIVATE mma_core juce::juce_core)
     add_test(NAME sim_take_combiner COMMAND sim_take_combiner)
     set_tests_properties(sim_take_combiner PROPERTIES TIMEOUT 10)
+
+    # TakeCombiner built the way the Mac app builds it (its own AVFoundation
+    # combine, MMA_NATIVE_MOVIE_COMBINER), against a stand-in for
+    # MacMovieCombiner.mm, so the Mac branch runs on every platform: a take
+    # started mid-combine gets the card, and the combine is made afterwards.
+    add_executable(sim_take_combiner_native
+        Tools/sim_take_combiner_native.cpp
+        Source/App/TakeCombiner.cpp)
+    target_compile_definitions(sim_take_combiner_native PRIVATE
+        MMA_NATIVE_MOVIE_COMBINER=1
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        JUCE_STANDALONE_APPLICATION=1)
+    target_include_directories(sim_take_combiner_native PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(sim_take_combiner_native PRIVATE mma_core juce::juce_core)
+    add_test(NAME sim_take_combiner_native COMMAND sim_take_combiner_native)
+    set_tests_properties(sim_take_combiner_native PROPERTIES TIMEOUT 30)
 
     # settings.json, session.json and saved shows are replaced whole or not at
     # all: a full disk (simulated with RLIMIT_FSIZE) must leave the previous

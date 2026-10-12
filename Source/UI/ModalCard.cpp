@@ -1,5 +1,6 @@
 #include "ModalCard.h"
 #include "AppLookAndFeel.h"
+#include <cmath>
 
 namespace mma {
 
@@ -24,6 +25,11 @@ ModalCard::ModalCard()
 
     styleBody (subheadingLabel, AppLookAndFeel::secondary);
     addAndMakeVisible (subheadingLabel);
+
+    // setFootnote(). In the colour the main screen gives the same sentence,
+    // so the two read as one message. Hidden until there is something to say.
+    styleBody (footnoteLabel, AppLookAndFeel::meterLow);
+    addChildComponent (footnoteLabel);
 }
 
 ModalCard::~ModalCard() = default;
@@ -58,7 +64,49 @@ int ModalCard::headingBlockHeight() const
 
 int ModalCard::getRequiredHeight() const
 {
-    return kCardPadding * 2 + headingBlockHeight() + 16 + getContentHeight();
+    return kCardPadding * 2 + headingBlockHeight() + 16 + getContentHeight() + footnoteBlockHeight();
+}
+
+void ModalCard::setFootnote (const juce::String& text)
+{
+    if (text == footnoteLabel.getText() && text.isNotEmpty() == footnoteLabel.isVisible())
+        return;
+
+    footnoteLabel.setText (text, juce::dontSendNotification);
+    footnoteLabel.setVisible (text.isNotEmpty());
+
+    // The card itself changes height, not just the line: lay it out again and
+    // repaint its body, which paint() draws from getCardBounds().
+    resized();
+    repaint();
+}
+
+int ModalCard::footnoteBlockHeight() const
+{
+    if (! footnoteLabel.isVisible())
+        return 0;
+
+    // Measured at the width the card will have; before it has been given one,
+    // its full width, as RecoveredTakesPanel does.
+    const int cardWidth = getWidth() > 0 ? getCardWidth() : kCardWidth;
+    const auto font = footnoteLabel.getFont();
+    const auto border = footnoteLabel.getBorderSize();
+    const float available = (float) juce::jmax (1, cardWidth - 2 * kCardPadding - border.getLeftAndRight());
+    const float textWidth = font.getStringWidthFloat (footnoteLabel.getText());
+
+    // JUCE's own rule in GlyphArrangement: one line when it fits, otherwise
+    // the fewest lines that beat the text's width plus an 80px allowance for
+    // ragged breaks. The longest wording ("... the podcast copy and the
+    // combined video.") fits a full-width card on one line, and needs two
+    // on the narrowest.
+    const int lines = textWidth < available
+                          ? 1
+                          : juce::jlimit (1, 3, (int) ((textWidth + 80.0f) / available) + 1);
+
+    const int lineHeight = (int) std::ceil (font.getHeight()) + 3;
+    const int labelHeight = juce::jmax (kRowHeight, lines * lineHeight + border.getTopAndBottom() + 2);
+
+    return kFootnoteGap + labelHeight;
 }
 
 int ModalCard::getCardWidth() const
@@ -89,6 +137,15 @@ void ModalCard::resized()
     {
         card.removeFromTop (8);
         subheadingLabel.setBounds (card.removeFromTop (34));
+    }
+
+    // The foot of the card before its content: the content lays itself out
+    // from the top, and in a window too short for the whole card the
+    // footnote still shows rather than being pushed past the bottom edge.
+    if (footnoteLabel.isVisible())
+    {
+        footnoteLabel.setBounds (card.removeFromBottom (footnoteBlockHeight() - kFootnoteGap));
+        card.removeFromBottom (kFootnoteGap);
     }
 
     card.removeFromTop (16);

@@ -47,7 +47,17 @@ set(required_added_lines
     # opened device reports the id of the device it actually opened.
     "+    static void getAvailableDevicesWithIds (StringArray& names, StringArray& identifiers);"
     "+        Pimpl::getAvailableDevicesWithIds (names, identifiers);"
-    "+    return pimpl->getDeviceIdentifier();")
+    "+    return pimpl->getDeviceIdentifier();"
+    # MAC-CAM-7: the smooth-format check before the start reads the format the
+    # device had before, not the one the preset will pick. A device once
+    # switched is switched again on every open (a reopen used to see the
+    # smooth format the last open left and skip the hold), and a running
+    # session's slow preset format is judged and switched after the start.
+    "+        const bool neededBefore = devicesNeedingSmoothFormat().count (deviceIdentifier) > 0;"
+    "+        if (! neededBefore && maxRateOf (device.activeFormat) >= smoothRate)"
+    "+            devicesNeedingSmoothFormat().insert (deviceIdentifier);"
+    "+        if (chosenFormat != nil || currentInput == nil || isRecording.load())"
+    "+        chooseSmoothFormatAfterStart();")
 
 set(failed FALSE)
 foreach (line IN LISTS required_added_lines)
@@ -110,6 +120,19 @@ if (pair_at EQUAL -1)
 endif()
 if (pair_at EQUAL -1)
     message(FATAL_ERROR "MAC-CAM-6 camera names and uniqueIDs are not listed together, device by device")
+endif()
+
+# MAC-CAM-7: the after-start check runs once the session has started and
+# before the format is reported, so the row never says "5 fps" for a camera
+# that is about to be switched.
+set(after_start_lf "+        reassertChosenFormat();\n+        chooseSmoothFormatAfterStart();\n+        reportActiveFormat();")
+string(REPLACE "\n" "\r\n" after_start_crlf "${after_start_lf}")
+string(FIND "${patch_text}" "${after_start_crlf}" after_start_at)
+if (after_start_at EQUAL -1)
+    string(FIND "${patch_text}" "${after_start_lf}" after_start_at)
+endif()
+if (after_start_at EQUAL -1)
+    message(FATAL_ERROR "MAC-CAM-7 the slow preset format is not checked after the session starts")
 endif()
 
 message(STATUS "JUCE camera patch keeps the guarded, self-rescheduling heartbeat")

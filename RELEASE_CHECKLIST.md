@@ -1,4 +1,4 @@
-# SobStage v1.13.25 release checklist
+# SobStage v1.13.26 release checklist
 
 **Classification:** release candidate. Do not present it as a general consumer
 release until every **GA blocker** below is closed with evidence.
@@ -8,7 +8,7 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] The release commit is on `main`, the worktree is clean, and all intended
   changes have been reviewed.
 - [ ] `CMakeLists.txt`, the app About/version strings, package metadata, the tag
-  (`v1.13.25`) and this changelog all agree.
+  (`v1.13.26`) and this changelog all agree.
 - [ ] `CHANGELOG.md` covers every user-visible change since v1.13.19.
 - [ ] Dependency revisions and third-party GitHub Actions are immutable pins;
   the GPLv3 source offer and release archive are present.
@@ -20,7 +20,7 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] CI is green for Core + tests and the full app on Linux, macOS and Windows.
 - [ ] The release workflow is green at the exact candidate commit.
 - [ ] All unit tests pass on all three operating systems. The current baseline
-  is **878 unit tests**; if tests change, record the final discovered count here.
+  is **950 unit tests**; if tests change, record the final discovered count here.
 - [ ] `sim_channel_meter` passes on all three operating systems: every
   crying-face state is checked against the pixels drawn.
 - [ ] `sim_coreaudio`, `sim_wasapi`, `sim_camera` and
@@ -84,10 +84,12 @@ release until every **GA blocker** below is closed with evidence.
   Close this only after the same moments have been run with a real card
   pulled on macOS and Windows.
 - [ ] The macOS app is universal (`arm64` and `x86_64`), has a macOS 13.0 minimum,
-  reports 1.13.25 in its bundle, and passes `Tools/verify_macos_release.sh` both
+  reports 1.13.26 in its bundle, and passes `Tools/verify_macos_release.sh` both
   before and after ZIP/DMG round trips.
-- [ ] The DMG opens with current SobStage artwork, a working Applications link
-  and no historical “Multi-Mic Aggregator” name or command.
+- [ ] The DMG opens with current SobStage artwork, a working Applications link,
+  no icon over the first-launch Terminal command (the release build checks the
+  saved icon positions; look at the window on a real Mac too) and no historical
+  “Multi-Mic Aggregator” name or command.
 - [ ] Windows and Linux packages contain the executable, README, GPL license and
   licensing notice and start from their documented paths; the Linux executable
   retains its execute bit after the final ZIP round trip.
@@ -123,7 +125,7 @@ release record. Simulation is not a substitute.
 Known camera evidence as of 12 September is diagnostic only: the older v1.11.0
 app opened a USB HDMI capture device reported as `USB2 Video`, and AVFoundation
 logged a first-frame enqueue. No visible non-black preview or completed camera
-recording has been verified from that run, and the v1.13.25 candidate has not yet
+recording has been verified from that run, and the v1.13.26 candidate has not yet
 passed the physical camera matrix.
 
 - [ ] **GA blocker:** Complete a real macOS take with a directly attached
@@ -202,24 +204,46 @@ passed the physical camera matrix.
   notices have owner/legal sign-off.
 - [ ] JUCE licensing is checked against the current official JUCE licensing page
   for the selected distribution model; no undated price table is relied on.
-- [ ] Release notes (`docs/release-notes/v1.13.25.md`, which the release
+- [ ] Release notes (`docs/release-notes/v1.13.26.md`, which the release
   workflow requires and publishes as the release body) state the supported
   targets and known limitations without describing simulator results as
-  hardware certification.
+  hardware certification, name the previous release for rolling back, and
+  describe network use as `PRIVACY.md` does. Their links to files in this
+  repository are checked by ctest (`release_notes_links`).
 
 ## 6. Release and rollback
 
-- [ ] Keep the v1.13.25 and v1.13.19 tags and assets immutable and available until v1.13.25 is
-  proven in production.
-- [ ] Publish v1.13.25 from the exact tested commit; never move or reuse the tag.
+- [ ] Keep the v1.13.26 tag and the previous release's tag (the one the release
+  notes name for rolling back) and their assets immutable and available until
+  v1.13.26 is proven in production.
+- [ ] Publish v1.13.26 from the exact tested commit; never move or reuse the tag.
+- [ ] After publishing, `python3 Tools/release_body.py --all` reports that every
+  release page matches its notes file. The workflow never edits a release that
+  already exists, so a later fix to `docs/release-notes/<tag>.md` reaches its
+  page only when that command is run again with `--apply`. It keeps the list of
+  changes GitHub added and does not change which release is the latest.
 - [ ] Smoke-test each URL, checksum, install, launch, short recording, playback,
   diagnostics export and uninstall from the public release page.
-- [ ] If a serious regression appears, mark v1.13.25 as pre-release/not latest,
-  point users to v1.13.19 when safe, preserve reports and publish a fixed v1.13.25
-  from a new commit/tag. Do not silently replace assets or retag.
+- [ ] If a serious regression appears, mark v1.13.26 as pre-release/not latest,
+  point users to the previous release when safe, preserve reports and publish
+  the fix as a new version from a new commit and tag. Do not silently replace
+  assets or retag.
 - [ ] Before advising a downgrade, back up `settings.json` and confirm the older
   version can read it; otherwise remove or restore settings explicitly. Never
   delete recordings or session folders as part of rollback.
+
+## Open items
+
+- [ ] **The release pages from v1.13.19 on still show their old notes.** The
+  notes files were corrected, but the pages on GitHub were not. The page of the
+  latest release is what Mac users read before checking and opening the
+  unsigned disk image, and it still links the checksum steps to a README
+  section that no longer exists, says SobStage "sends nothing anywhere" though
+  **Check for updates** and **Check now** contact GitHub, and names an old
+  release for rolling back. With the maintainer's approval, run
+  `python3 Tools/release_body.py --all`, check the changes it shows (v1.13.15
+  is listed too: its notes were corrected after it shipped), then run it again
+  with `--apply`. Tick this when `--all` reports that every page matches.
 
 ## Sign-off
 

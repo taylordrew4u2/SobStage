@@ -5,6 +5,8 @@
 #include "../App/Application.h"
 #include "../App/CappedFileLogger.h"
 #include "../Core/QuitGate.h"
+#include "../Core/QuitQuestions.h"
+#include "../Platform/AppActivation.h"
 #if defined (MMA_STALL_METER)
  #include "MessageThreadStallMeter.h"
 #endif
@@ -188,10 +190,17 @@ public:
         // window -- either one, pressed by accident during a show, ended the
         // recording on the spot. Keep Recording is the default and Escape.
        #if ! defined (MMA_UI_WALK)
-        if (application != nullptr && application->isRecording() && ! quitConfirmed)
+        const auto step = questions.onQuitRequested (application != nullptr && application->isRecording());
+
+        if (step == QuitQuestions::Step::AskToStopTheTake)
         {
-            if (! confirmingQuit)
-                askBeforeStoppingTheTake();
+            askBeforeStoppingTheTake();
+            return;
+        }
+
+        if (step == QuitQuestions::Step::BringQuestionForward)
+        {
+            bringQuitQuestionForward();
             return;
         }
        #endif
@@ -232,7 +241,7 @@ public:
 
     void askBeforeStoppingTheTake()
     {
-        confirmingQuit = true;
+        bringQuitQuestionForward();
 
         auto* window = new juce::AlertWindow ("Stop recording and quit?",
                                               "A take is recording. Quitting stops it now and saves "
@@ -241,17 +250,17 @@ public:
                                               mainWindow != nullptr ? mainWindow->getContentComponent() : nullptr);
         window->addButton ("Keep Recording", 0, juce::KeyPress (juce::KeyPress::escapeKey));
         window->addButton ("Stop and Quit", 1);
+        openQuestion = window;
 
         window->enterModalState (true,
             juce::ModalCallbackFunction::create ([this] (int result)
             {
-                confirmingQuit = false;
+                openQuestion = nullptr;
 
-                if (result != 1)
-                    return;
-
-                quitConfirmed = true;
-                systemRequestedQuit();
+                if (questions.onStopTheTakeAnswered (result == 1) == QuitQuestions::Next::CarryOn)
+                    systemRequestedQuit();
+                else
+                    stayOpen();
             }),
             true);
     }
@@ -265,6 +274,9 @@ public:
         quitOnceAfterTakeWorkIsSettled();
     }
 
+    // Reached once the take is stopped and its files are finished, by a quit
+    // with nothing to wait for and by the poll that waited for the cameras.
+    //
     // The podcast copy and the combined video are made after a take stops,
     // and quitting cancels them. Quitting straight after a show -- the usual
     // moment -- threw them away without a word, and the user found a folder
@@ -272,24 +284,73 @@ public:
     // for it (the app quits by itself once it is done), or quit now.
     void quitOnceAfterTakeWorkIsSettled()
     {
+       #if defined (MMA_UI_WALK)
+        afterTakeWaitTimer.stopTimer();
+        quit();
+       #else
+        const auto problem = application != nullptr ? application->unseenProblemWithLastTake()
+                                                    : juce::String();
         const auto work = application != nullptr ? application->unfinishedAfterTakeWork()
                                                   : juce::String();
 
-        // A second Cmd+Q while waiting is the user saying "now".
-        if (work.isEmpty() || afterTakeWorkConfirmed || waitingForAfterTakeWork)
+        switch (questions.onTakeSettled (problem.isNotEmpty(), work.isNotEmpty()))
         {
-            afterTakeWaitTimer.stopTimer();
-            quit();
-            return;
+            case QuitQuestions::Step::Quit:
+                afterTakeWaitTimer.stopTimer();
+                quit();
+                return;
+
+            case QuitQuestions::Step::AskAboutProblem:
+                askAboutTheTakeProblem (problem);
+                return;
+
+            case QuitQuestions::Step::AskAboutWork:
+                askAboutAfterTakeWork (work);
+                return;
+
+            case QuitQuestions::Step::BringQuestionForward:
+                bringQuitQuestionForward();
+                return;
+
+            case QuitQuestions::Step::Proceed:
+            case QuitQuestions::Step::AskToStopTheTake:
+                // Answers to a quit request, never to a settled take.
+                return;
         }
+       #endif
+    }
 
-       #if defined (MMA_UI_WALK)
-        quit();
-       #else
-        if (confirmingAfterTakeWork)
-            return;
+    // A take stopped on the way out -- "Stop and Quit", or a quit that waited
+    // for a camera -- can turn out to have a problem: the card stopped
+    // answering, the files hold no sound, a movie could not be finished. The
+    // saved-take card that says so opens on the next screen refresh, and a
+    // quit in the same breath never got there: the user found out later, if
+    // at all, after being told everything recorded so far was saved.
+    void askAboutTheTakeProblem (const juce::String& problem)
+    {
+        bringQuitQuestionForward();
 
-        confirmingAfterTakeWork = true;
+        auto* window = new juce::AlertWindow ("There is a problem with the take",
+                                              problem + "\n\nDon't Quit keeps SobStage open so you "
+                                              "can check the take.",
+                                              juce::MessageBoxIconType::WarningIcon,
+                                              mainWindow != nullptr ? mainWindow->getContentComponent() : nullptr);
+        window->addButton ("Don't Quit", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        window->addButton ("Quit Anyway", 1);
+        openQuestion = window;
+
+        window->enterModalState (true,
+            juce::ModalCallbackFunction::create ([this] (int result)
+            {
+                openQuestion = nullptr;
+                carryOnAfterAnswer (questions.onProblemAnswered (result == 1));
+            }),
+            true);
+    }
+
+    void askAboutAfterTakeWork (const juce::String& work)
+    {
+        bringQuitQuestionForward();
 
         auto* window = new juce::AlertWindow ("Still saving " + work,
                                               "SobStage is still making " + work + " from the last "
@@ -300,30 +361,82 @@ public:
         window->addButton ("Quit When Done", 1, juce::KeyPress (juce::KeyPress::returnKey));
         window->addButton ("Quit Now", 2);
         window->addButton ("Don't Quit", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        openQuestion = window;
 
         window->enterModalState (true,
             juce::ModalCallbackFunction::create ([this] (int result)
             {
-                confirmingAfterTakeWork = false;
-
-                if (result == 2)
-                {
-                    afterTakeWorkConfirmed = true;
-                    quitOnceAfterTakeWorkIsSettled();
-                }
-                else if (result == 1)
-                {
-                    waitingForAfterTakeWork = true;
-                    afterTakeWaitTimer.startTimer (250);
-                }
-                else
-                {
-                    // Staying open: the next Cmd+Q mid-take must ask again.
-                    quitConfirmed = false;
-                }
+                openQuestion = nullptr;
+                carryOnAfterAnswer (questions.onWorkAnswered (
+                    result == 2 ? QuitQuestions::WorkAnswer::QuitNow
+                  : result == 1 ? QuitQuestions::WorkAnswer::QuitWhenDone
+                                : QuitQuestions::WorkAnswer::DontQuit));
             }),
             true);
-       #endif
+    }
+
+    void carryOnAfterAnswer (QuitQuestions::Next next)
+    {
+        switch (next)
+        {
+            case QuitQuestions::Next::CarryOn:
+                quitOnceAfterTakeWorkIsSettled();
+                return;
+
+            case QuitQuestions::Next::Wait:
+                // The app quits by itself once the work is done, and says so
+                // meanwhile: a pending quit that showed nothing looked like
+                // one that had been ignored, and quitting again cancelled it.
+                showQuitPendingNote (application != nullptr ? application->unfinishedAfterTakeWork()
+                                                            : juce::String());
+
+                if (! afterTakeWaitTimer.isTimerRunning())
+                    afterTakeWaitTimer.startTimer (250);
+                return;
+
+            case QuitQuestions::Next::Stay:
+                stayOpen();
+                return;
+        }
+    }
+
+    void stayOpen()
+    {
+        stopWaitingToQuit();
+
+        if (application != nullptr)
+            application->quitCalledOff();
+    }
+
+    void stopWaitingToQuit()
+    {
+        afterTakeWaitTimer.stopTimer();
+        showQuitPendingNote ({});
+    }
+
+    void showQuitPendingNote (const juce::String& work)
+    {
+        if (mainWindow == nullptr)
+            return;
+
+        if (auto* screen = dynamic_cast<MainComponent*> (mainWindow->getContentComponent()))
+            screen->setQuitPendingNote (juce::String (QuitQuestions::pendingQuitLine (work.toStdString())));
+    }
+
+    // Quit from the Dock, Log Out and Restart reach SobStage while it is
+    // hidden or behind another app. Its question then opened behind whatever
+    // was in front -- or not at all, while hidden -- and macOS had already
+    // been told to wait, so the quit looked ignored and Force Quit mid-take
+    // was the next thing to try. Before a question opens, and whenever a quit
+    // arrives while one is open: unhide, ask to come forward, bounce the Dock
+    // icon until that happens, and raise the question.
+    void bringQuitQuestionForward()
+    {
+        revealAppForQuestion();
+        juce::Process::makeForegroundProcess();
+
+        if (auto* question = openQuestion.getComponent())
+            question->toFront (true);
     }
 
 private:
@@ -335,27 +448,33 @@ private:
     AppLookAndFeel lookAndFeel;
     std::unique_ptr<MainWindow> mainWindow;
     QuitGate quitGate;
-    bool confirmingQuit = false;
-    bool quitConfirmed = false;
-    bool confirmingAfterTakeWork = false;
-    bool afterTakeWorkConfirmed = false;
-    bool waitingForAfterTakeWork = false;
+    QuitQuestions questions;
+    // The quit question on screen, if any, so a repeated quit can raise it.
+    juce::Component::SafePointer<juce::AlertWindow> openQuestion;
     juce::TimedCallback afterTakeWaitTimer { [this]
     {
-        // A new take started while waiting: the quit is off. Quitting by
-        // itself mid-show would be far worse than not quitting.
-        if (application != nullptr && application->isRecording())
-        {
-            afterTakeWaitTimer.stopTimer();
-            waitingForAfterTakeWork = false;
-            quitConfirmed = false;
-            return;
-        }
+        const auto work = application != nullptr ? application->unfinishedAfterTakeWork()
+                                                 : juce::String();
 
-        if (application == nullptr || application->unfinishedAfterTakeWork().isEmpty())
+        switch (questions.onWaitTick (application != nullptr && application->isRecording(),
+                                      work.isNotEmpty()))
         {
-            afterTakeWaitTimer.stopTimer();
-            quit();
+            case QuitQuestions::Tick::KeepWaiting:
+                // What is left, as each piece finishes.
+                if (work.isNotEmpty())
+                    showQuitPendingNote (work);
+                return;
+
+            case QuitQuestions::Tick::StopWaiting:
+                // A new take started while waiting -- the quit is off -- or
+                // the wait had already ended.
+                stopWaitingToQuit();
+                return;
+
+            case QuitQuestions::Tick::Quit:
+                afterTakeWaitTimer.stopTimer();
+                quit();
+                return;
         }
     } };
 

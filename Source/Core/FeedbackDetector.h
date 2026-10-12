@@ -64,6 +64,10 @@ public:
 
     int getNumBands() const noexcept { return numBands; }
 
+    /// True when every band filter's memory is exactly zero, which is where a
+    /// silent bus has to leave it (see endFrame). For tests.
+    bool filtersAreAtRest() const noexcept;
+
 private:
     struct Band
     {

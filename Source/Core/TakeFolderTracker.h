@@ -42,6 +42,14 @@ public:
     bool adopt (int fd, const std::string& folder);
     bool isOpen() const noexcept { return descriptor >= 0; }
 
+    /// A second descriptor on the same folder, to adopt() into a tracker of
+    /// its own: for work that goes on after this one lets go -- the combined
+    /// video and the podcast copy run for minutes after the take, and the
+    /// folder can be renamed under them too. -1 when this holds none. Only
+    /// the process's own descriptor table is touched, never the card, so it
+    /// is safe on the message thread.
+    int duplicateDescriptor() const noexcept;
+
     /// Where the folder is now. The spelling it was opened with while it has
     /// not moved (the system answers with resolved paths, and /tmp on a Mac is
     /// really /private/tmp); the new path once it has. Empty when unknown: not

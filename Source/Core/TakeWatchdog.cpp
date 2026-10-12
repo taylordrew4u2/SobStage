@@ -10,6 +10,8 @@ void TakeWatchdog::beginTake (const TakeHealth& baseline)
     warnedTwoMinutes = false;
     droppedReported = false;
     droppedReportedAt = 0.0;
+    outputSwitchedAt = -1.0;
+    outputSwitchLossReported = false;
     lostCamerasThisTake.clear();
 }
 
@@ -43,31 +45,42 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
             alerts.push_back ({ TakeAlert::Kind::MicBack, mic.name + " is back and recording again.", true });
     }
 
-    // Cameras, matched by name: a camera that is no longer enumerated has
-    // been unplugged or switched off, and its file stops growing. One that
-    // has dropped out of the list altogether is carried forward as absent.
-    // CameraController cannot append a reconnect to the interrupted movie, so
-    // a loss is latched for this take even if a later OS snapshot lists the
-    // same name again.
+    // Cameras, matched by device id: a camera that is no longer enumerated
+    // has been unplugged or switched off, and its file stops growing. One
+    // that has dropped out of the list altogether is carried forward as
+    // absent. CameraController cannot append a reconnect to the interrupted
+    // movie, so a loss is latched for this take even if a later OS snapshot
+    // lists the same camera again.
+    //
+    // Not by name: two cameras of the same model share one, and the first
+    // same-named entry answered for both. A twin that never started (no
+    // HDMI signal) took its "was present" from the one recording, which
+    // raised "has gone away" the moment Record was pressed, and the latch
+    // then swallowed the real loss of the other later in the take.
+    const auto keyOf = [] (const TakeHealth::Camera& c) -> const std::string&
+    {
+        return c.id.empty() ? c.name : c.id;
+    };
+
     auto cameras = now.cameras;
 
     for (const auto& old : last.cameras)
     {
         bool listed = false;
         for (const auto& cam : cameras)
-            if (cam.name == old.name) { listed = true; break; }
+            if (keyOf (cam) == keyOf (old)) { listed = true; break; }
 
         if (! listed)
-            cameras.push_back ({ old.name, false });
+            cameras.push_back ({ old.name, false, old.id });
     }
 
     for (const auto& cam : cameras)
     {
         bool wasPresent = true;
         for (const auto& old : last.cameras)
-            if (old.name == cam.name) { wasPresent = old.present; break; }
+            if (keyOf (old) == keyOf (cam)) { wasPresent = old.present; break; }
 
-        if (lostCamerasThisTake.count (cam.name) > 0)
+        if (lostCamerasThisTake.count (keyOf (cam)) > 0)
             continue;
 
         // There is no "and it came back" branch, and there cannot be one. The
@@ -81,7 +94,7 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
         // thing is that the message does not exist.
         if (wasPresent && ! cam.present)
         {
-            lostCamerasThisTake.insert (cam.name);
+            lostCamerasThisTake.insert (keyOf (cam));
             alerts.push_back ({ TakeAlert::Kind::CameraLost,
                                 "Camera " + cam.name + " has gone away -- unplugged or switched off. "
                                 "The sound carries on; this camera stays out for the rest of this take "
@@ -90,13 +103,16 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
     }
 
     for (auto& cam : cameras)
-        if (lostCamerasThisTake.count (cam.name) > 0)
+        if (lostCamerasThisTake.count (keyOf (cam)) > 0)
             cam.present = false;
 
     if (! now.cameraProblem.empty() && now.cameraProblem != last.cameraProblem)
         alerts.push_back ({ TakeAlert::Kind::CameraTrouble, now.cameraProblem, false });
 
-    if (now.outputClockLost && ! last.outputClockLost)
+    // An output set aside for changing its rate is still plugged in and was
+    // not taken: the monitor problem (MonitorTrouble below) says what did
+    // happen, and that it stays off until Stop.
+    if (now.outputClockLost && ! last.outputClockLost && ! now.outputRateChanged)
         alerts.push_back ({ TakeAlert::Kind::OutputLost,
                             "The headphone output has stopped -- unplugged, or taken by another "
                             "app. The take carries on on this computer's clock; you will not hear "
@@ -104,7 +120,33 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
     else if (! now.outputClockLost && last.outputClockLost)
         alerts.push_back ({ TakeAlert::Kind::OutputBack, "The headphone output is back.", true });
 
-    if (now.framesDropped > last.framesDropped || now.samplesOverrun > last.samplesOverrun)
+    // The headphone output held off the clock for a rate change: the rings
+    // can lose a moment of sound while the software clock takes the rig over
+    // from it. That is the switch, not this computer failing to keep up, and
+    // "Close other apps" would send the user after the wrong thing.
+    if (now.outputRateChanged && ! last.outputRateChanged)
+    {
+        outputSwitchedAt = now.elapsedSeconds;
+        outputSwitchLossReported = false;
+    }
+
+    const bool ringsLost = now.samplesOverrun > last.samplesOverrun;
+    const bool writerDropped = now.framesDropped > last.framesDropped;
+    const bool aroundOutputSwitch = outputSwitchedAt >= 0.0
+                                 && now.elapsedSeconds - outputSwitchedAt <= kOutputSwitchSeconds;
+
+    if (ringsLost && ! writerDropped && aroundOutputSwitch)
+    {
+        if (! outputSwitchLossReported)
+        {
+            alerts.push_back ({ TakeAlert::Kind::AudioDropped,
+                                "A moment of sound was dropped as your sound output changed rate. "
+                                "The take carries on.",
+                                false });
+            outputSwitchLossReported = true;
+        }
+    }
+    else if (writerDropped || ringsLost)
     {
         const bool due = ! droppedReported
                       || now.elapsedSeconds - droppedReportedAt >= kDroppedRepeatSeconds;

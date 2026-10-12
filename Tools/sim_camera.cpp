@@ -1147,6 +1147,84 @@ void aRecordedCameraThatReconnectsWaitsForTheNextTake()
     takeFolder.deleteRecursively();
 }
 
+/// The Cameras panel says "Recording to <file>" for each camera in a take. That
+/// name was rebuilt from the live list, which keeps moving mid-take: unplug the
+/// first camera and the second one's row read V01 while the movie it was
+/// writing was V02. Someone checking which file holds which angle mid-show was
+/// pointed at the wrong one. After Stop the row is about the NEXT take again.
+void theRecordingToNameIsTheFileBeingWritten()
+{
+    std::printf ("\nThe file a camera is recording to, after the list moves mid-take\n");
+
+    fakecamera::setDevices ({ "Wide Cam", "Close Cam" }, { "unit-wide", "unit-close" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::setAutoFrameOnListener (true);
+    fakecamera::resetRecordingCallCounts();
+    fakecamera::setFinalizationMode (fakecamera::FinalizationMode::ImmediateSuccess);
+
+    mma::CameraController controller;
+    refreshNow (controller);
+    controller.getSelection().setEnabled ("unit-wide", true);
+    controller.getSelection().setEnabled ("unit-close", true);
+    controller.applySelection (true);
+
+    const auto planned = controller.getPlannedFileNameFor ("unit-close");
+    check (planned.startsWith ("V02_"), "before the take the second camera writes V02");
+
+    const auto takeFolder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getNonexistentChildFile ("sobstage-camera-recording-to", {}, false);
+    check (takeFolder.createDirectory().wasOk(), "a recording-to take folder is available");
+    check (controller.startRecording (takeFolder), "both cameras start recording");
+    check (fakecamera::getActiveRecordingCount() == 2, "both writers are active");
+
+    std::string writing;
+    for (const auto& record : controller.getTakeVideoRecordsSoFar())
+        if (record.displayName == "Close Cam")
+            writing = record.fileName;
+
+    check (! writing.empty() && controller.getPlannedFileNameFor ("unit-close") == juce::String (writing),
+           "mid-take the row names the movie the camera is writing");
+
+    // A camera arriving ahead of it in the OS list (a Continuity Camera iPhone,
+    // say) renumbers the live plan.
+    fakecamera::setDevices ({ "Phone Cam", "Wide Cam", "Close Cam" },
+                            { "unit-phone", "unit-wide", "unit-close" });
+    refreshNow (controller);
+    controller.applyPendingCameraList();
+    check (controller.getPlannedFileNames().joinIntoString (",").contains ("V03_"),
+           "a camera arriving mid-take moves the live numbering");
+    check (controller.getPlannedFileNameFor ("unit-close") == juce::String (writing),
+           "the recording camera's row still names its own movie");
+
+    // The first camera unplugged mid-take.
+    fakecamera::setDevices ({ "Close Cam" }, { "unit-close" });
+    refreshNow (controller);
+    controller.applyPendingCameraList();
+    check (fakecamera::getActiveRecordingCount() == 1, "the camera still plugged in keeps recording");
+    check (controller.getPlannedFileNames().joinIntoString (",").startsWith ("V01_"),
+           "unplugging the first camera moves the live numbering");
+    check (controller.getPlannedFileNameFor ("unit-close") == juce::String (writing),
+           "and the row still names the movie on the card, not V01");
+
+    // Even while the movie is still finishing: the row then reads "Writes ...",
+    // which is about the next take, and that take is numbered afresh.
+    fakecamera::setFinalizationMode (fakecamera::FinalizationMode::DelayedSuccess);
+    controller.stopRecording();
+    check (controller.getRecordingFinalizationState()
+               == mma::CameraController::RecordingFinalizationState::Waiting,
+           "Stop leaves the movie finishing");
+    check (controller.getPlannedFileNameFor ("unit-close").startsWith ("V01_"),
+           "after Stop the row says what the next take will write");
+
+    fakecamera::completePendingFinalizations();
+    controller.pollRecordingFinalization();
+    fakecamera::setFinalizationMode (fakecamera::FinalizationMode::ImmediateSuccess);
+    fakecamera::setDevices ({});
+    refreshNow (controller);
+    takeFolder.deleteRecursively();
+}
+
 /// JUCE identifies two same-model cameras only by occurrence in the current
 /// device list. Once that count changes, no occurrence can be safely mapped to
 /// the physical camera that owned it at take start. Both writers must stop and
@@ -2174,6 +2252,7 @@ int main()
     switchingOffARecordingCameraWaitsForTheTakeToEnd();
     aRuntimeFailureRetriesAfterTheTakeEnds();
     aRecordedCameraThatReconnectsWaitsForTheNextTake();
+    theRecordingToNameIsTheFileBeingWritten();
     aChangingSameNameGroupIsDeferredTogether();
     aSameNameCameraArrivingMidTakeDoesNotStopTheOneRecording();
     aSameNameTwinLeavingMidTakeDoesNotStopTheOneRecording();

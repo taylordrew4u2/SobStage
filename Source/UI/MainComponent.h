@@ -35,6 +35,14 @@ public:
     void resized() override;
     void paint (juce::Graphics&) override;
 
+    /// While the app waits to quit until the combined video or podcast copy
+    /// is finished, the line under the record button says so, and so does
+    /// the foot of every card (the saved-take card above all), since a card
+    /// covers that line; empty clears both. Without it a pending quit looked
+    /// like nothing had happened, and quitting again was the natural next
+    /// step.
+    void setQuitPendingNote (const juce::String& note);
+
 private:
     /// §8.2: the UI polls, the audio thread never pushes. Dropping a frame here
     /// is acceptable; it can never stall the audio callback.
@@ -142,6 +150,8 @@ private:
     // What the live "files are appearing" line last reported, so it is only
     // rebuilt when the folder on disk has actually changed underneath it.
     juce::String lastSavingLine;
+    // setQuitPendingNote(): shown on that line between takes.
+    juce::String quitPendingNote;
 
     /// §10.1/§6.2: the record press, with the "where does this go" question in
     /// front of it the first time it is asked for a given destination.

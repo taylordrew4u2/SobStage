@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -782,4 +784,103 @@ TEST_CASE (SessionRecovery_aWindowsTakesMoviesAreCountedWithoutAQuickTimePromise
     SessionRecovery::countCameraMovie (other, "V03_Cam.avi", ".mov");
     REQUIRE (other.movieCount == 2);
     REQUIRE (other.quickTimeMovieCount == 0);
+}
+
+// A details file that could not be read is not an empty one. Both used to come
+// back as an empty string, which the lenient parser turned into a record with
+// no stop time: a finished take kept as an iCloud placeholder, opened offline,
+// was called interrupted, and dismissing it renamed a near-empty record over
+// the real one.
+TEST_CASE (SessionRecovery_aDetailsFileThatCannotBeReadIsNotAnEmptyOne)
+{
+    namespace fs = std::filesystem;
+
+    // Read: every byte, as written -- including ones a text read would bend.
+    const auto written = tmpPath ("record-read.json");
+    const std::string record = std::string ("{\"stopTimestampIso\":\"2026-10-11T22:00:00Z\"}\r\n")
+                             + std::string (1, '\0') + "tail";
+    {
+        std::ofstream out (written, std::ios::binary | std::ios::trunc);
+        out.write (record.data(), static_cast<std::streamsize> (record.size()));
+    }
+    const auto read = SessionRecovery::readWholeFileChecked (written);
+    REQUIRE (read.has_value());
+    REQUIRE (*read == record);
+
+    // A file a power cut emptied WAS read: it holds nothing, and that is an
+    // answer. The scan still treats it as interrupted and Done still stamps
+    // it, or such a take would come back at every launch.
+    const auto emptied = tmpPath ("record-empty.json");
+    {
+        std::ofstream out (emptied, std::ios::binary | std::ios::trunc);
+    }
+    const auto empty = SessionRecovery::readWholeFileChecked (emptied);
+    REQUIRE (empty.has_value());
+    REQUIRE (empty->empty());
+
+    // Not there.
+    REQUIRE (! SessionRecovery::readWholeFileChecked (tmpPath ("record-not-there.json")).has_value());
+
+    // There, but its bytes will not come: a directory opens on POSIX and then
+    // refuses every read.
+    const auto unreadable = tmpPath ("record-unreadable.json");
+    std::error_code ec;
+    fs::remove_all (unreadable, ec);
+    REQUIRE (fs::create_directory (unreadable));
+    REQUIRE (! SessionRecovery::readWholeFileChecked (unreadable).has_value());
+
+    fs::remove (written, ec);
+    fs::remove (emptied, ec);
+    fs::remove_all (unreadable, ec);
+}
+
+namespace {
+
+/// Delivers `good` bytes, then fails the way a device read does.
+class FailingAfter : public std::streambuf
+{
+public:
+    explicit FailingAfter (std::string goodBytes) : good (std::move (goodBytes))
+    {
+        setg (good.data(), good.data(), good.data() + good.size());
+    }
+
+protected:
+    int_type underflow() override { throw std::runtime_error ("read failed"); }
+
+private:
+    std::string good;
+};
+
+} // namespace
+
+// What an offline cloud placeholder does: it reports its full size and then
+// delivers less, or nothing. Fewer bytes than promised is "could not read".
+TEST_CASE (SessionRecovery_fewerBytesThanTheFileSaysItHoldsIsNotARead)
+{
+    {
+        std::istringstream whole ("{\"a\":1}");
+        const auto bytes = SessionRecovery::readExactly (whole, 7);
+        REQUIRE (bytes.has_value());
+        REQUIRE (*bytes == "{\"a\":1}");
+    }
+    {
+        std::istringstream nothing ("");
+        REQUIRE (! SessionRecovery::readExactly (nothing, 4096).has_value());
+    }
+    {
+        std::istringstream cutShort ("{\"a\":");
+        REQUIRE (! SessionRecovery::readExactly (cutShort, 7).has_value());
+    }
+    {
+        FailingAfter buffer ("{\"a\"");
+        std::istream failing (&buffer);
+        REQUIRE (! SessionRecovery::readExactly (failing, 7).has_value());
+    }
+    {
+        std::istringstream emptyFile ("");
+        const auto bytes = SessionRecovery::readExactly (emptyFile, 0);
+        REQUIRE (bytes.has_value());
+        REQUIRE (bytes->empty());
+    }
 }

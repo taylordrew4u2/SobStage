@@ -15,6 +15,10 @@
  #include <sys/param.h>
 #endif
 
+#if defined(__linux__)
+ #include <sys/vfs.h>
+#endif
+
 #if defined(__APPLE__)
  // Plain C API: no Objective-C needed, so this stays a .cpp file. mma_core
  // already links CoreFoundation for SleepInhibitor.
@@ -65,6 +69,36 @@ std::optional<int64_t> importantUsageCapacity (const std::string& path) noexcept
         CFRelease (value);
 
     return result;
+}
+
+// The volume's UUID as macOS gives it, or empty. FAT and ExFAT volumes have
+// one made from their serial number; a volume with none answers nothing.
+// Not noexcept: the string it returns can throw, and its caller catches.
+std::string volumeUuidString (const std::string& path)
+{
+    const CFURLRef url = CFURLCreateFromFileSystemRepresentation (
+        kCFAllocatorDefault, reinterpret_cast<const UInt8*> (path.c_str()),
+        static_cast<CFIndex> (path.size()), false);
+
+    if (url == nullptr)
+        return {};
+
+    CFTypeRef value = nullptr;
+    const Boolean found = CFURLCopyResourcePropertyForKey (
+        url, kCFURLVolumeUUIDStringKey, &value, nullptr);
+    CFRelease (url);
+
+    char buffer[128] = {};
+    bool copied = false;
+
+    if (found && value != nullptr && CFGetTypeID (value) == CFStringGetTypeID())
+        copied = CFStringGetCString (static_cast<CFStringRef> (value), buffer,
+                                     static_cast<CFIndex> (sizeof (buffer)), kCFStringEncodingUTF8) != 0;
+
+    if (value != nullptr)
+        CFRelease (value);
+
+    return copied ? std::string (buffer) : std::string();
 }
 #endif
 
@@ -150,6 +184,95 @@ VolumeIdentity volumeIdentityOf (const std::string& path) noexcept
     }
 
     return identity;
+}
+
+VolumeFingerprint volumeFingerprintOf (const std::string& path) noexcept
+{
+    VolumeFingerprint fingerprint;
+
+    try
+    {
+       #if defined(__APPLE__) || defined(__linux__)
+        std::error_code error;
+        auto p = std::filesystem::absolute (pathFromUtf8 (path), error);
+        if (error || p.empty())
+            return fingerprint;
+
+        // The nearest folder that is there. With the card out its mount point
+        // has gone too, and what answers is the disk /Volumes lives on --
+        // which is exactly what makes a missing card a different volume.
+        struct stat info {};
+        bool found = false;
+
+        for (int depth = 0; depth < 128 && ! p.empty(); ++depth)
+        {
+            if (::stat (p.c_str(), &info) == 0)
+            {
+                found = true;
+                break;
+            }
+
+            // Only "not there" is worth climbing past. A permission or I/O
+            // error says nothing about which volume this is.
+            if (errno != ENOENT && errno != ENOTDIR)
+                return fingerprint;
+
+            const auto parent = p.parent_path();
+            if (parent == p)
+                break;
+            p = parent;
+        }
+
+        if (! found)
+            return fingerprint;
+
+        struct statfs fsInfo {};
+        if (::statfs (p.c_str(), &fsInfo) != 0)
+            return fingerprint;
+
+        fingerprint.totalBytes = static_cast<uint64_t> (fsInfo.f_blocks)
+                               * static_cast<uint64_t> (fsInfo.f_bsize);
+
+        #if defined(__APPLE__)
+        fingerprint.mountRoot = fsInfo.f_mntonname;
+        fingerprint.fsType = fsInfo.f_fstypename;
+        fingerprint.device = fsInfo.f_mntfromname;
+        fingerprint.uuid = volumeUuidString (p.native());
+        #else
+        // Linux has no mount point in statfs: it is the highest folder still
+        // on this device.
+        auto root = p;
+        for (int depth = 0; depth < 128; ++depth)
+        {
+            const auto parent = root.parent_path();
+            if (parent.empty() || parent == root)
+                break;
+
+            struct stat parentInfo {};
+            if (::stat (parent.c_str(), &parentInfo) != 0 || parentInfo.st_dev != info.st_dev)
+                break;
+
+            root = parent;
+        }
+
+        fingerprint.mountRoot = utf8FromPath (root);
+        fingerprint.fsType = std::to_string (static_cast<unsigned long long> (fsInfo.f_type));
+        fingerprint.device = "dev:" + std::to_string (static_cast<unsigned long long> (info.st_dev));
+        #endif
+
+        fingerprint.known = true;
+       #else
+        // Windows: a drive letter is all there is to go on, and it is the
+        // path itself, so it cannot tell one card from another. Unknown.
+        (void) path;
+       #endif
+    }
+    catch (...)
+    {
+        return {};
+    }
+
+    return fingerprint;
 }
 
 } // namespace mma

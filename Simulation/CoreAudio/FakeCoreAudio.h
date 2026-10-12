@@ -108,6 +108,12 @@ struct DeviceSpec
     /// on either an input or output, cannot hold launch indefinitely.
     int startDelayMilliseconds = 0;
 
+    /// Instead of a fixed delay, AudioDeviceStart waits until releaseStart()
+    /// names this device (or reset() runs; at most ten seconds), so a test
+    /// decides when a slow start finishes instead of racing a timer against
+    /// a busy runner's scheduling.
+    bool startWaitsForRelease = false;
+
     /// Other calls made before and after Start can wedge in third-party HAL
     /// plug-ins too. These delays exercise the same deadline at UID lookup,
     /// IOProc creation, Stop, and Destroy.
@@ -135,7 +141,35 @@ struct DeviceSpec
 };
 
 /// Clears every device, listener and IOProc. Call between scenarios.
+///
+/// The clocks are not reset: like the Mac's, they only ever move forward.
 void reset();
+
+/// Awake time passing at once, without the harness waiting for it: the host
+/// clock (AudioGetCurrentHostTime) and the wall clock (CFAbsoluteTimeGetCurrent)
+/// both move on by `seconds`. Nothing is delivered meanwhile -- an IOProc runs
+/// only when pumped -- so this is also every device going quiet for that long.
+void passTime (double seconds);
+
+/// The Mac sleeping for `seconds`: the wall clock moves on and the host clock
+/// does not, which is what sleep does to mach_absolute_time and the time of
+/// day. No IOProc runs across it.
+void sleepSystem (double seconds);
+
+/// The time of day stepped by `seconds` (timed syncing, or someone changing
+/// the clock): CFAbsoluteTimeGetCurrent jumps, and neither the host clock nor
+/// CLOCK_MONOTONIC_RAW moves. Not a sleep.
+void stepWallClock (double seconds);
+
+/// What the power manager says about the Mac's audio
+/// (IOPMConnectionGetSystemCapabilities()): on, as when fully awake (the reset
+/// state), or off, as in a dark wake -- awake with the lid shut, display and
+/// audio off -- or on the way down into sleep. Only what is reported: no
+/// IOProc is stopped or started by it.
+void setSystemAudioOn (bool on);
+
+/// How many times the backend has asked the power manager since reset().
+int systemCapabilityQueryCount();
 
 /// false makes AudioObjectAddPropertyListener fail, which models a Mac that
 /// will not tell the app about devices coming and going.
@@ -178,6 +212,13 @@ bool setOutputDataSource (AudioObjectID device, UInt32 dataSource);
 /// listeners. Also without any device-list change.
 bool setJackConnected (AudioObjectID device, bool connected);
 
+/// The HAL finishing an aggregate it was slow to build: its sub-devices that
+/// are present become active at once, and the only word of it is on the
+/// aggregate itself -- its active sub-device list (global scope) and its
+/// output stream configuration. The device list does not change, so a client
+/// listening only to that never hears it.
+bool activateSubDevices (AudioObjectID aggregate);
+
 /// Models `sudo killall coreaudiod`: every aggregate created through
 /// AudioHardwareCreateAggregateDevice is gone, and the ONLY notification is
 /// kAudioHardwarePropertyServiceRestarted on the system object -- the worst
@@ -201,6 +242,9 @@ int propertyListenerCount (AudioObjectID device);
 
 /// True once the backend has called AudioDeviceStart on this device.
 bool isRunning (AudioObjectID device);
+
+/// Lets a start held by DeviceSpec::startWaitsForRelease finish.
+void releaseStart (AudioObjectID device);
 
 /// What the device's nominal rate property actually holds now.
 double nominalRate (AudioObjectID device);
@@ -268,3 +312,8 @@ bool pumpInputBuffers (AudioObjectID device, const std::vector<InputBuffer>& buf
 bool pumpOutput (AudioObjectID device, int frames, std::vector<std::vector<float>>& out);
 
 } // namespace fakeca
+
+/// IOKit's power-management SPI as the virtual HAL answers it: the backend
+/// declares it itself, as the real one is in no SDK header. See
+/// fakeca::setSystemAudioOn().
+extern "C" uint32_t IOPMConnectionGetSystemCapabilities (void);

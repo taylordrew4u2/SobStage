@@ -1,5 +1,7 @@
 #pragma once
 
+#include "VolumeFingerprint.h"
+
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -63,6 +65,15 @@ public:
         /// known not to be, -1 when it was not asked or could not be told.
         int backupSharesDisk = -1;
         std::vector<File> files;
+        /// Which volume is at the destination now (see VolumeFingerprint),
+        /// asked between takes only -- with no session folder in the request.
+        /// It is how a card swapped for another with the same name, or taken
+        /// out, is noticed: the path stays the same and the drive check made
+        /// for the old card must not arm the new one.
+        VolumeFingerprint destinationVolume;
+        /// When the sample behind this snapshot began, so a caller can tell
+        /// evidence gathered after some event from evidence gathered before.
+        std::chrono::steady_clock::time_point sampleStartedAt {};
         uint64_t revision = 0;
 
         // Diagnostic/test evidence that blocking filesystem calls did not run

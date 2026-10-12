@@ -254,6 +254,11 @@ FilesystemStatusProbe::Snapshot FilesystemStatusProbe::sample (const Request& re
             out.backupSharesDisk = 0;
     }
 
+    // Between takes only: during one the destination is the take's own folder
+    // on the card, and nothing done with the answer would touch a take.
+    if (! request.destinationPath.empty() && request.sessionFolder.empty())
+        out.destinationVolume = volumeFingerprintOf (request.destinationPath);
+
     if (! request.destinationPath.empty() && request.bytesPerSecond > 0.0)
     {
         std::error_code error;
@@ -364,10 +369,12 @@ void FilesystemStatusProbe::run (std::shared_ptr<State> shared)
         lock.unlock();
         Snapshot snapshot;
         bool completed = false;
+        const auto startedAt = std::chrono::steady_clock::now();
 
         try
         {
             snapshot = shared->sampler (request);
+            snapshot.sampleStartedAt = startedAt;
             completed = true;
         }
         catch (...)

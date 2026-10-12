@@ -5,6 +5,7 @@
 #include "Core/StreamingTargets.h"
 #include "Core/PolarPatternDetector.h"
 #include "Core/SlowMicrophoneNotice.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -126,6 +127,11 @@ public:
     std::string getLastOpenError() const override { return inputOpenError; }
 
     void closeAllStreams() override { ++closeAllCalls; }
+
+    /// The platform's word that the output's rate has changed, as CoreAudio's
+    /// nominal-rate listener raises it: before any poll has read the report.
+    std::atomic<bool> outputOffRate { false };
+    bool isOutputOffRate() const noexcept override { return outputOffRate.load(); }
 };
 
 std::vector<CaptureChannel> twoMics()
@@ -1661,7 +1667,7 @@ TEST_CASE (CaptureCoordinator_ASwitchedOffHeadphoneJackGetsSilenceAndTheRestTheM
 
     // Two microphones' jacks on the combined device, two channels each; the
     // second person has switched theirs off.
-    c.setOutputChannelGains ({ 1.0f, 1.0f, 0.0f, 0.0f });
+    c.setHeadphoneJackGains ("out-device", { 1.0f, 1.0f, 0.0f, 0.0f });
 
     std::vector<float> a (64, 0.15f), b (64, 0.15f);
     std::vector<float> o0 (64, 0.5f), o1 (64, 0.5f), o2 (64, 0.5f), o3 (64, 0.5f);
@@ -1676,9 +1682,196 @@ TEST_CASE (CaptureCoordinator_ASwitchedOffHeadphoneJackGetsSilenceAndTheRestTheM
     REQUIRE (o3[10] == 0.0f);
 
     // Switched back on while running.
-    c.setOutputChannelGains ({});
+    c.setHeadphoneJackGains ("out-device", {});
     c.processAudioBlock (ins, 2, outs, 4, 64);
     REQUIRE_NEAR (o3[10], o0[10], 1e-9);
+}
+
+namespace
+{
+    float loudestOf (const std::vector<float>& block)
+    {
+        float peak = 0.0f;
+        for (float v : block)
+            peak = std::max (peak, std::abs (v));
+        return peak;
+    }
+}
+
+TEST_CASE (CaptureCoordinator_ASwitchedOffJackStillGetsTheAlarmButNeverTheMix)
+{
+    // A jack switched off from the mix used to get zeros, the alarm included,
+    // so the person who switched theirs off never heard the siren. They get
+    // the app's own sounds alone: the mix still never reaches them (§5.2),
+    // and the jacks that hear the mix get the mix with the siren over it.
+    FakeBackend backend, referenceBackend;
+    CaptureCoordinator c (backend, 48000.0, 64), reference (referenceBackend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    reference.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (reference.startMonitoring (twoMics(), "out-device"));
+    c.setHeadphoneJackGains ("out-device", { 1.0f, 1.0f, 0.0f, 0.0f });
+    reference.setHeadphoneJackGains ("out-device", { 1.0f, 1.0f, 0.0f, 0.0f });
+
+    std::vector<float> a (64, 0.15f), b (64, 0.15f);
+    const float* ins[] = { a.data(), b.data() };
+    std::vector<float> o0 (64), o1 (64), o2 (64), o3 (64);
+    std::vector<float> r0 (64), r1 (64), r2 (64), r3 (64);
+    float* outs[] = { o0.data(), o1.data(), o2.data(), o3.data() };
+    float* refOuts[] = { r0.data(), r1.data(), r2.data(), r3.data() };
+
+    c.processAudioBlock (ins, 2, outs, 4, 64);
+    reference.processAudioBlock (ins, 2, refOuts, 4, 64);
+    REQUIRE (loudestOf (o0) > 0.01f);
+    REQUIRE (loudestOf (o2) == 0.0f); // no alarm yet: silence
+
+    c.getAlarm().setFault (true);
+    float switchedOffPeak = 0.0f;
+
+    for (int block = 0; block < 8; ++block)
+    {
+        const auto renderedBefore = c.getAlarm().getSamplesRendered();
+
+        c.processAudioBlock (ins, 2, outs, 4, 64);
+        reference.processAudioBlock (ins, 2, refOuts, 4, 64);
+
+        // Rendered once for the block, not once per kind of channel: a second
+        // render would move the siren on and play a different stretch of it.
+        REQUIRE (c.getAlarm().getSamplesRendered() - renderedBefore == 64u);
+
+        switchedOffPeak = std::max (switchedOffPeak, loudestOf (o2));
+
+        for (size_t s = 0; s < 64; ++s)
+        {
+            REQUIRE (o2[s] == o3[s]);
+            REQUIRE_NEAR (o0[s], o1[s], 1e-9);
+
+            // The switched-off jack carries the alarm and nothing else: what
+            // the hearing jack gets on top of the alarm-free mix is exactly
+            // what the switched-off one gets.
+            REQUIRE_NEAR (o0[s], std::clamp (r0[s] + o2[s], -1.0f, 1.0f), 1e-6);
+            REQUIRE (r2[s] == 0.0f);
+        }
+    }
+
+    REQUIRE (switchedOffPeak > 0.2f);
+    c.getAlarm().setFault (false);
+}
+
+TEST_CASE (CaptureCoordinator_EveryJackSwitchedOffStillSoundsTheAlarm)
+{
+    // Every microphone's jack switched off: the output stream is still open,
+    // so the app keeps its sounds on it rather than the computer's speaker --
+    // and they reached no channel at all. The start chirp and the fault siren
+    // must still come out of every jack, and the mix out of none.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    c.setHeadphoneJackGains ("out-device", { 0.0f, 0.0f, 0.0f, 0.0f });
+
+    std::vector<float> a (64, 0.3f), b (64, 0.3f);
+    const float* ins[] = { a.data(), b.data() };
+    std::vector<float> o0 (64), o1 (64), o2 (64), o3 (64);
+    float* outs[] = { o0.data(), o1.data(), o2.data(), o3.data() };
+
+    // The loudest each jack got over a run of blocks.
+    const auto peaksOver = [&] (int blocks)
+    {
+        std::vector<float> peaks (4, 0.0f);
+        for (int block = 0; block < blocks; ++block)
+        {
+            c.processAudioBlock (ins, 2, outs, 4, 64);
+            peaks[0] = std::max (peaks[0], loudestOf (o0));
+            peaks[1] = std::max (peaks[1], loudestOf (o1));
+            peaks[2] = std::max (peaks[2], loudestOf (o2));
+            peaks[3] = std::max (peaks[3], loudestOf (o3));
+        }
+        return peaks;
+    };
+
+    for (float peak : peaksOver (4))
+        REQUIRE (peak == 0.0f); // the mix reaches nobody
+
+    c.getAlarm().trigger (AlarmTone::Kind::Started);
+    for (float peak : peaksOver (8))
+        REQUIRE (peak > 0.2f);
+
+    c.getAlarm().setFault (true);
+    for (float peak : peaksOver (8))
+    {
+        REQUIRE (peak > 0.2f);
+        REQUIRE (peak <= AlarmTone::kSirenLevel + 1e-6f); // the siren alone, no mix under it
+    }
+
+    c.getAlarm().setFault (false);
+    for (float peak : peaksOver (2))
+        REQUIRE (peak == 0.0f);
+}
+
+TEST_CASE (CaptureCoordinator_JackGainsReachOnlyTheStreamOpenOnTheirDevice)
+{
+    // The per-jack gains describe the combined device's channels, and which
+    // device the output stream is open on is the coordinator's to know, not
+    // the caller's: mid-take the output chosen can move while the stream
+    // stays where it is until Stop, and a refused output leaves none open.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    std::vector<float> a (64, 0.15f), b (64, 0.15f);
+    const float* ins[] = { a.data(), b.data() };
+    std::vector<float> o0 (64), o1 (64), o2 (64), o3 (64);
+    float* outs[] = { o0.data(), o1.data(), o2.data(), o3.data() };
+
+    // Which of four output channels get the mix in one block.
+    using Hearing = std::vector<bool>;
+    const auto hearing = [&]
+    {
+        c.processAudioBlock (ins, 2, outs, 4, 64);
+        return Hearing { loudestOf (o0) > 0.01f, loudestOf (o1) > 0.01f,
+                         loudestOf (o2) > 0.01f, loudestOf (o3) > 0.01f };
+    };
+
+    // Laid before anything is open, as a layout read can be: the stream then
+    // opened on the combined device has them from its first block.
+    c.setHeadphoneJackGains ("combined", { 1.0f, 1.0f, 0.0f, 0.0f });
+    REQUIRE (c.startMonitoring (twoMics(), "combined"));
+    REQUIRE (c.isOutputOpenOn ("combined"));
+    REQUIRE (hearing() == Hearing ({ true, true, false, false }));
+
+    // Mid-take a microphone drops out of the combined device and the jacks
+    // move: laid again at once on the stream still running, whatever output
+    // has been chosen meanwhile.
+    c.setHeadphoneJackGains ("combined", { 0.0f, 0.0f, 1.0f, 1.0f });
+    REQUIRE (hearing() == Hearing ({ false, false, true, true }));
+
+    // Reopened on another output (the choice moved, and Stop paid the
+    // reopen): its channels 2-3 are nobody's jack, and get the mix without a
+    // word from the caller.
+    REQUIRE (c.startMonitoring (twoMics(), "scarlett"));
+    REQUIRE_FALSE (c.isOutputOpenOn ("combined"));
+    REQUIRE (c.isOutputOpenOn ("scarlett"));
+    REQUIRE (hearing() == Hearing ({ true, true, true, true }));
+
+    // The combined device's layout read again while the interface plays: not
+    // laid over the interface's channels.
+    c.setHeadphoneJackGains ("combined", { 1.0f, 1.0f, 0.0f, 0.0f });
+    REQUIRE (hearing() == Hearing ({ true, true, true, true }));
+
+    // Back on the combined device: the gains as last laid, from its first
+    // block.
+    REQUIRE (c.startMonitoring (twoMics(), "combined"));
+    REQUIRE (hearing() == Hearing ({ true, true, false, false }));
+
+    // Stopped, or the output refused and the rig input-only: nothing is open
+    // on any device.
+    c.stopMonitoring();
+    REQUIRE_FALSE (c.isOutputOpenOn ("combined"));
+    backend.failOutputOpen = true;
+    REQUIRE (c.startMonitoring (twoMics(), "combined"));
+    REQUIRE_FALSE (c.isOutputOpenOn ("combined"));
+    REQUIRE_FALSE (c.isOutputOpenOn (""));
 }
 
 // A mic still handing over audio is plainly plugged in. One device-list pass
@@ -3042,11 +3235,16 @@ TEST_CASE (CaptureCoordinator_KeepsRecordingWhenTheOutputClockStops)
         // short on a correct build, while the bug leaves it 117 ms short.
         constexpr int64_t kTolerance = 48000 * 60 / 1000;
 
-        if (std::llabs (accepted - wallFrames) > kTolerance)
-            std::printf ("  across the output loss: accepted %lld frames in %lld frames of wall time\n",
-                         (long long) accepted, (long long) wallFrames);
+        // Nor can it take more than the microphones gave. Each block's sleep
+        // can overshoot on a busy runner, so the inputs can fall behind the
+        // wall clock; the take is then owed what they delivered, not more.
+        const auto owed = std::min (wallFrames, static_cast<int64_t> (190 * 64));
 
-        REQUIRE (accepted >= wallFrames - kTolerance);
+        if (std::llabs (accepted - wallFrames) > kTolerance)
+            std::printf ("  across the output loss: accepted %lld frames in %lld frames of wall time, %lld delivered\n",
+                         (long long) accepted, (long long) wallFrames, (long long) (190 * 64));
+
+        REQUIRE (accepted >= owed - kTolerance);
         REQUIRE (accepted <= wallFrames + 64);
     }
 
@@ -3121,6 +3319,354 @@ TEST_CASE (CaptureCoordinator_StopsOfferingItsOutputOnceTheOutputClockIsLost)
     REQUIRE (c.getAlarm().getSamplesRendered() > renderedAtLoss);
 
     c.getAlarm().setFault (false);
+}
+
+TEST_CASE (CaptureCoordinator_AnOutputSwitchedToAnotherRateStopsClockingTheTake)
+{
+    // Another app switches the headphone output to 44.1 kHz mid-take. Its
+    // callback keeps coming -- at the new rate -- and it was the clock every
+    // microphone is pulled on, so it pulled them all 8% slow and every ring
+    // overflowed; the only remedy the app had was to stop the take, though no
+    // microphone's file had changed. Set aside, it pulls nothing, the
+    // software clock carries the take on at the take's own rate, and the
+    // headphones get silence rather than a mix played at the wrong speed.
+    const auto dir = tempDir();
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.getOutputDeviceId() == "out-device");
+    REQUIRE_FALSE (c.outputCarriesTakeChannels());
+    REQUIRE (c.startRecording (dir, 16, "2026-09-07T00:00:00Z"));
+
+    std::vector<float> a (64, 0.5f), outL (64, 0.0f);
+    const float* ins[] = { a.data() };
+    float* outs[] = { outL.data() };
+
+    const auto driveWithTheOutput = [&] (int blocks, int outputFrames)
+    {
+        for (int i = 0; i < blocks; ++i)
+        {
+            backend.inputCallbacks[0] (ins, 1, nullptr, 0, 64);
+            backend.inputCallbacks[1] (ins, 1, nullptr, 0, 64);
+            std::fill (outL.begin(), outL.end(), 0.25f);
+            backend.outputCallback (nullptr, 0, outs, 1, outputFrames);
+            std::this_thread::sleep_for (std::chrono::microseconds (1333));
+        }
+    };
+
+    driveWithTheOutput (50, 64);
+    REQUIRE (c.hasOutputStream());
+    REQUIRE_FALSE (c.isOutputAbandoned());
+
+    const std::string why = "Your sound output changed to 44.1 kHz while SobStage is using 48 kHz.";
+    REQUIRE (c.abandonOutputClock (why));
+
+    // Said at once, not a clock tick later: the app's own sounds go another
+    // way from this moment.
+    REQUIRE (c.isOutputAbandoned());
+    REQUIRE (c.isOutputClockLost());
+    REQUIRE_FALSE (c.hasOutputStream());
+    REQUIRE (c.getMonitorProblem() == why);
+
+    const auto before = c.getFramesAccepted();
+    const auto started = std::chrono::steady_clock::now();
+
+    // A quarter of a second: the microphones at 48 kHz, the output still
+    // calling back, now taking 59 frames a period -- 44.1 kHz's pace.
+    //
+    // Looked at well inside the tenth of a second after which an output that
+    // had stopped calling back would be called lost anyway: this one has not
+    // stopped, and still it stays set aside rather than flickering back.
+    driveWithTheOutput (40, 59);
+    REQUIRE (c.isOutputClockLost());
+    REQUIRE_FALSE (c.hasOutputStream());
+
+    driveWithTheOutput (150, 59);
+
+    // The output was handed silence, not a mix pulled at its rate...
+    for (size_t i = 0; i < 59; ++i)
+        REQUIRE (outL[i] == 0.0f);
+
+    // ...it stayed set aside, however recently it called back...
+    REQUIRE (c.isOutputClockLost());
+    REQUIRE_FALSE (c.hasOutputStream());
+
+    // ...and the take is the quarter second long, pulled once, by the
+    // software clock: not short, and not pulled twice over.
+    {
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        const auto accepted = static_cast<int64_t> (c.getFramesAccepted() - before);
+        const auto wallFrames = static_cast<int64_t> (
+            std::chrono::duration<double> (elapsed).count() * 48000.0);
+
+        // The same scheduling slack as the clock-loss test above.
+        constexpr int64_t kTolerance = 48000 * 60 / 1000;
+
+        // What the microphones delivered bounds what the take can hold: a
+        // busy runner's sleeps overshoot, and the inputs fall behind the wall.
+        const auto owed = std::min (wallFrames, static_cast<int64_t> ((40 + 150) * 64));
+
+        if (std::llabs (accepted - wallFrames) > kTolerance)
+            std::printf ("  with the output set aside: accepted %lld frames in %lld frames of wall time, %lld delivered\n",
+                         (long long) accepted, (long long) wallFrames, (long long) ((40 + 150) * 64));
+
+        REQUIRE (accepted >= owed - kTolerance);
+        REQUIRE (accepted <= wallFrames + kTolerance);
+    }
+
+    c.stopRecording();
+
+    // Reopened, as Stop does: the new output stream is the clock again.
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE_FALSE (c.isOutputAbandoned());
+    REQUIRE (c.hasOutputStream());
+    REQUIRE (c.getMonitorProblem().empty());
+    c.stopMonitoring();
+}
+
+TEST_CASE (CaptureCoordinator_AnOutputStopsClockingTheTakeOnThePlatformsWordOfARateChange)
+{
+    // Another app switches the headphone output to 44.1 kHz mid-take. The
+    // app hears of it on its next poll, up to half a second later; until then
+    // the output's callback went on pulling every microphone at its new rate
+    // -- 59 frames a period where each microphone delivered 64. Set aside at
+    // the poll, the software clock picked up from that callback, a moment
+    // old, owing nothing: the shortfall was never pulled, so every track ran
+    // that much short of the wall clock and the cameras for the rest of the
+    // take, and every ring was left full for the drift loop to drain over
+    // minutes, overflowing -- counted against the computer -- meanwhile.
+    //
+    // The platform's word (the backend's rate listener) now holds the output
+    // off the clock at once, before any poll: it pulls nothing, and the
+    // software clock takes over from the last block it really pulled.
+    const auto dir = tempDir();
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.startRecording (dir, 16, "2026-09-07T00:00:00Z"));
+
+    std::vector<float> a (64, 0.5f), outL (64, 0.0f);
+    const float* ins[] = { a.data() };
+    float* outs[] = { outL.data() };
+
+    int64_t blocksDriven = 0;
+
+    const auto driveWithTheOutput = [&] (int blocks, int outputFrames)
+    {
+        for (int i = 0; i < blocks; ++i, ++blocksDriven)
+        {
+            backend.inputCallbacks[0] (ins, 1, nullptr, 0, 64);
+            backend.inputCallbacks[1] (ins, 1, nullptr, 0, 64);
+            std::fill (outL.begin(), outL.end(), 0.25f);
+            backend.outputCallback (nullptr, 0, outs, 1, outputFrames);
+            std::this_thread::sleep_for (std::chrono::microseconds (1333));
+        }
+    };
+
+    // Whether every ring is down near its target fill (an eighth) at some
+    // point over a few more blocks: a ring backed up behind an output pulling
+    // slow stays pinned near full, while one a busy machine's scheduling
+    // briefly fills comes straight back down.
+    const auto ringsAreWhereTheyWere = [&]
+    {
+        double lowest[2] = { 1.0, 1.0 };
+
+        for (int i = 0; i < 20; ++i)
+        {
+            driveWithTheOutput (1, backend.outputOffRate.load() ? 59 : 64);
+            for (int ch = 0; ch < 2; ++ch)
+                lowest[ch] = std::min (lowest[ch], c.getChannelFillFraction (ch));
+        }
+
+        for (int ch = 0; ch < 2; ++ch)
+            if (lowest[ch] >= 0.5)
+            {
+                std::printf ("  channel %d's ring stayed at least %.0f%% full\n", ch, lowest[ch] * 100.0);
+                return false;
+            }
+        return true;
+    };
+
+    driveWithTheOutput (100, 64);
+    REQUIRE (c.hasOutputStream());
+    REQUIRE_FALSE (c.isOutputOffRate());
+    REQUIRE (ringsAreWhereTheyWere());
+
+    const auto before = c.getFramesAccepted();
+    const auto started = std::chrono::steady_clock::now();
+    const auto blocksBefore = blocksDriven;
+    const uint64_t overrunBefore[2] = { c.getChannelOverrunSamples (0), c.getChannelOverrunSamples (1) };
+
+    // The listener's word. Nothing has read the new rate yet, and the app
+    // has decided nothing.
+    backend.outputOffRate = true;
+
+    // At once: the app's own sounds go another way.
+    REQUIRE (c.isOutputOffRate());
+    REQUIRE_FALSE (c.hasOutputStream());
+    REQUIRE_FALSE (c.isOutputAbandoned());
+
+    // Half a second, the longest the poll can take to come round: the
+    // microphones at 48 kHz, the output calling back at 44.1 kHz's pace.
+    driveWithTheOutput (375, 59);
+
+    // The output pulled nothing at its new rate -- it was handed silence --
+    // and the software clock is pulling instead...
+    for (size_t i = 0; i < 59; ++i)
+        REQUIRE (outL[i] == 0.0f);
+    REQUIRE (c.isOutputClockLost());
+
+    // ...so no ring backed up behind it...
+    REQUIRE (ringsAreWhereTheyWere());
+
+    // ...and the software clock took over on that same word, not a stale
+    // window later: waiting for the output's stamp to go stale left a tenth
+    // of a second with nothing pulling, most of it overflowing every ring.
+    // The ring's own headroom covers the clock's next look at the smallest
+    // buffer, all but a few milliseconds; this allows for a busy machine.
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        const auto lost = c.getChannelOverrunSamples (ch) - overrunBefore[ch];
+        if (lost >= 48000 * 40 / 1000)
+            std::printf ("  channel %d lost %llu samples over the hand-over\n", ch, (unsigned long long) lost);
+        REQUIRE (lost < 48000 * 40 / 1000);
+    }
+
+    // The poll reads the report and sets the output aside for the take.
+    REQUIRE (c.abandonOutputClock ("Your sound output changed to 44.1 kHz while SobStage is using 48 kHz."));
+    driveWithTheOutput (75, 59);
+    REQUIRE (ringsAreWhereTheyWere());
+
+    // The take is as long as the wall clock says, from the moment of the
+    // switch: nothing short, nothing pulled twice.
+    {
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        const auto accepted = static_cast<int64_t> (c.getFramesAccepted() - before);
+        const auto wallFrames = static_cast<int64_t> (
+            std::chrono::duration<double> (elapsed).count() * 48000.0);
+
+        // The same scheduling slack as the clock-loss test above.
+        constexpr int64_t kTolerance = 48000 * 60 / 1000;
+
+        // What the microphones delivered bounds what the take can hold: a
+        // busy runner's sleeps overshoot, and the inputs fall behind the wall.
+        const auto delivered = (blocksDriven - blocksBefore) * 64;
+        const auto owed = std::min (wallFrames, delivered);
+
+        if (std::llabs (accepted - wallFrames) > kTolerance)
+            std::printf ("  across the switch: accepted %lld frames in %lld frames of wall time, %lld delivered\n",
+                         (long long) accepted, (long long) wallFrames, (long long) delivered);
+
+        REQUIRE (accepted >= owed - kTolerance);
+        REQUIRE (accepted <= wallFrames + kTolerance);
+    }
+
+    c.stopRecording();
+    c.stopMonitoring();
+}
+
+TEST_CASE (CaptureCoordinator_AnOutputBackAtItsRateBeforeThePollClocksTheRigAgain)
+{
+    // Switched away and straight back inside one poll -- or the platform
+    // telling of a change that changed nothing. The backend reads the rate
+    // back as the stream's and lets go; nothing set the output aside, so it
+    // is the clock again and the headphones hear the mix.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    std::vector<float> a (64, 0.5f), outL (64, 0.0f);
+    const float* ins[] = { a.data() };
+    float* outs[] = { outL.data() };
+
+    const auto drive = [&] (int blocks)
+    {
+        for (int i = 0; i < blocks; ++i)
+        {
+            backend.inputCallbacks[0] (ins, 1, nullptr, 0, 64);
+            backend.inputCallbacks[1] (ins, 1, nullptr, 0, 64);
+            backend.outputCallback (nullptr, 0, outs, 1, 64);
+            std::this_thread::sleep_for (std::chrono::microseconds (1333));
+        }
+    };
+
+    drive (50);
+    REQUIRE (c.hasOutputStream());
+
+    backend.outputOffRate = true;
+    drive (60);
+    REQUIRE (c.isOutputClockLost());
+    REQUIRE_FALSE (c.hasOutputStream());
+
+    backend.outputOffRate = false;
+    drive (60);
+    REQUIRE_FALSE (c.isOutputOffRate());
+    REQUIRE_FALSE (c.isOutputClockLost());
+    REQUIRE (c.hasOutputStream());
+    REQUIRE_FALSE (c.isOutputAbandoned());
+    REQUIRE (c.getMonitorProblem().empty());
+
+    c.stopMonitoring();
+}
+
+TEST_CASE (CaptureCoordinator_AnOutputIsOnlySetAsideWhenSomethingElseCanClockTheTake)
+{
+    // No software clock to take over: setting the output aside would leave
+    // nothing pulling the take, so it is refused and the caller stops instead.
+    {
+        FakeBackend backend;
+        CaptureCoordinator c (backend, 48000.0, 64);
+        c.setSoftwareClockEnabled (false);
+        REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+        REQUIRE_FALSE (c.abandonOutputClock ("changed rate"));
+        REQUIRE_FALSE (c.isOutputAbandoned());
+        REQUIRE (c.hasOutputStream());
+        REQUIRE (c.getMonitorProblem().empty());
+    }
+
+    // No output stream at all: nothing to set aside.
+    {
+        FakeBackend backend;
+        CaptureCoordinator c (backend, 48000.0, 64);
+        REQUIRE (c.startMonitoring (twoMics(), ""));
+        REQUIRE (c.getOutputDeviceId().empty());
+        REQUIRE_FALSE (c.abandonOutputClock ("changed rate"));
+        REQUIRE_FALSE (c.isOutputAbandoned());
+        c.stopMonitoring();
+    }
+
+    // An output that refused to open, so the rig went input-only.
+    {
+        FakeBackend backend;
+        backend.failOutputOpen = true;
+        CaptureCoordinator c (backend, 48000.0, 64);
+        REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+        REQUIRE (c.getOutputDeviceId().empty());
+        REQUIRE_FALSE (c.abandonOutputClock ("changed rate"));
+        c.stopMonitoring();
+    }
+
+    // A mixer that is the headphones and two of the microphones: its output
+    // callback carries them, and silencing it would silence them.
+    {
+        FakeBackend backend;
+        CaptureCoordinator c (backend, 48000.0, 64);
+
+        std::vector<CaptureChannel> mixerChannels {
+            { "mixer", "PUP 1", "01_PUP-1", 0.0f },
+            { "mixer", "PUP 2", "02_PUP-2", 0.0f },
+        };
+        mixerChannels[1].deviceChannel = 1;
+
+        REQUIRE (c.startMonitoring (mixerChannels, "mixer"));
+        REQUIRE (c.outputCarriesTakeChannels());
+        REQUIRE_FALSE (c.abandonOutputClock ("changed rate"));
+        REQUIRE_FALSE (c.isOutputAbandoned());
+        c.stopMonitoring();
+        REQUIRE_FALSE (c.outputCarriesTakeChannels());
+    }
 }
 
 TEST_CASE (CaptureCoordinator_CountsRingOverruns)

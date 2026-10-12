@@ -7,7 +7,10 @@
 #include "UI/SaveLocationPrompt.h"
 #include "UI/SetupGuidePanel.h"
 #include "UI/RecoveredTakesPanel.h"
+#include "UI/SavedTakePanel.h"
+#include "UI/TakeAlertCard.h"
 #include "UI/CameraPreviewCover.h"
+#include "Core/QuitQuestions.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -765,6 +768,166 @@ int main()
                              takeRunning ? "recording" : "idle",
                              remainingWidth, remainingNeeded, elapsedWidth, elapsedNeeded,
                              slider != nullptr ? slider->getWidth() : 0);
+                failures += ok ? 0 : 1;
+            }
+        }
+    }
+
+    // --- A quit waiting for the after-take work says so, whole --------------
+    //
+    // "Quit When Done" used to leave the screen exactly as it was, so the
+    // natural next move was to quit again -- which cancelled the combined
+    // video. The line under the record button now says the app is waiting,
+    // and it has to be readable at the narrowest window, longest wording.
+    {
+        std::printf ("\nA pending quit is readable under the record button\n");
+
+        const juce::String pending (mma::QuitQuestions::pendingQuitLine (
+            "the podcast copy and the combined video"));
+
+        for (const int width : { 1180, 707, 560 })
+        {
+            mma::MainScreen s;
+            s.setMicCount (2);
+            s.setFilesBeingSavedText (pending);
+
+            s.setVisibleHeight (560);
+            s.setSize (width, juce::jmax (560, s.getRequiredHeight()));
+            s.resized();
+
+            auto* label = findLabel (s, pending);
+            const int labelWidth = label != nullptr ? label->getWidth() : 0;
+            const int needed = label != nullptr
+                                   ? juce::roundToInt (label->getFont().getStringWidthFloat (pending))
+                                         + label->getBorderSize().getLeftAndRight()
+                                   : 1;
+            const bool ok = label != nullptr && label->isVisible() && labelWidth >= needed;
+
+            std::printf ("  %s  %4dpx: line %3dpx, sentence needs %3dpx\n",
+                         ok ? "PASS" : "FAIL", width, labelWidth, needed);
+            failures += ok ? 0 : 1;
+        }
+    }
+
+    // --- ... and on the card that covers that line ---------------------------
+    //
+    // A card covers the line under the record button, and one is usually up
+    // when the quit starts waiting: "Stop and Quit" stops the take, and its
+    // saved-take card opens behind the "Still saving" question; Cmd-Q from
+    // the saved-take card leaves it up. With the sentence only on the main
+    // screen, the window looked exactly as before until Done. Every card says
+    // it at its foot: grown to hold it, inside the card, below its buttons,
+    // drawn whole, and frontmost where it is drawn. Clearing it puts the card
+    // back as it was.
+    {
+        std::printf ("\nA pending quit is readable on the card that covers that line\n");
+
+        const juce::String pending (mma::QuitQuestions::pendingQuitLine (
+            "the podcast copy and the combined video"));
+
+        const auto footnoteShows = [&findLabel, &pending] (mma::ModalCard& card, int width,
+                                                           juce::String& detail)
+        {
+            card.setVisible (true); // as the owner shows it; a hidden one hit-tests as nothing
+            card.setFootnote ({});
+            card.setSize (width, 2000);
+            const int heightWithout = card.getRequiredHeight();
+
+            card.setFootnote (pending);
+            const int heightWith = card.getRequiredHeight();
+
+            // What MainComponent gives a card that has just grown: the window
+            // grown to its required height plus the 32px it always keeps.
+            card.setSize (width, heightWith + 32);
+
+            const int cardWidth = juce::jmin (480, juce::jmax (280, width - 32));
+            const auto cardBounds = juce::Rectangle<int> (cardWidth, heightWith)
+                                        .withCentre (card.getLocalBounds().getCentre());
+
+            auto* label = findLabel (card, pending);
+            bool ok = label != nullptr && label->isVisible() && heightWith > heightWithout;
+
+            if (label != nullptr)
+            {
+                const auto font = label->getFont();
+                const auto area = label->getBorderSize().subtractedFrom (label->getLocalBounds());
+                const int allowed = juce::jmax (1, (int) ((float) area.getHeight() / font.getHeight()));
+                const float needed = font.getStringWidthFloat (pending);
+                const bool whole = needed < (float) area.getWidth()
+                                || (float) allowed > (needed + 80.0f) / (float) area.getWidth();
+
+                int lowestButton = 0;
+                for (int i = 0; i < card.getNumChildComponents(); ++i)
+                    if (auto* b = dynamic_cast<juce::Button*> (card.getChildComponent (i)); b != nullptr && b->isVisible())
+                        lowestButton = juce::jmax (lowestButton, b->getBottom());
+
+                const bool inside = cardBounds.contains (label->getBounds());
+                const bool belowButtons = lowestButton > 0 && label->getY() >= lowestButton;
+                const bool frontmost = card.getComponentAt (label->getBounds().getCentre()) == label;
+
+                ok = ok && whole && inside && belowButtons && frontmost;
+                detail << "line " << label->getHeight() << "px tall at y=" << label->getY()
+                       << ", buttons end at y=" << lowestButton << ", card +"
+                       << (heightWith - heightWithout) << "px"
+                       << (whole ? "" : ", CUT OFF") << (inside ? "" : ", OUTSIDE THE CARD")
+                       << (frontmost ? "" : ", COVERED");
+            }
+            else
+            {
+                detail << "no line on the card";
+            }
+
+            card.setFootnote ({});
+            const bool clears = (label == nullptr || ! label->isVisible())
+                             && card.getRequiredHeight() == heightWithout;
+
+            if (! clears)
+                detail << ", NOT CLEARED";
+
+            return ok && clears;
+        };
+
+        for (const int width : { 1180, 707, 560, 420 })
+        {
+            mma::SavedTakePanel saved;
+            saved.setTake ("/Volumes/CARD/RECORDINGS/2026-10-12_2100_Late-Show",
+                           "/Users/me/RECORDINGS-MIRROR/2026-10-12_2100_Late-Show",
+                           { { "MIX.wav", 412000000 }, { "Mic 1 - Host.wav", 206000000 },
+                             { "Mic 2 - Guest.wav", 206000000 }, { "V01-Wide.mov", 2100000000 } },
+                           mma::TakeAudioVerdict::Recorded);
+
+            mma::TakeAlertCard alert;
+            alert.addAlert ("12:04", "Mic 2 stopped sending audio.", mma::TakeAlertCard::Tone::NeedsYou);
+            alert.setSevere (true, true);
+
+            mma::RecoveredTakesPanel recovered;
+            {
+                mma::RecoveredTakeRow take;
+                take.folderName = "2026-10-12_2100_Late-Show";
+                take.fullPath = "/Volumes/CARD/RECORDINGS/" + take.folderName;
+                take.fileCount = take.playableFileCount = 3;
+                take.longestSeconds = 754.0;
+                recovered.setTakes ({ take });
+            }
+
+            mma::SaveLocationPrompt prompt;
+            prompt.setPlan ("/Volumes/CARD/RECORDINGS", "2026-10-12_2200_Encore", {},
+                            { "MIX.wav", "Mic 1 - Host.wav", "Mic 2 - Guest.wav" }, 0, 0);
+
+            const std::pair<const char*, mma::ModalCard*> cards[] = {
+                { "saved-take card", &saved },
+                { "mid-take alert card", &alert },
+                { "recovered-takes card", &recovered },
+                { "save-location card", &prompt },
+            };
+
+            for (const auto& [name, card] : cards)
+            {
+                juce::String detail;
+                const bool ok = footnoteShows (*card, width, detail);
+
+                std::printf ("  %s  %4dpx %-21s %s\n", ok ? "PASS" : "FAIL", width, name,
+                             detail.toRawUTF8());
                 failures += ok ? 0 : 1;
             }
         }

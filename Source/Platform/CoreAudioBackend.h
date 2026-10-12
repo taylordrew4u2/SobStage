@@ -5,6 +5,7 @@
 
 #if JUCE_MAC
 
+#include "CallbackWatchdogSleepGuard.h"
 #include <memory>
 #include <string>
 
@@ -63,6 +64,7 @@ public:
     int getOutputPresentationLatencyFrames() const override;
     int getInputLatencyFrames (const std::string& deviceId) const override;
     uint64_t getOutputGlitchCount() const override;
+    bool isOutputOffRate() const noexcept override { return outputOffRate->load(); }
 
 private:
     // Open streams, each owning its IOProc registration. Held as pointers so
@@ -76,19 +78,23 @@ private:
     std::unique_ptr<CoreAudioDeviceListListenerState> deviceListListenerState;
     bool deviceListListenerInstalled = false;
 
-    // coreaudiod restarting (kAudioHardwarePropertyServiceRestarted) and an
+    // coreaudiod restarting (kAudioHardwarePropertyServiceRestarted), an
     // output's route changing (kAudioDevicePropertyDataSource /
     // kAudioDevicePropertyJackIsConnected: headphones into or out of an Intel
-    // Mac's jack, which changes no device list) are delivered through the same
-    // listener state, trampoline and callback as the device list, so they share
-    // its lease gate and its process-lifetime retirement. Each registration is
-    // remembered so it is removed before that state is retired.
+    // Mac's jack, which changes no device list) and the app's combined device
+    // changing shape (its active sub-device list and output stream
+    // configuration: a microphone dropping out of it or joining it late) are
+    // delivered through the same listener state, trampoline and callback as
+    // the device list, so they share its lease gate and its process-lifetime
+    // retirement. Each registration is remembered so it is removed before
+    // that state is retired.
     bool serviceRestartListenerInstalled = false;
 
     struct OutputRouteListener
     {
         uint32_t device = 0;   // AudioObjectID
-        uint32_t selector = 0; // AudioObjectPropertySelector, output scope
+        uint32_t selector = 0; // AudioObjectPropertySelector
+        uint32_t scope = 0;    // AudioObjectPropertyScope
     };
 
     std::vector<OutputRouteListener> outputRouteListeners;
@@ -97,6 +103,12 @@ private:
 
     std::string hotplugProblem;
 
+    /// isOutputOffRate(): raised by the open output's nominal-rate listener
+    /// on the HAL's word, lowered by takeStreamFailures() when it reads the
+    /// stream's rate back, and on close. Shared with that output's stream
+    /// (CoreAudioStream::outputOffRate), which can outlive this backend.
+    std::shared_ptr<std::atomic<bool>> outputOffRate = std::make_shared<std::atomic<bool>> (false);
+
     /// A device that would not take the requested buffer size. Not a failure --
     /// the stream opens and records -- but the extra latency was invisible.
     ///
@@ -104,6 +116,11 @@ private:
     /// takeStreamFailures(); both are message-thread today, and this makes the
     /// flag correct without depending on that staying true.
     std::atomic<bool> bufferSizeWasRefused { false };
+
+    /// Keeps the callback watchdog in takeStreamFailures() from calling the
+    /// rig dead because the Mac slept. Message thread, as that is.
+    CallbackWatchdogSleepGuard watchdogSleepGuard;
+
     // A timed-out HAL call is deliberately left on its worker until CoreAudio
     // returns and that worker can tear the IOProc down. The registry outlives
     // this backend when necessary and stops device-list churn from launching a
@@ -116,7 +133,8 @@ private:
 
     /// Message thread only. Brings the output-route listeners in line with the
     /// outputs now listed: one per route property each output actually has,
-    /// none left on a device that has gone.
+    /// and the combined device's layout properties while it is listed; none
+    /// left on a device that has gone.
     void syncOutputRouteListeners();
     bool openStream (const std::string& deviceId, double sampleRate, int bufferSizeSamples,
                      AudioCallback callback, bool isOutput);

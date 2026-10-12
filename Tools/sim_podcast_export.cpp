@@ -398,6 +398,104 @@ int main()
         expect (! exporter.start (first, "MIX.wav", "Spotify"), "a cancelled worker took more work");
     }
 
+    // A folder with files open in it cannot be renamed on Windows, and only a
+    // Mac or Linux can hold the folder itself to follow it (TakeFolderTracker).
+   #if defined (__APPLE__) || defined (__linux__)
+    // 10. The take folder renamed in Finder while the copy is being made, at
+    //     every point the copy looks for it: before the mix is measured,
+    //     between passes, just before the finished copy is named. The copy
+    //     ends up in the folder as it is now. It used to fail on the old path
+    //     and leave its ".part" in the renamed folder, which the next launch
+    //     deleted as unfinished work. A take with clicks in it, so the copy
+    //     is written more than once on its way to the target.
+    {
+        const auto clicky = [] (int i) { return (i % 48000) == 24000 ? 0.9f : quietTone (i); };
+        int lookups = 0;
+        {
+            const auto take = root.getChildFile ("count-lookups");
+            take.createDirectory();
+            expect (writeMix (take, 6.0, clicky), "the lookup-counting take could not be written");
+
+            const auto counted = mma::exportPodcastCopy (take, "MIX.wav", apple, notCancelled,
+                                                         [&lookups, take] { ++lookups; return take; });
+            expect (counted.written, "the lookup-counting take was not exported");
+        }
+
+        // Listing, measuring, naming, then at least two passes of three looks
+        // each (open, read, check), then the final name.
+        expect (lookups >= 11, "the copy does not look for its folder before each step of each pass");
+        std::printf ("  renamed mid-copy: the folder is looked for %d times; renaming at each\n", lookups);
+
+        int followedEveryRename = 0;
+
+        for (int renameAt = 1; renameAt <= lookups; ++renameAt)
+        {
+            const auto take = root.getChildFile ("rename-" + juce::String (renameAt));
+            const auto renamed = root.getChildFile ("renamed-" + juce::String (renameAt) + " (keep)");
+            take.createDirectory();
+
+            if (! writeMix (take, 6.0, clicky))
+            {
+                expect (false, "a take to rename could not be written");
+                continue;
+            }
+
+            int asked = 0;
+            const auto result = mma::exportPodcastCopy (take, "MIX.wav", apple, notCancelled,
+                                                        [&asked, renameAt, take, renamed]
+            {
+                if (++asked == renameAt)
+                    take.moveFileTo (renamed);
+
+                return asked >= renameAt ? renamed : take;
+            });
+
+            const bool followed = result.written
+                               && result.output == renamed.getChildFile ("MIX - Apple-Podcasts.wav")
+                               && result.output.existsAsFile()
+                               && ! anyWorkingFileIn (renamed)
+                               && measure (result.output).samples == static_cast<juce::int64> (6.0 * kRate);
+
+            if (! followed)
+                std::fprintf (stderr, "  renamed at look %d: %s\n", renameAt, result.message.toRawUTF8());
+
+            followedEveryRename += followed ? 1 : 0;
+        }
+
+        expect (followedEveryRename == lookups, "a copy whose take folder was renamed did not follow it");
+    }
+
+    // 11. The app's worker, given the take folder itself: a take renamed while
+    //     its copy waits behind another take's is still copied, into the
+    //     renamed folder.
+    {
+        const auto ahead = root.getChildFile ("worker-ahead");
+        const auto waiting = root.getChildFile ("2026-10-11_2330_Waiting");
+        const auto renamed = root.getChildFile ("Waiting (keep)");
+        ahead.createDirectory();
+        waiting.createDirectory();
+        expect (writeMix (ahead, 30.0, quietTone), "the take ahead could not be written");
+        expect (writeMix (waiting, 6.0, quietTone), "the waiting take could not be written");
+
+        auto followed = std::make_shared<mma::TakeFolderTracker>();
+        expect (followed->open (waiting.getFullPathName().toStdString()), "could not hold the waiting take's folder");
+
+        mma::PodcastExporter exporter;
+        expect (exporter.start (ahead, "MIX.wav", "Apple Podcasts"), "the worker did not take the take ahead");
+        expect (exporter.start (waiting, "MIX.wav", "Apple Podcasts", std::move (followed)),
+                "the worker did not queue the waiting take");
+        expect (waiting.moveFileTo (renamed), "could not rename the waiting take's folder");
+        expect (exporter.waitUntilIdle (60000), "the worker did not finish");
+
+        const auto finished = exporter.collectFinished();
+        expect (finished.size() == 2 && finished[1].written
+                    && finished[1].output == renamed.getChildFile ("MIX - Apple-Podcasts.wav")
+                    && finished[1].output.existsAsFile(),
+                "a take renamed while its copy waited did not get its copy in the renamed folder");
+        expect (! anyWorkingFileIn (renamed), "the renamed take was left holding a working file");
+    }
+   #endif
+
     std::printf ("%s (%d checks, %d failing)\n",
                  failures == 0 ? "ALL CHECKS PASSED" : "CHECKS FAILED", checks, failures);
     return failures == 0 ? 0 : 1;

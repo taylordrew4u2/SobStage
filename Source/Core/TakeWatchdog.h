@@ -12,7 +12,14 @@ namespace mma {
 struct TakeHealth
 {
     struct Mic    { std::string name; bool live = true; };
-    struct Camera { std::string name; bool present = true; };
+
+    /// `id` is the camera's device id and is what the watchdog matches on;
+    /// `name` is only for the sentence. Two cameras of the same model show
+    /// the same name, and matching on it read one twin's state as the
+    /// other's: a twin that never started looked like a loss at the start of
+    /// the take, and the latch then hid the real loss of the other. Empty
+    /// falls back to the name. Last, so `{ name, present }` still builds.
+    struct Camera { std::string name; bool present = true; std::string id {}; };
 
     std::vector<Mic> mics;
     std::vector<Camera> cameras;
@@ -33,6 +40,14 @@ struct TakeHealth
     /// True while the headphone output has stopped calling back and the take
     /// is running on the computer's own clock.
     bool outputClockLost = false;
+    /// True while the headphone output is held off the take's clock because
+    /// it was switched to another sample rate: from the platform's word
+    /// (CaptureCoordinator::isOutputOffRate), before the app has decided
+    /// anything, and once it has set the output aside (abandonOutputClock).
+    /// The take runs on the computer's clock then too, but the monitor
+    /// problem says why in its own words, so the "has stopped -- unplugged,
+    /// or taken by another app" alert is not raised over it.
+    bool outputRateChanged = false;
     /// True while the writer is falling behind (ring buffer past its warning
     /// mark) and true while it has given up the stems and kept only the mix.
     bool writerBehind = false;
@@ -105,6 +120,14 @@ public:
     /// one nobody can read or dismiss.
     static constexpr double kDroppedRepeatSeconds = 60.0;
 
+    /// What the rings lose within this long of the headphone output being
+    /// held off the clock for a rate change is that hand-over -- the software
+    /// clock taking the rig from the output a moment after the output stopped
+    /// pulling -- not the computer failing to keep up, and is said in those
+    /// words, once. The hand-over itself is over in a few hundredths of a
+    /// second; the rest is slack for the two-a-second look.
+    static constexpr double kOutputSwitchSeconds = 2.0;
+
 private:
     bool watching = false;
     TakeHealth last;
@@ -112,6 +135,12 @@ private:
     bool warnedTwoMinutes = false;
     bool droppedReported = false;
     double droppedReportedAt = 0.0;
+    /// When the output was last held off the clock for a rate change this
+    /// take (negative: not this take), and whether what the rings lost over
+    /// that hand-over has been said.
+    double outputSwitchedAt = -1.0;
+    bool outputSwitchLossReported = false;
+    /// Keyed by device id (the name where there is none), never by name alone.
     std::set<std::string> lostCamerasThisTake;
 };
 

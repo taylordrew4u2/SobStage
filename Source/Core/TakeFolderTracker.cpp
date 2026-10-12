@@ -48,6 +48,15 @@ void TakeFolderTracker::closeDescriptor (int fd)
 #endif
 }
 
+int TakeFolderTracker::duplicateDescriptor() const noexcept
+{
+#if defined (__APPLE__) || defined (__linux__)
+    return descriptor >= 0 ? ::fcntl (descriptor, F_DUPFD_CLOEXEC, 0) : -1;
+#else
+    return -1;
+#endif
+}
+
 bool TakeFolderTracker::open (const std::string& folder)
 {
     return adopt (openDescriptor (folder), folder);

@@ -62,6 +62,57 @@ bool SessionRecovery::sessionWasInterrupted (const SessionMetadata& meta)
     return meta.stopTimestampIso.empty();
 }
 
+std::optional<std::string> SessionRecovery::readExactly (std::istream& in, uint64_t expectedBytes)
+{
+    // A details file is a few kilobytes. Anything claiming to be vastly more
+    // is not one this app wrote, and is not worth a giant allocation on a
+    // detached worker to find that out.
+    constexpr uint64_t kLargestRecordBytes = 64ull * 1024ull * 1024ull;
+
+    if (expectedBytes > kLargestRecordBytes)
+        return std::nullopt;
+
+    std::string bytes (static_cast<size_t> (expectedBytes), '\0');
+
+    if (expectedBytes > 0)
+        in.read (bytes.data(), static_cast<std::streamsize> (expectedBytes));
+
+    if (in.bad() || static_cast<uint64_t> (in.gcount()) != expectedBytes)
+        return std::nullopt;
+
+    return bytes;
+}
+
+std::optional<std::string> SessionRecovery::readWholeFileChecked (const std::string& path)
+{
+    try
+    {
+        std::ifstream in (pathFromUtf8 (path), std::ios::in | std::ios::binary);
+
+        if (! in.is_open())
+            return std::nullopt;
+
+        // The size of the file this stream has open, not of whatever the path
+        // names a moment later: session.json is replaced by a rename.
+        in.seekg (0, std::ios::end);
+        const auto end = in.tellg();
+
+        if (! in || end < 0)
+            return std::nullopt;
+
+        in.seekg (0, std::ios::beg);
+
+        if (! in)
+            return std::nullopt;
+
+        return readExactly (in, static_cast<uint64_t> (end));
+    }
+    catch (...)
+    {
+        return std::nullopt;
+    }
+}
+
 int RecoveredSession::keptFileCount() const
 {
     return static_cast<int> (std::count_if (files.begin(), files.end(),

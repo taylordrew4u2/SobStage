@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mma {
@@ -35,6 +36,84 @@ inline std::vector<float> headphoneChannelGains (const std::vector<CombinedDevic
     }
 
     return gains;
+}
+
+/// The combined device's headphone jacks as the app knows them: its layout
+/// as last read, and who hears the mix. Every layout read, and every lay()
+/// (someone switched on or off), hands the gains on through the LayGains
+/// given at construction, always as the combined device's own -- which stream
+/// they reach is CaptureCoordinator::setHeadphoneJackGains()'s to decide, from
+/// the stream that is actually open, never from the output chosen.
+///
+/// The layout is only ever stored through layoutRead(), which lays the gains
+/// every time, so no read of it can leave them behind: a sub-device leaving
+/// the combined device (a cable bumped mid-take) or joining it late (slower
+/// than the publish wait) moves every later jack's channels, and nothing else
+/// lays them again -- mid-take the reopen waits for Stop, and between takes an
+/// unchanged rig is not reopened.
+class HeadphoneJacks
+{
+public:
+    /// Whether the wearer of the microphone with this sub-device id hears the mix.
+    using HearsMix = std::function<bool (const std::string& subDeviceId)>;
+    /// Hands the gains on: the device whose channels they describe, and the gains.
+    using LayGains = std::function<void (const std::string& outputDeviceId, const std::vector<float>& gains)>;
+
+    HeadphoneJacks (std::string combinedDeviceIdToUse, HearsMix hearsMixToUse, LayGains layToUse)
+        : combinedDeviceId (std::move (combinedDeviceIdToUse)),
+          hearsMix (std::move (hearsMixToUse)),
+          layGains (std::move (layToUse))
+    {
+    }
+
+    /// The combined device's layout, just read (empty when there is none).
+    /// Lays the gains again whether or not it changed.
+    void layoutRead (std::vector<CombinedDeviceOutputs> newLayout)
+    {
+        layout = std::move (newLayout);
+        lay();
+    }
+
+    /// Lays the gains again from the layout as last read: after someone's
+    /// headphones are switched on or off, or onto a new coordinator.
+    void lay() const
+    {
+        if (layGains != nullptr)
+            layGains (combinedDeviceId, headphoneChannelGains (layout, hearsMix));
+    }
+
+    const std::vector<CombinedDeviceOutputs>& getLayout() const noexcept { return layout; }
+
+private:
+    std::string combinedDeviceId;
+    HearsMix hearsMix;
+    LayGains layGains;
+    std::vector<CombinedDeviceOutputs> layout;
+};
+
+/// What re-making the app's combined device has to wait for. It is destroyed
+/// and made again, so whatever plays through it stops: done under our own
+/// running stream, the stop and teardown fail against a device that no longer
+/// exists, and mid-take everyone's headphones go silent for the rest of the
+/// take.
+enum class CombinedDeviceRemake
+{
+    Now,                 ///< nothing of ours is playing through it
+    CloseOurStreamFirst, ///< our headphone stream is on it between takes: close it, re-make, reopen
+    AfterTheTake         ///< the take's headphone mix is playing through it: wait for Stop
+};
+
+/// Judged by whether our own output stream is open on the combined device
+/// (CaptureCoordinator::isOutputOpenOn), never by the output chosen: mid-take
+/// the choice can move off the combined device -- picked in Settings, or a
+/// layout read that found no jacks while it was being rebuilt -- while the
+/// take's mix goes on playing through it until Stop.
+inline CombinedDeviceRemake combinedDeviceRemakeStep (bool ourStreamIsOnIt, bool takeRecording)
+{
+    if (! ourStreamIsOnIt)
+        return CombinedDeviceRemake::Now;
+
+    return takeRecording ? CombinedDeviceRemake::AfterTheTake : CombinedDeviceRemake::CloseOurStreamFirst;
 }
 
 /// True when at least one microphone in the combined device has a headphone

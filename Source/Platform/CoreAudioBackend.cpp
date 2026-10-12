@@ -9,6 +9,9 @@
 #include "MacCoreAudioQueries.h"
 
 #include <CoreAudio/CoreAudio.h>
+#include <CoreAudio/HostTime.h>            // AudioGetCurrentHostTime(): the callback watchdog's clock
+#include <CoreFoundation/CoreFoundation.h>
+#include <time.h>                          // clock_gettime_nsec_np(): what counts through sleep
 #include <AudioToolbox/AudioToolbox.h>
 #include <unistd.h> // getpid() for hog-mode ownership
 #include <algorithm>
@@ -19,6 +22,19 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
+
+// The Mac's power state: whether its audio is on, which it is not in a dark
+// wake (awake with the lid shut for Power Nap or a backup) or on the way to
+// sleep. IOKit's power-management SPI, declared in IOPMLibPrivate.h, which is
+// not in the SDK; IOKit.framework has exported it since macOS 10.7 and the
+// SDK's IOKit.tbd lists it. Imported weakly, so a macOS without it still
+// launches, and the callback watchdog then just cannot ask (see
+// systemAudioIsOff()). The simulation's virtual HAL defines it instead.
+#if defined (MMA_SIMULATE_MAC)
+extern "C" uint32_t IOPMConnectionGetSystemCapabilities (void);
+#else
+extern "C" uint32_t IOPMConnectionGetSystemCapabilities (void) __attribute__ ((weak_import));
+#endif
 
 namespace mma {
 
@@ -61,6 +77,10 @@ struct CoreAudioStream
     /// only way this backend can tell is to remember when it was last called
     /// and let the message thread ask. Without it macOS was the one platform
     /// where a stream that stopped after opening produced nothing at all.
+    ///
+    /// Both times are on the host clock (hostClockSeconds()), which stops
+    /// while the Mac sleeps, so a night with the lid closed is not a night of
+    /// silence.
     std::string uid;
     double expectedSampleRate = 0.0;
     double startedSeconds = 0.0;
@@ -82,6 +102,16 @@ struct CoreAudioStream
     std::atomic<bool> nominalRateCheckPending { false };
     std::atomic<bool> deviceAliveCheckPending { false };
     std::atomic<uint64_t> processorOverloads { 0 };
+
+    // The monitor output only: the backend's IAudioBackend::isOutputOffRate()
+    // flag, raised by the nominal-rate listener the moment the device says its
+    // rate changed and lowered by takeStreamFailures() once it reads the
+    // stream's own rate back. Shared rather than pointing into the backend,
+    // because a stream whose driver will not let go of it outlives the
+    // backend (retainInertStream); its callback gate is closed by then, so
+    // nothing writes through it, but the pointer stays valid regardless.
+    // Null on an input stream.
+    std::shared_ptr<std::atomic<bool>> outputOffRate;
 
     // Message-thread reporting latches. A rate mismatch or dead device is said
     // once until it recovers; overloads are reported whenever the count rises.
@@ -184,6 +214,60 @@ static_assert (kOutputHalTransactionTimeout > kRateSettleTimeout + std::chrono::
                "an output open must be allowed to finish settling its sample rate and start");
 static_assert (kOutputHalTransactionTimeout >= kHalTransactionTimeout,
                "the output open does at least as much HAL work as an input open");
+
+/// The callback watchdog's clock: seconds on the Mac's host clock
+/// (mach_absolute_time, which CoreAudio stamps its own IO with). It stops while
+/// the Mac sleeps. steady_clock does not -- libc++ builds it on
+/// CLOCK_MONOTONIC_RAW, which keeps counting through sleep -- and an hour with
+/// the lid closed read as an hour of every IOProc being silent. See
+/// CallbackWatchdogSleepGuard.
+///
+/// Called from the IOProc. §11 allows it: a clock read and a fixed conversion,
+/// with no allocation, lock or logging.
+double hostClockSeconds() noexcept
+{
+    return static_cast<double> (AudioConvertHostTimeToNanos (AudioGetCurrentHostTime())) * 1.0e-9;
+}
+
+/// A clock that keeps counting while the Mac sleeps, set against
+/// hostClockSeconds() only to notice that it slept. CLOCK_MONOTONIC_RAW
+/// (mach_continuous_time) counts through sleep and, unlike the time of day,
+/// is never stepped. It used to be the wall clock, which timed or someone
+/// changing the time can step by seconds at once; since a sleep mid-take is
+/// written into the take's record, a step read as a sleep left a gap in
+/// session.json the audio never had.
+double sleepCountingSeconds() noexcept
+{
+   #if defined (MMA_SIMULATE_MAC)
+    return static_cast<double> (SimulatedContinuousTimeNanos()) * 1.0e-9;
+   #else
+    return static_cast<double> (clock_gettime_nsec_np (CLOCK_MONOTONIC_RAW)) * 1.0e-9;
+   #endif
+}
+
+/// True when the Mac says its audio is off right now: a dark wake, where the
+/// app runs and polls with the lid shut while CoreAudio runs no IOProc, for
+/// minutes at a time; or the way down into sleep. No device can be judged by
+/// its silence then. False when its audio is on, or the Mac cannot be asked.
+///
+/// An IPC to the power manager, not a clock read: message thread only, and
+/// only while the callback watchdog is held or about to call something dead.
+bool systemAudioIsOff() noexcept
+{
+    // IOPMLibPrivate.h's kIOPMCapabilityAudio, "audio output is supported";
+    // spelled here because that header is not in the SDK.
+    constexpr uint32_t kCapabilityAudio = 0x4;
+
+    // A weak import's address is null on a macOS that does not have it. (Not
+    // const: the simulation's is an ordinary definition, and a compiler that
+    // folds the address warns that the check can never fail there.)
+    auto* getSystemCapabilities = &IOPMConnectionGetSystemCapabilities;
+
+    if (getSystemCapabilities == nullptr)
+        return false;
+
+    return (getSystemCapabilities() & kCapabilityAudio) == 0;
+}
 
 bool tryAcquireCallbackLease (CoreAudioStream& stream) noexcept
 {
@@ -469,8 +553,9 @@ std::vector<uint32_t> querySupportedSampleRates (AudioObjectID device)
 // DeviceChangeCallback. Registered on kAudioObjectSystemObject for
 // kAudioHardwarePropertyDevices so hotplug is delivered by the OS, never
 // polled on a timer (§2) -- and, with the same clientData, for
-// kAudioHardwarePropertyServiceRestarted and on each output's data source /
-// jack state, because all three want the same re-evaluation.
+// kAudioHardwarePropertyServiceRestarted, on each output's data source /
+// jack state and on the combined device's shape, because all of them want the
+// same re-evaluation.
 OSStatus deviceListChanged (AudioObjectID, UInt32 numAddresses,
                             const AudioObjectPropertyAddress* addresses, void* clientData)
 {
@@ -513,9 +598,38 @@ AudioObjectPropertyAddress serviceRestartedAddress()
 constexpr AudioObjectPropertySelector kOutputRouteSelectors[] = { kAudioDevicePropertyDataSource,
                                                                   kAudioDevicePropertyJackIsConnected };
 
-AudioObjectPropertyAddress outputRouteAddress (AudioObjectPropertySelector selector)
+AudioObjectPropertyAddress watchedAddress (AudioObjectPropertySelector selector, AudioObjectPropertyScope scope)
 {
-    return { selector, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain };
+    return { selector, scope, kAudioObjectPropertyElementMain };
+}
+
+/// What the app's own combined device is made of. Its output channels are
+/// numbered over the sub-devices active now, so one leaving it (a cable
+/// bumped) or joining it late (activated after the device was made) moves
+/// every later microphone's headphone jack to other channel numbers -- and
+/// neither is sure to be followed by a device-list notification: an unplug's
+/// own can arrive before the HAL has rebuilt the combined device, and a late
+/// activation has none at all. The app re-reads the layout, and lays the
+/// per-jack headphone gains again, on these.
+struct WatchedProperty
+{
+    AudioObjectPropertySelector selector;
+    AudioObjectPropertyScope scope;
+};
+
+constexpr WatchedProperty kCombinedDeviceLayoutProperties[] = {
+    { kAudioAggregateDevicePropertyActiveSubDeviceList, kAudioObjectPropertyScopeGlobal },
+    { kAudioDevicePropertyStreamConfiguration, kAudioObjectPropertyScopeOutput },
+};
+
+/// The app's own combined device. Only an aggregate has an active sub-device
+/// list, so only an aggregate's UID is read.
+bool isOurCombinedDevice (AudioObjectID device)
+{
+    auto address = watchedAddress (kAudioAggregateDevicePropertyActiveSubDeviceList,
+                                   kAudioObjectPropertyScopeGlobal);
+    return AudioObjectHasProperty (device, &address)
+        && readStringProperty (device, kAudioDevicePropertyDeviceUID) == kOurAggregateUid;
 }
 
 /// Every AudioObjectID the HAL lists now, or empty when it cannot be read.
@@ -585,7 +699,25 @@ OSStatus streamPropertyChanged (AudioObjectID, UInt32 numAddresses,
         switch (addresses[i].mSelector)
         {
             case kAudioDevicePropertyNominalSampleRate:
-                stream->nominalRateCheckPending.store (true, std::memory_order_relaxed);
+                // §5.3: the headphone output's callback is the clock every
+                // microphone is pulled on, and from this moment it may be
+                // calling back at another rate. Held off the clock now, not
+                // at the app's next poll up to half a second later, by which
+                // time it had pulled every ring at that rate. An atomic
+                // store, which is all this listener may do.
+                //
+                // The hold goes up before the pending mark, both sequentially
+                // consistent. The other way round, a poll could take the
+                // pending mark, read the rate unchanged and lower the hold all
+                // between the two stores; the hold then went up after it with
+                // nothing pending to lower it again, and the headphones stayed
+                // off the clock for good. This way a poll that takes the mark
+                // reads the rate after the hold went up, and a poll that comes
+                // between the stores leaves the mark for the next one.
+                if (stream->outputOffRate != nullptr)
+                    stream->outputOffRate->store (true);
+
+                stream->nominalRateCheckPending.store (true);
                 break;
 
             case kAudioDevicePropertyDeviceIsAlive:
@@ -1008,10 +1140,8 @@ OSStatus ioProcTrampoline (AudioObjectID /*device*/,
 
     // A timestamp, taken before any work, so the message thread can tell a
     // stream that is running from one the HAL has stopped calling. §11 allows
-    // this: steady_clock::now() allocates nothing and takes no lock.
-    stream->lastCallbackSeconds.store (
-        std::chrono::duration<double> (std::chrono::steady_clock::now().time_since_epoch()).count(),
-        std::memory_order_relaxed);
+    // this: the host clock allocates nothing and takes no lock.
+    stream->lastCallbackSeconds.store (hostClockSeconds(), std::memory_order_relaxed);
 
     // A device that was called dead and has started running again is alive, and
     // the latch has to let go or the next genuine death is never reported.
@@ -1296,8 +1426,7 @@ CoreAudioOpenResult createAndStartStream (CoreAudioStream& stream)
                  cleanup.cleanupSucceeded };
     }
 
-    stream.startedSeconds = std::chrono::duration<double> (
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+    stream.startedSeconds = hostClockSeconds();
     return { true, {}, true, true };
 }
 
@@ -1607,7 +1736,7 @@ void CoreAudioBackend::syncOutputRouteListeners()
                             if (listed (registration.device))
                                 return false;
 
-                            auto address = outputRouteAddress (registration.selector);
+                            auto address = watchedAddress (registration.selector, registration.scope);
                             (void) AudioObjectRemovePropertyListener (registration.device, &address,
                                                                       deviceListChanged,
                                                                       deviceListListenerState.get());
@@ -1615,33 +1744,42 @@ void CoreAudioBackend::syncOutputRouteListeners()
                         }),
         outputRouteListeners.end());
 
+    const auto watch = [this] (AudioObjectID device, AudioObjectPropertySelector selector,
+                               AudioObjectPropertyScope scope)
+    {
+        const bool alreadyWatched = std::any_of (
+            outputRouteListeners.begin(), outputRouteListeners.end(),
+            [device, selector, scope] (const OutputRouteListener& registration)
+            {
+                return registration.device == device && registration.selector == selector
+                    && registration.scope == scope;
+            });
+
+        if (alreadyWatched)
+            return;
+
+        auto address = watchedAddress (selector, scope);
+        if (! AudioObjectHasProperty (device, &address))
+            return;
+
+        if (AudioObjectAddPropertyListener (device, &address, deviceListChanged,
+                                            deviceListListenerState.get()) == noErr)
+            outputRouteListeners.push_back ({ device, selector, scope });
+    };
+
     for (auto device : devices)
     {
-        if (countChannels (device, false) <= 0)
-            continue;
+        // Most outputs have neither route property; only one that does can
+        // change route without changing the device list.
+        if (countChannels (device, false) > 0)
+            for (auto selector : kOutputRouteSelectors)
+                watch (device, selector, kAudioObjectPropertyScopeOutput);
 
-        for (auto selector : kOutputRouteSelectors)
-        {
-            const bool alreadyWatched = std::any_of (
-                outputRouteListeners.begin(), outputRouteListeners.end(),
-                [device, selector] (const OutputRouteListener& registration)
-                {
-                    return registration.device == device && registration.selector == selector;
-                });
-
-            if (alreadyWatched)
-                continue;
-
-            // Most outputs have neither property; only one that does can
-            // change route without changing the device list.
-            auto address = outputRouteAddress (selector);
-            if (! AudioObjectHasProperty (device, &address))
-                continue;
-
-            if (AudioObjectAddPropertyListener (device, &address, deviceListChanged,
-                                                deviceListListenerState.get()) == noErr)
-                outputRouteListeners.push_back ({ device, selector });
-        }
+        // Whether or not it has outputs yet: one made before its microphones
+        // activate reports none until they do.
+        if (isOurCombinedDevice (device))
+            for (const auto& property : kCombinedDeviceLayoutProperties)
+                watch (device, property.selector, property.scope);
     }
 }
 
@@ -1656,7 +1794,7 @@ void CoreAudioBackend::removeDeviceListListener()
     // refuses the remove, which is expected; the retirement below covers it.
     for (const auto& registration : outputRouteListeners)
     {
-        auto routeAddress = outputRouteAddress (registration.selector);
+        auto routeAddress = watchedAddress (registration.selector, registration.scope);
         (void) AudioObjectRemovePropertyListener (registration.device, &routeAddress, deviceListChanged,
                                                   deviceListListenerState.get());
     }
@@ -1866,6 +2004,14 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     stream->expectedSampleRate = sampleRate;
     stream->isOutput = isOutput;
 
+    // A new output starts as the clock. Its listener is installed only after
+    // its rate has been set, so a hold raised from here on is about it.
+    if (isOutput)
+    {
+        outputOffRate->store (false);
+        stream->outputOffRate = outputOffRate;
+    }
+
     struct Attempt
     {
         std::mutex mutex;
@@ -2030,8 +2176,33 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
     // unplugging hardware that is fine.
     constexpr double kSilentSecondsBeforeGivingUp = 5.0;
 
-    const double now = std::chrono::duration<double> (
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+    // On the host clock, as every callback stamp is: it stops while the Mac
+    // sleeps.
+    const double now = hostClockSeconds();
+
+    // Sleep stops every IOProc at once, and the awake seconds around it -- IO
+    // stopping before the Mac sleeps, USB devices starting again after it
+    // wakes, a dark wake with the lid shut -- are not a device failing. The
+    // guard notices the sleep and holds the watchdog until audio runs again,
+    // for as long as the Mac says its audio is off.
+    bool anyStreamOpen = false;
+
+    {
+        double latestCallback = 0.0;
+
+        for (const auto& stream : openStreams)
+            if (stream != nullptr && stream->ioProcId != nullptr)
+            {
+                anyStreamOpen = true;
+                latestCallback = std::max (latestCallback,
+                                           stream->lastCallbackSeconds.load (std::memory_order_relaxed));
+            }
+
+        watchdogSleepGuard.poll (now, sleepCountingSeconds(), latestCallback, systemAudioIsOff);
+    }
+
+    // Asked at most once a poll, and only of a stream about to be called dead.
+    bool systemAudioAsked = false;
 
     for (const auto& stream : openStreams)
     {
@@ -2096,28 +2267,70 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
             }
         }
 
-        if (stream->nominalRateCheckPending.exchange (false, std::memory_order_relaxed))
+        if (stream->nominalRateCheckPending.exchange (false))
         {
-            devicePropertiesChanged = true;
             const double actualRate = getNominalSampleRate (stream->deviceId);
             const bool mismatched = actualRate > 0.0
                                  && std::abs (actualRate - stream->expectedSampleRate) >= 1.0;
 
+            // Handed to re-enumeration unless this is the monitor output
+            // found at its own rate with no change of its reported: nothing
+            // the rig is built from has moved then. That re-enumeration ran
+            // a moment after the hold below was lowered, while the software
+            // clock was still handing the rig back to the output -- the
+            // output looked lost, and the app reopened every stream for it.
+            if (! stream->isOutput || mismatched || stream->sampleRateMismatchReported)
+                devicePropertiesChanged = true;
+
+            if (stream->outputOffRate != nullptr)
+            {
+                if (mismatched)
+                {
+                    stream->outputOffRate->store (true);
+                }
+                else
+                {
+                    // Back at the stream's rate (or it never left): the
+                    // output may clock the rig again. Unless the device has
+                    // said something since the read above -- that is the
+                    // next poll's to read, and the hold stands until then.
+                    stream->outputOffRate->store (false);
+
+                    if (stream->nominalRateCheckPending.load())
+                        stream->outputOffRate->store (true);
+                }
+            }
+
             if (mismatched && ! stream->sampleRateMismatchReported)
             {
                 stream->sampleRateMismatchReported = true;
+
+                // The output's advice depends on what the app does about it
+                // -- carry the take on without it, or put it back -- so the
+                // app adds it (outputRateChangeAction()).
                 failures.push_back ({ stream->isOutput ? std::string() : stream->uid,
                                       "changed to " + formatRate (actualRate)
                                       + " while SobStage is using "
-                                      + formatRate (stream->expectedSampleRate)
-                                      + ". Set the interface back to "
-                                      + formatRate (stream->expectedSampleRate)
-                                      + ", then start a new take.",
+                                      + formatRate (stream->expectedSampleRate) + "."
+                                      + (stream->isOutput
+                                             ? std::string()
+                                             : " Set the interface back to "
+                                               + formatRate (stream->expectedSampleRate)
+                                               + ", then start a new take."),
                                       stream->isOutput ? "Your sound output" : std::string(),
                                       StreamFailureKind::sampleRateChanged });
             }
             else if (! mismatched)
             {
+                // The headphone output back at the rate it was opened for.
+                // The app may have stopped using it as the clock over the
+                // change, and this is what tells it it can again.
+                if (stream->sampleRateMismatchReported && stream->isOutput)
+                    failures.push_back ({ std::string(),
+                                          "is back at " + formatRate (stream->expectedSampleRate) + ".",
+                                          "Your sound output",
+                                          StreamFailureKind::resumed });
+
                 // A later mismatch is new information once the device has
                 // returned to the rate this stream was opened for.
                 stream->sampleRateMismatchReported = false;
@@ -2157,12 +2370,32 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
         if (stream->deviceUnavailableReported)
             continue;
 
-        const double last = stream->lastCallbackSeconds.load (std::memory_order_relaxed);
-        const double silenceBegan = last > 0.0 ? last : stream->startedSeconds;
-
         // Before the first callback, measure from the successful Start call.
-        // Afterward, measure from the most recent callback as before.
+        // Afterward, measure from the most recent callback as before. After a
+        // sleep, from no earlier than audio running again; while waiting for
+        // that, not at all (0).
+        const double silenceBegan = watchdogSleepGuard.silenceBegan (
+            stream->lastCallbackSeconds.load (std::memory_order_relaxed), stream->startedSeconds);
+
         if (silenceBegan <= 0.0 || now - silenceBegan < kSilentSecondsBeforeGivingUp)
+            continue;
+
+        if (stream->reportedDead.load (std::memory_order_relaxed))
+            continue;
+
+        // The Mac turning its audio off stops every IOProc, and it does that
+        // on its way to sleep, which can take longer than these few seconds,
+        // before any sleep has been seen. Nothing is dead then: held, as for
+        // a sleep, until audio runs again.
+        if (! systemAudioAsked)
+        {
+            systemAudioAsked = true;
+
+            if (systemAudioIsOff())
+                watchdogSleepGuard.holdWhileSystemAudioIsOff (now);
+        }
+
+        if (watchdogSleepGuard.isWaitingForAudio())
             continue;
 
         // Once per stream. The condition stays true for as long as the device
@@ -2179,6 +2412,17 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
                                     "it. Try selecting it again."
                                   : "stopped sending audio. Unplug it and plug it back in." });
     }
+
+    // Holding the watchdog is not silence about the sleep: once per sleep with
+    // the rig open, the app hears that every stream stopped together. None of
+    // them failed, but a take running across it has a gap there -- the audio
+    // from before the sleep runs straight into the audio from after it -- and
+    // only the app can put that in the take's record.
+    if (watchdogSleepGuard.takeSleepNotice() && anyStreamOpen)
+        failures.push_back ({ std::string(),
+                              "went to sleep, so every microphone and the headphones stopped until "
+                              "it woke.",
+                              "The Mac", StreamFailureKind::systemSlept });
 
     // Re-enumeration is useful for both a rate change and a device becoming
     // alive/dead, but invoking the app callback from the CoreAudio listener
@@ -2280,6 +2524,10 @@ bool CoreAudioBackend::openInputStream (const std::string& inputDeviceId, double
 
 void CoreAudioBackend::closeAllStreams()
 {
+    // No output is open to be held off the clock. Every gate below closes
+    // before anything else, so no listener raises it again.
+    outputOffRate->store (false);
+
     if (openStreams.empty())
         return;
 

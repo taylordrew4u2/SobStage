@@ -29,6 +29,25 @@ void CaptureCoordinator::setOutputChannelGains (const std::vector<float>& gains)
         outputChannelGains[ch].store (ch < gains.size() ? gains[ch] : 1.0f, std::memory_order_relaxed);
 }
 
+void CaptureCoordinator::layJackGainsFor (const std::string& outputDeviceId) noexcept
+{
+    if (! outputDeviceId.empty() && outputDeviceId == jackGainsDeviceId)
+        setOutputChannelGains (jackGains);
+    else
+        setOutputChannelGains ({});
+}
+
+void CaptureCoordinator::setHeadphoneJackGains (const std::string& outputDeviceId, std::vector<float> gains)
+{
+    jackGainsDeviceId = outputDeviceId;
+    jackGains = std::move (gains);
+
+    // Onto the stream open now, whatever output is chosen: mid-take a
+    // sub-device leaving the combined device moves every later jack, and
+    // these are the gains for where they are now.
+    layJackGainsFor (openOutputDeviceId);
+}
+
 CaptureCoordinator::~CaptureCoordinator()
 {
     stopRecording();
@@ -43,6 +62,18 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     channels = chans;
     monitorProblem.clear();
     devicesThatFailedToOpen.clear();
+
+    // A new output stream is the clock again until told otherwise. Cleared
+    // before anything opens, so its first callback pulls.
+    outputAbandoned.store (false, std::memory_order_release);
+    outputCarriesChannels = false;
+    openOutputDeviceId.clear();
+
+    // The jack gains of the device about to open, before it opens, so its
+    // first callback already keeps the mix off a switched-off jack; any other
+    // device gets the mix on every channel. An output that refuses comes back
+    // through here with none (continueInputOnly).
+    layJackGainsFor (outputDeviceId);
 
     channelMeters.clear();
     for (size_t i = 0; i < channels.size(); ++i)
@@ -69,6 +100,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
                                  static_cast<size_t> (DeviceInputStream::kLargestDeviceBlock)),
                        0.0f);
     busScratch.assign (mixScratch.size(), 0.0f);
+    alarmScratch.assign (mixScratch.size(), 0.0f);
     trimFrame.assign (std::max<size_t> (1, channels.size()), 0.0f);
 
     // §3.2: one capture path per device, each with its own ring and PI loop.
@@ -226,6 +258,32 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
                                                        float* const* outputs, int numOutputs,
                                                        int numSamples)
     {
+        // Set aside (abandonOutputClock), or the platform has just said this
+        // device changed its rate and the app has yet to hear of it
+        // (IAudioBackend::isOutputOffRate): either way it is calling back at
+        // a rate the rig is not running at, and the software clock is
+        // pulling. Silence, before the stamp, so the takeover's catch-up
+        // starts from the last block this callback actually pulled.
+        //
+        // The backend's word is taken before the app's: in the half second
+        // until the app's next poll, this callback went on pulling every
+        // microphone at the other rate. That shortfall was never pulled back
+        // -- the takeover started from a callback a moment old -- so every
+        // track ran that much short of the wall clock and the cameras for
+        // the rest of the take, with every ring left full behind it.
+        //
+        // A mixer whose microphones come in on this callback goes quiet with
+        // it for that moment. Their rate is the output's, so their audio is
+        // no longer the take's format either, and the take stops for them
+        // (OutputRateChangeAction::stopTake).
+        if (outputAbandoned.load (std::memory_order_acquire) || backend.isOutputOffRate())
+        {
+            for (int ch = 0; ch < numOutputs; ++ch)
+                if (outputs != nullptr && outputs[ch] != nullptr)
+                    std::fill (outputs[ch], outputs[ch] + numSamples, 0.0f);
+            return;
+        }
+
         // The software clock watches this stamp: a callback that stops
         // arriving hands the rig over to it within a few buffer periods.
         lastOutputCallbackNs.store (std::chrono::duration_cast<std::chrono::nanoseconds> (
@@ -374,6 +432,8 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     // it only steps in when that stream goes quiet; without one it is the
     // clock from the first block.
     outputStreamOpen = ! outputDeviceId.empty();
+    outputCarriesChannels = outputStreamOpen && ! outputDeviceRouting.empty();
+    openOutputDeviceId = outputDeviceId;
     outputClockLost.store (false, std::memory_order_relaxed);
     lastOutputCallbackNs.store (std::chrono::duration_cast<std::chrono::nanoseconds> (
                                     std::chrono::steady_clock::now().time_since_epoch()).count(),
@@ -518,7 +578,15 @@ void CaptureCoordinator::runSoftwareClock()
     while (clockRunning.load (std::memory_order_acquire))
     {
         const auto now = clock::now();
-        bool takeOver = ! outputStreamOpen;
+
+        // An abandoned output goes on calling back -- at the wrong rate -- so
+        // its stamp never goes stale; the flag is the only way to know. One
+        // the platform has just said changed rate is taken over from the
+        // same word, at this look rather than a stale window later: its
+        // callback has stopped pulling, and the rings would back up behind
+        // it for a tenth of a second.
+        bool takeOver = ! outputStreamOpen || outputAbandoned.load (std::memory_order_acquire)
+                     || backend.isOutputOffRate();
 
         if (! takeOver)
         {
@@ -636,6 +704,26 @@ void CaptureCoordinator::stopSoftwareClock()
 
     outputClockLost.store (false, std::memory_order_relaxed);
     outputStreamOpen = false;
+}
+
+bool CaptureCoordinator::abandonOutputClock (const std::string& why)
+{
+    if (! monitoring || ! outputStreamOpen || outputCarriesChannels
+        || ! clockRunning.load (std::memory_order_acquire))
+        return false;
+
+    if (! outputAbandoned.exchange (true, std::memory_order_acq_rel))
+    {
+        // Said now rather than on the clock's next look, so the app routes
+        // its own sounds away from the headphones straight away.
+        outputClockLost.store (true, std::memory_order_relaxed);
+
+        // Ahead of a problem already there (a microphone that did not open),
+        // which still stands.
+        monitorProblem = monitorProblem.empty() ? why : why + " " + monitorProblem;
+    }
+
+    return true;
 }
 
 uint64_t CaptureCoordinator::getOverrunSamples() const noexcept
@@ -805,6 +893,9 @@ void CaptureCoordinator::stopMonitoring()
     // must not be mid-pull while the streams are torn down.
     stopSoftwareClock();
     backend.closeAllStreams();
+    outputAbandoned.store (false, std::memory_order_release);
+    outputCarriesChannels = false;
+    openOutputDeviceId.clear();
     monitoring = false;
     latenciesReady.store (false, std::memory_order_relaxed);
     feedbackGuard.stop();
@@ -1956,6 +2047,7 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     // buzz at the callback rate for as long as the condition lasts.
     if (mixScratch.size() < static_cast<size_t> (numSamples)
         || busScratch.size() < static_cast<size_t> (numSamples)
+        || alarmScratch.size() < static_cast<size_t> (numSamples)
         || static_cast<int> (trimFrame.size()) < channelCount
         || static_cast<int> (trimGains.size()) < channelCount)
     {
@@ -2006,13 +2098,25 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     // room and not the siren, and after the mute: a fault alarm has to reach
     // the headphones however the monitor is set. Clamped, because a siren over
     // a mix at the ceiling would otherwise clip in the driver.
-    alarm.render (mixScratch.data(), numSamples, sampleRate);
+    //
+    // Rendered on their own first, and only once: render() moves the tone on,
+    // so a second call would play the next stretch of it instead. A jack
+    // switched off from the mix gets these alone. It used to get zeros, siren
+    // included, so with every jack switched off the chirps and the fault siren
+    // played nowhere -- the output stream was still open, so nothing sent them
+    // anywhere else either.
+    std::fill (alarmScratch.begin(), alarmScratch.begin() + numSamples, 0.0f);
+    alarm.render (alarmScratch.data(), numSamples, sampleRate);
     for (int s = 0; s < numSamples; ++s)
-        mixScratch[static_cast<size_t> (s)] = std::clamp (mixScratch[static_cast<size_t> (s)], -1.0f, 1.0f);
+    {
+        const auto i = static_cast<size_t> (s);
+        mixScratch[i] = std::clamp (mixScratch[i] + alarmScratch[i], -1.0f, 1.0f);
+        alarmScratch[i] = std::clamp (alarmScratch[i], -1.0f, 1.0f);
+    }
 
     // §5.2: the same mix to every output channel -- no per-listener variation.
     // A channel can be switched off (a person who wants their headphones
-    // quiet), never given a different mix.
+    // quiet), never given a different mix; it still hears the alarm.
     for (int ch = 0; ch < numOutputs; ++ch)
     {
         if (outputs[ch] == nullptr)
@@ -2021,11 +2125,8 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
         const bool hears = ch >= kMaxOutputChannelGains
                         || outputChannelGains[static_cast<size_t> (ch)].load (std::memory_order_relaxed) > 0.0f;
 
-        if (hears)
-            std::copy (mixScratch.begin(), mixScratch.begin() + numSamples,
-                       outputs[ch] + outputFrameOffset);
-        else
-            std::fill (outputs[ch] + outputFrameOffset, outputs[ch] + outputFrameOffset + numSamples, 0.0f);
+        const auto& source = hears ? mixScratch : alarmScratch;
+        std::copy (source.begin(), source.begin() + numSamples, outputs[ch] + outputFrameOffset);
     }
 }
 

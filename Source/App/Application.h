@@ -144,6 +144,18 @@ public:
     /// Quitting cancels it, so the user is asked before it is thrown away.
     juce::String unfinishedAfterTakeWork() const;
 
+    /// What went wrong with the take that just stopped, in words for a quit
+    /// question: the card stopped answering, the files hold no sound, a
+    /// camera could not finish its movie. Empty when nothing did, or when the
+    /// saved-take card already showed it before the quit was asked for. A
+    /// take stopped on the way out used to quit before that card could open.
+    juce::String unseenProblemWithLastTake() const;
+
+    /// The user chose to stay open after asking to quit. A take the quit
+    /// stopped is the saved-take card's to report from here on, so a later
+    /// quit does not ask about it again.
+    void quitCalledOff();
+
     /// A take is being written right now.
     bool isRecording() const { return recordingEngine.getState() == RecordingState::Recording; }
 
@@ -805,6 +817,11 @@ private:
     // §6.2: a take has finished and the UI has not yet shown where it went.
     bool savedTakePending = false;
 
+    // The last take was stopped by a quit, or finished while a quit waited
+    // for it: its result counts as unseen even once the card has opened.
+    // See prepareToQuit() and unseenProblemWithLastTake().
+    bool lastTakeFinishedWhileQuitting = false;
+
     // setProofStarvedForTesting(): the UI walk's take that writes nothing.
     bool proofStarvedForTesting = false;
 
@@ -826,6 +843,20 @@ private:
     // millisecond counter. One that dies again inside
     // kDeadInputReopenBackoffMs is left dead rather than reopened in a loop.
     std::map<std::string, double> deadInputReopenedAtMs;
+
+    // When the rig was last reopened to put the headphone output back at its
+    // rate after something else switched it, and which output that was.
+    // Switched again inside kDeadInputReopenBackoffMs, it is set aside rather
+    // than reopened in a tug-of-war (OutputRateChangeAction::setAside).
+    double outputRateReopenedAtMs = 0.0;
+    std::string outputRateReopenedFor;
+
+    // Until when the rings' losses are put down to the headphone output being
+    // handed over to the software clock for a rate change, not to the
+    // computer (§5.4's ladder does not count them), and whether the last
+    // poll saw it held off the clock -- the grace starts when it is first seen.
+    double outputRateHoldGraceUntilMs = 0.0;
+    bool outputWasOffRate = false;
 
     // Whether the mirror was still writing when this take was stopped, sampled
     // before stopRecording() tears the pipeline down. Read after, isMirroring()
@@ -870,6 +901,12 @@ private:
     TakeCombiner takeCombiner;
     PodcastExporter podcastExporter;
     std::function<void()> pendingStoppedTakeCompletion;
+
+    /// Holds the combined video while a take records or its movies are still
+    /// being finished (TakeCombiner::setHeldForRecording), and lets it go once
+    /// neither is true. Idempotent; called wherever a take starts or ends, and
+    /// every status tick as a backstop.
+    void syncCombineHold();
     bool combineVideoAndAudio = false;
     juce::String deliveryTarget;
 
@@ -923,13 +960,33 @@ private:
     /// through the combined device; Stop pays it.
     bool aggregateRepublishDeferred = false;
 
+    /// What re-making the combined device has to wait for now, from the
+    /// output stream open on it rather than the output chosen.
+    CombinedDeviceRemake combinedDeviceRemake() const;
+
     bool monitorThroughCombinedDevice = true;
     std::set<std::string> headphonesOffKeys;
 
-    /// The combined device's jacks as of the last output selection, so the
-    /// Settings refresh does not ask the HAL twice a second.
-    std::vector<CombinedDeviceOutputs> combinedOutputLayout;
-    void applyHeadphoneGains();
+    /// The combined device's jacks as of the last output selection (so the
+    /// Settings refresh does not ask the HAL twice a second) and who hears the
+    /// mix. Every layout read lays the per-jack gains again, onto `capture`,
+    /// which applies them only while its output stream is open on the
+    /// combined device.
+    HeadphoneJacks headphoneJacks {
+        kOurAggregateUid,
+        [this] (const std::string& uid)
+        {
+            for (const auto& d : deviceManager.getDevices())
+                if (d.identity.locationId == uid)
+                    return headphonesOffKeys.count (d.identity.key()) == 0;
+            return true;
+        },
+        [this] (const std::string& outputDeviceId, const std::vector<float>& gains)
+        {
+            if (capture != nullptr)
+                capture->setHeadphoneJackGains (outputDeviceId, gains);
+        }
+    };
 
     /// Everything a rig rebuild opens, as text. A device-list notification
     /// that leaves this unchanged on a healthy rig -- the app's own combined
@@ -1261,6 +1318,13 @@ private:
     /// folder itself, held open for the take by takeFolderTracker.
     void followTakeFolderMovedAfterAudioStopped();
     TakeFolderTracker takeFolderTracker;
+
+    /// A tracker of its own on the take folder, for work that carries on after
+    /// the take lets go of takeFolderTracker: the combined video and the
+    /// podcast copy run for minutes, and the folder can be renamed under them
+    /// too. One each -- a tracker is not shared between threads. Null when
+    /// the take's folder isn't held. Touches no card.
+    std::shared_ptr<TakeFolderTracker> followTakeFolderAfterTheTake() const;
     /// The figures session.json reports, read from the live take now.
     TakeFigures liveTakeFigures (bool sessionHasStopped) const;
     /// Writes a take's text file with a deadline, skipping the card once it
@@ -1356,6 +1420,28 @@ private:
     /// Runs the destination scan again once the drive check has written to a
     /// destination that was missing when it was scanned.
     void rescanDestinationIfItHasAppeared();
+
+    /// §6.4: a drive check describes the card it measured, and the save
+    /// location is a path that another card can take over -- macOS mounts
+    /// every card at /Volumes/<its label>. True when the status probe, in a
+    /// look begun after `verdict` was reached, found a different volume there
+    /// (or none). Reads only the probe's last answer, never the drive.
+    bool probeSeesAnotherDriveThanChecked (const PreflightResult& verdict) const;
+    /// Between takes, from the status tick: when the probe sees a different
+    /// drive at the save location than the one checked, forgets that check and
+    /// checks the drive that is there now, for speed, format and interrupted
+    /// takes alike.
+    void recheckDestinationIfItsDriveChanged();
+    /// What applyDestinationFolder does for a fresh claim about the same
+    /// path: drops the drive check and the interrupted-take scan, and starts
+    /// both again for whatever is there now. Says so in the activity list.
+    void forgetCheckedDriveAtDestination();
+    /// At Record, the drive at the save location is looked at once more, under
+    /// a deadline, and compared with the one checked: the probe's last look
+    /// can be half a second old. Empty when it is the same drive (or nothing
+    /// can be told); otherwise why the take can't start, with the check
+    /// already restarted for the drive that is there.
+    juce::String confirmDestinationIsTheCheckedDrive();
     mutable std::vector<RecoveredSession> recoveredSessions;
     /// Folders of same-named copies hidden behind a shown recovered take.
     mutable std::vector<std::string> hiddenRecoveredFolders;

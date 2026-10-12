@@ -247,8 +247,18 @@ bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames
             }
 
             // The file we are rolling over FROM, captured before openNewFile
-            // reassigns currentFilePath to the one it is about to create.
-            const auto previousFilePath = currentFilePath;
+            // reassigns currentFilePath to the one it is about to create --
+            // and asked of the open file, so a take folder renamed since the
+            // take began is named where it now is.
+            auto previousFilePath = currentFilePath;
+
+            // Asked BEFORE openNewFile, which closes the descriptor this
+            // answer comes from.
+            if (const auto live = resolveCurrentFilePath(); ! live.empty())
+            {
+                previousFilePath = live;
+                followFolderOf (live);
+            }
 
             splitIndex = std::max (1, splitIndex + 1);
 
@@ -264,7 +274,20 @@ bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames
                 // as the one it came after. It also overwrote the more
                 // specific out-of-space sentence openNewFile had just set, so
                 // the vaguer message won whenever the drive was simply full.
-                if (writeProblem.empty())
+                //
+                // A folder that is not there is not a full card either: the
+                // take's folder went somewhere the system could not follow
+                // (dragged to another drive, say), and that is what to check.
+                std::error_code ec;
+                const auto folder = pathFromUtf8 (currentFilePath).parent_path();
+                const bool folderIsThere = folder.empty() || std::filesystem::is_directory (folder, ec);
+
+                if (writeProblem.empty() && ! folderIsThere)
+                    writeProblem = "Couldn't start the next file after " + previousFilePath
+                                 + ", because this take's folder can no longer be found. It may "
+                                   "have been moved or deleted while recording. Recording has "
+                                   "stopped to protect the take.";
+                else if (writeProblem.empty())
                     writeProblem = "Couldn't start the next file after " + previousFilePath
                                  + ". The card may be full, or may not allow files this large.";
 
@@ -486,6 +509,31 @@ std::string SessionWriter::resolveCurrentFilePath() const
 #else
     return {};
 #endif
+}
+
+void SessionWriter::followFolderOf (const std::string& liveFilePath)
+{
+    const auto liveFolder = pathFromUtf8 (liveFilePath).parent_path();
+    if (liveFolder.empty())
+        return;
+
+    const auto base = pathFromUtf8 (basePathNoExt);
+    const auto openedFolder = base.has_parent_path() ? base.parent_path()
+                                                     : std::filesystem::path (".");
+
+    // Compared as folders, not as strings: the system answers with the
+    // resolved path, and /tmp on a Mac is /private/tmp. A folder that has not
+    // moved keeps the spelling the take was given. An error -- which is what
+    // asking about a folder that no longer exists gives -- counts as moved.
+    std::error_code ec;
+    const bool unmoved = std::filesystem::equivalent (openedFolder, liveFolder, ec) && ! ec;
+    if (unmoved)
+        return;
+
+    // Only the folder follows. The name stays the one this take gave it, so a
+    // file the user renamed by hand still gets its _NNN continuation under the
+    // track's own name, where the take combiner looks for it.
+    basePathNoExt = utf8FromPath (liveFolder / base.filename());
 }
 
 bool SessionWriter::tick (double dtSeconds)

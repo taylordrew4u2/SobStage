@@ -339,3 +339,23 @@ TEST_CASE (FfmpegCommand_ConcatListSurvivesQuotesInAFolderName)
     REQUIRE (list.find ("file '/Takes/Zo\xC3\xAB'\\''s Set/MIX.wav'") != std::string::npos);
     REQUIRE (list.find ("file '/Takes/Zo\xC3\xAB'\\''s Set/MIX_001.wav'") != std::string::npos);
 }
+
+// A 29 GB copy started on a card with 30 GB free ran it dry: the copy failed
+// at the end, and until then Record read the card as full.
+TEST_CASE (CombinedTake_ACombineNeedsRoomForItsFileAndSomeToSpare)
+{
+    constexpr uint64_t kGB = 1ull << 30;
+    const uint64_t movieAndMix = 29 * kGB;
+
+    REQUIRE (hasRoomToCombine (34 * kGB, movieAndMix));
+    REQUIRE (hasRoomToCombine (movieAndMix + kCombineHeadroomBytes, movieAndMix));
+    REQUIRE_FALSE (hasRoomToCombine (movieAndMix + kCombineHeadroomBytes - 1, movieAndMix));
+    REQUIRE_FALSE (hasRoomToCombine (movieAndMix, movieAndMix));
+    REQUIRE_FALSE (hasRoomToCombine (0, 0));
+
+    // Nothing to go on: tried, as before. A full card fails only the combine.
+    REQUIRE (hasRoomToCombine (std::nullopt, movieAndMix));
+
+    // A size at the top of the range does not wrap round to "fits".
+    REQUIRE_FALSE (hasRoomToCombine (UINT64_MAX - 1, UINT64_MAX - 10));
+}

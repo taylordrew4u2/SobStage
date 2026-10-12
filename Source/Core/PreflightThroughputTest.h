@@ -1,4 +1,6 @@
 #pragma once
+#include "VolumeFingerprint.h"
+#include <chrono>
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -19,6 +21,16 @@ struct PreflightResult
     /// The drive's format can't hold one file over 4 GiB (FAT32 / MS-DOS).
     /// A property of the drive, so it is kept with the measurement.
     bool limitedTo4GiBFiles = false;
+
+    /// Which volume was measured: read just before the test file was written.
+    /// Unknown for a verdict that measured nothing (a check that could not be
+    /// started), which is then never compared.
+    VolumeFingerprint measuredVolume;
+
+    /// When the verdict was reached, just after the test file was removed. A
+    /// look at the drive that began before this is older evidence than the
+    /// verdict itself, and is not weighed against it.
+    std::chrono::steady_clock::time_point measuredVolumeConfirmedAt {};
 };
 
 /// §6.4 pre-flight throughput test. This class contains only the pure
@@ -85,6 +97,18 @@ public:
     /// slow until the user chooses the location again.
     static bool shouldRetryCached (const PreflightResult& cached, double secondsSinceVerdict,
                                    bool idle, bool workerRunning) noexcept;
+
+    /// True when the drive now at the save location is not the one `cached`
+    /// measured, so that verdict says nothing about it: the speed, the FAT32
+    /// refusal, everything.
+    ///
+    /// `observed` is a fresh look at the path, begun at `observedFrom`. A look
+    /// begun before the verdict confirmed its own volume is ignored -- a slow
+    /// or stuck status worker must not keep throwing fresh verdicts away -- and
+    /// unknown on either side is never a change.
+    static bool measuredAnotherDrive (const PreflightResult& cached,
+                                      const VolumeFingerprint& observed,
+                                      std::chrono::steady_clock::time_point observedFrom) noexcept;
 
     /// Formats remaining free space as recording time in "Xh Ym" form, per §6.4
     /// ("remaining recording time in hours and minutes, not bytes").

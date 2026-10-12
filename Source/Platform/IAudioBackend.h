@@ -56,8 +56,17 @@ enum class StreamFailureKind
 
     /// Not a failure: an input stream reported dead has started delivering
     /// again on the same stream. The owner takes back what the dead report
-    /// did -- its channel goes live again -- and says so.
-    resumed
+    /// did -- its channel goes live again -- and says so. With no device id it
+    /// is the headphone output, back at the rate it was opened at after a
+    /// sampleRateChanged report (see outputRateChangeAction()).
+    resumed,
+
+    /// Not a stream's failure: the computer slept (or turned its audio off to
+    /// sleep) with streams open, so every one of them stopped together and
+    /// none is to blame. Said once per sleep, with no device id. Nothing is
+    /// to be called dead or reopened for it; a take running across it has a
+    /// gap where the computer slept, which its record has to show (§6.6).
+    systemSlept
 };
 
 /// Application policy for typed backend events. A live sample-rate change
@@ -65,6 +74,9 @@ enum class StreamFailureKind
 /// knowingly write audio under a stale header. Disconnects retain the frozen
 /// take layout and write silence (§6.5); overload/listener reports are visible
 /// warnings rather than reasons to discard the rest of a take.
+///
+/// A rate change on the headphone output alone is not a microphone's, and is
+/// decided by outputRateChangeAction() before this is asked.
 constexpr bool streamFailureRequiresRecordingStop (StreamFailureKind kind) noexcept
 {
     return kind == StreamFailureKind::sampleRateChanged;
@@ -73,7 +85,28 @@ constexpr bool streamFailureRequiresRecordingStop (StreamFailureKind kind) noexc
 constexpr bool streamFailureIsWarning (StreamFailureKind kind) noexcept
 {
     return kind == StreamFailureKind::processorOverload
-        || kind == StreamFailureKind::safetyMonitoringUnavailable;
+        || kind == StreamFailureKind::safetyMonitoringUnavailable
+        || kind == StreamFailureKind::systemSlept;
+}
+
+/// §6.6: what the owner says about a systemSlept report while a take is
+/// recording -- between takes nothing, as nothing failed and nothing was
+/// lost. The take's record (session.json's dropouts) gets kSystemSleptTakeNote
+/// at that moment, and the activity log kSystemSleptActivityLine. No
+/// microphone is marked dead and nothing is reopened.
+///
+/// A closed lid on battery sleeps the Mac mid-take whatever the app asks
+/// (§6.6). Before the callback watchdog learned to tell a sleep from a dead
+/// device, the false "stopped sending audio" reports were the only trace of
+/// that in the take's record; holding them back left the stems joining audio
+/// from before an hour's sleep to audio from after it with nothing saying so.
+constexpr const char* kSystemSleptTakeNote = "The Mac went to sleep: this take has a gap here.";
+constexpr const char* kSystemSleptActivityLine =
+    "The Mac went to sleep during the take, so the recording has a gap where it slept.";
+
+constexpr bool systemSleptMarksTheTake (StreamFailureKind kind, bool recording) noexcept
+{
+    return kind == StreamFailureKind::systemSlept && recording;
 }
 
 /// §0.1: what the owner does about a microphone whose input stream has died
@@ -134,6 +167,86 @@ struct StreamFailure
 
     StreamFailureKind kind = StreamFailureKind::unknown;
 };
+
+/// The headphone output's own sample rate changed under the app -- another
+/// app, Audio MIDI Setup or a music player switched the device -- rather than
+/// a microphone's. The backend names no device for the monitor output.
+inline bool streamFailureIsOutputRateChange (const StreamFailure& failure) noexcept
+{
+    return failure.kind == StreamFailureKind::sampleRateChanged && failure.deviceId.empty();
+}
+
+/// Whether one poll's batch of reports stops the take for a microphone's rate
+/// change (§2.2), wherever in the batch that report sits. The owner stops the
+/// take once, after reading the whole batch, and asks this first, so a report
+/// read before it -- the headphone output's own change, say -- already knows
+/// the take is ending.
+///
+/// Stopping in the middle of the batch reopened the whole rig at once, and the
+/// rest of the batch then landed on streams that had just been opened at the
+/// right rate: one rate change on the combined device is the output's report
+/// and each of its microphones' reports together, and those microphones were
+/// called dead and the rig reopened a second time straight after the first.
+inline bool microphoneRateChangeStopsTheTake (const std::vector<StreamFailure>& batch,
+                                              bool recording) noexcept
+{
+    if (! recording)
+        return false;
+
+    for (const auto& failure : batch)
+        if (streamFailureRequiresRecordingStop (failure.kind) && ! streamFailureIsOutputRateChange (failure))
+            return true;
+
+    return false;
+}
+
+/// §5.3: what the owner does when the headphone output changes sample rate.
+///
+/// The output's callback is the clock the whole rig is pulled on (§3.2). At
+/// the wrong rate it pulls every microphone's ring too fast or too slow, so
+/// leaving it running loses audio from every track -- and the ring losses
+/// then read as the computer being too slow, and raise the buffer size.
+enum class OutputRateChangeAction
+{
+    /// The output carries take audio itself (the combined device, whose
+    /// rate is the microphones', or a mixer that is both): the take's format
+    /// would become untrue, so it stops, as for a microphone's rate change.
+    stopTake,
+    /// Mid-take, an output that carries none of it: the output stops being
+    /// the clock and the software clock takes over, so the take carries on
+    /// intact with the headphones silent. Stop reopens the output.
+    carryOnWithoutIt,
+    /// Mid-take, but the take is stopping anyway -- a microphone's rate change
+    /// came in the same batch (microphoneRateChangeStopsTheTake()). Stop
+    /// reopens the rig at its own rate, which sets the output back; saying the
+    /// take carries on without it would contradict the stop.
+    reopenAtStop,
+    /// Nothing recording: reopen the rig at its own rate now, which sets the
+    /// output back.
+    reopenNow,
+    /// Changed again straight after such a reopen -- something keeps
+    /// switching it. Rather than fight it in a loop, the output stops being
+    /// the clock (headphones silent, recording unaffected) until it is back
+    /// at the rig's rate.
+    setAside
+};
+
+constexpr OutputRateChangeAction outputRateChangeAction (bool recording,
+                                                         bool outputCarriesTakeAudio,
+                                                         bool reopenedRecently,
+                                                         bool takeStoppingAnyway = false) noexcept
+{
+    if (recording)
+    {
+        if (outputCarriesTakeAudio)
+            return OutputRateChangeAction::stopTake;
+
+        return takeStoppingAnyway ? OutputRateChangeAction::reopenAtStop
+                                  : OutputRateChangeAction::carryOnWithoutIt;
+    }
+
+    return reopenedRecently ? OutputRateChangeAction::setAside : OutputRateChangeAction::reopenNow;
+}
 
 /// Where a backend's worker threads leave a failure for the message thread to
 /// pick up. Locked rather than lock-free: a stream dying is a once-per-session
@@ -299,6 +412,23 @@ public:
     /// tracks up. For an input this backend has open; zero when unknown, or
     /// on a platform that does not report it.
     virtual int getInputLatencyFrames (const std::string& /*deviceId*/) const { return 0; }
+
+    /// §5.3: true from the moment the platform says the open monitor output's
+    /// device changed its nominal sample rate until the backend has read it
+    /// back at the rate the stream was opened at, or the stream has closed.
+    /// Its callback keeps coming meanwhile, at a rate the rig is not running
+    /// at, so the owner must not let it pull anything: it was the clock every
+    /// microphone is pulled on, and in the half second before the app's next
+    /// poll read the report it pulled every ring at the other app's rate --
+    /// every track short against the wall clock and the cameras for the rest
+    /// of the take, and every ring left full for the buffer ladder to blame on
+    /// the computer.
+    ///
+    /// Raised on the platform's notification alone, before anyone has read
+    /// the new rate; a notification that changed nothing costs the
+    /// headphones until that read. Any thread, real-time safe: the output
+    /// callback asks it. False where the platform cannot say.
+    virtual bool isOutputOffRate() const noexcept { return false; }
 
     /// Empty unless this backend cannot watch for microphones being plugged in
     /// or pulled out. Then it says so in the user's words: nothing about the

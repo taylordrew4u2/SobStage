@@ -21,6 +21,7 @@
 #include "../Core/UpdateCheck.h"
 #include "../Core/ShowTemplate.h"
 #include "../Core/SlowMicrophoneNotice.h"
+#include "../Core/QuitQuestions.h"
 #include "../Platform/NullBackend.h"
 #include "CheckedTextWrite.h"
 #include <algorithm>
@@ -1044,6 +1045,10 @@ void Application::restartCapture()
         capture->getMonitorBus().setGlobalMute (monitorMuted);
         if (wasRunawayCut)
             capture->getMonitorBus().engageRunawayCut();
+
+        // And whose headphones are switched off: a fresh coordinator starts
+        // with the mix on every channel.
+        headphoneJacks.lay();
         ++captureGeneration;
 
         captureRate = currentSampleRate;
@@ -1093,7 +1098,9 @@ void Application::restartCapture()
         ++speakerHandoversForMonitorOpen;
     }
 
-    applyHeadphoneGains();
+    // The per-jack headphone gains need nothing here: the coordinator lays
+    // the combined device's own on its stream before it opens, and the mix on
+    // every channel of any other output.
     const bool started = capture->startMonitoring (channels, selectedOutputDeviceId);
 
     // What a later device-list notification compares against: only a rig
@@ -1236,7 +1243,16 @@ bool Application::publishAggregateDevice()
     // Mid-take, the headphone mix may be playing through this very device.
     // Replacing it would cut everyone's headphones for the rest of the take;
     // the change waits for Stop, like every other rig change during a take.
-    if (capture != nullptr && capture->isRecording() && isMonitoringThroughCombinedDevice())
+    //
+    // Whether it is playing there is asked of the stream that is open, not
+    // the output chosen. Mid-take the choice can move off the combined device
+    // (picked in Settings, or one layout read that found no jacks) while the
+    // stream stays on it until Stop, and a microphone plugged in or pulled
+    // then destroyed the device under the running take: everyone's
+    // headphones went silent for the rest of it.
+    const auto step = combinedDeviceRemake();
+
+    if (step == CombinedDeviceRemake::AfterTheTake)
     {
         aggregateRepublishDeferred = true;
         captureRestartDeferred = true;
@@ -1246,7 +1262,7 @@ bool Application::publishAggregateDevice()
     // Close our own stream on it first. Destroying a device under a running
     // IOProc leaves the stop and the teardown to fail against an object that
     // no longer exists; the rebuild that follows reopens onto the new one.
-    if (capture != nullptr && capture->isMonitoring() && isMonitoringThroughCombinedDevice())
+    if (step == CombinedDeviceRemake::CloseOurStreamFirst)
     {
         capture->stopMonitoring();
         lastStartedRigSignature.clear();
@@ -1287,6 +1303,12 @@ bool Application::publishAggregateDevice()
     publishedMaster = std::move (master);
     publishedNameStd = name;
     return true;
+}
+
+CombinedDeviceRemake Application::combinedDeviceRemake() const
+{
+    return combinedDeviceRemakeStep (capture != nullptr && capture->isOutputOpenOn (kOurAggregateUid),
+                                     capture != nullptr && capture->isRecording());
 }
 
 void Application::setAggregateDeviceName (const juce::String& name)
@@ -1446,6 +1468,16 @@ juce::String Application::getMonitorProblem() const
 void Application::syncSleepInhibitor()
 {
     sleepInhibitor.setHeld (isRecording());
+}
+
+void Application::syncCombineHold()
+{
+    // The card is the take's until its last movie is finished: a combine
+    // copying gigabytes beside it starved the take's writer and filled the
+    // card under it.
+    takeCombiner.setHeldForRecording (isRecording()
+                                      || pendingStoppedTakeCompletion != nullptr
+                                      || cameraController.isFinalizingRecording());
 }
 
 bool Application::refreshMicrophonePermission()
@@ -1657,9 +1689,8 @@ void Application::rescanDevices()
         publishedNameStd.clear();
 
         // publishAggregateDevice() holds the re-create until Stop when the
-        // take's headphone mix was playing through it.
-        const bool waitsForStop = capture != nullptr && capture->isRecording()
-                               && isMonitoringThroughCombinedDevice();
+        // take's headphone mix was playing through it, by the same test.
+        const bool waitsForStop = combinedDeviceRemake() == CombinedDeviceRemake::AfterTheTake;
 
         noteActivity (ActivityLevel::Warning, "Combined device",
                       waitsForStop
@@ -1869,11 +1900,21 @@ void Application::rescanDevices()
     // and reopening every stream for it -- a few hundred milliseconds after
     // they first opened -- is the immediate identical reopen some USB drivers
     // stall on. A dead stream, a lost output or a failed mic still reopens.
+    //
+    // An output set aside for changing its rate is not lost: it was put down
+    // on purpose, because something keeps switching it (pollStatusAdvice).
+    // The rate change itself fires this notification, and reopening here --
+    // which sets the rate back -- is the very tug-of-war setting it aside
+    // ended. It comes back when it is back at the rig's rate, or the rig
+    // changes. Nor is one held off the clock on the platform's word of a rate
+    // change that the poll has yet to read: the poll decides what happens to
+    // it.
     if (capture != nullptr && capture->isMonitoring()
         && ! lastStartedRigSignature.empty()
         && deadInputStreams.empty()
         && capture->getDevicesThatFailedToOpen().empty()
-        && (selectedOutputDeviceId.empty() || capture->hasOutputStream())
+        && (selectedOutputDeviceId.empty() || capture->hasOutputStream() || capture->isOutputAbandoned()
+            || capture->isOutputOffRate())
         && describeRig() == lastStartedRigSignature)
         return;
 
@@ -1910,28 +1951,6 @@ std::string Application::describeRig() const
     return rig;
 }
 
-void Application::applyHeadphoneGains()
-{
-    if (capture == nullptr)
-        return;
-
-    if (! isMonitoringThroughCombinedDevice())
-    {
-        capture->setOutputChannelGains ({});
-        return;
-    }
-
-    capture->setOutputChannelGains (headphoneChannelGains (
-        combinedOutputLayout,
-        [this] (const std::string& uid)
-        {
-            for (const auto& d : deviceManager.getDevices())
-                if (d.identity.locationId == uid)
-                    return headphonesOffKeys.count (d.identity.key()) == 0;
-            return true;
-        }));
-}
-
 std::vector<Application::HeadphoneChoice> Application::getHeadphoneChoices() const
 {
     std::vector<HeadphoneChoice> out;
@@ -1939,7 +1958,7 @@ std::vector<Application::HeadphoneChoice> Application::getHeadphoneChoices() con
     if (! isMonitoringThroughCombinedDevice())
         return out;
 
-    for (const auto& sub : combinedOutputLayout)
+    for (const auto& sub : headphoneJacks.getLayout())
     {
         if (sub.outputChannels <= 0)
             continue;
@@ -1973,12 +1992,13 @@ void Application::setHeadphonesOn (const juce::String& deviceKey, bool on)
         if (on) headphonesOffKeys.erase (key);
         else    headphonesOffKeys.insert (key);
 
-        applyHeadphoneGains();
+        headphoneJacks.lay();
         saveSettings();
 
         noteActivity (ActivityLevel::Started, juce::String (d.displayName),
                       on ? juce::String ("Headphones on: hearing everyone.")
-                         : juce::String ("Headphones off: this jack gets silence."));
+                         : juce::String ("Headphones off: this jack no longer gets the mix. "
+                                         "Alarm sounds still play in it."));
         return;
     }
 }
@@ -2034,11 +2054,19 @@ void Application::reselectOutputDevice()
     // headphone jack, all fed the one mix, so everyone hears everyone. Offered
     // only when it exists and at least one microphone has a jack to play into.
     std::string combinedLabel;
-    combinedOutputLayout = systemAggregate != nullptr && systemAggregate->isPublished()
-                         ? systemAggregate->getOutputLayout()
-                         : std::vector<CombinedDeviceOutputs> {};
 
-    if (combinedDeviceHasHeadphones (combinedOutputLayout))
+    // The per-jack gains are by channel number, and the combined device
+    // numbers its channels over the sub-devices that are active now. One
+    // leaving (a cable bumped mid-take) or joining late (slower than the
+    // publish wait) moves every later jack, so the read lays them again
+    // (HeadphoneJacks): mid-take the reopen waits for Stop, and between takes
+    // an unchanged rig is not reopened. Atomics, so changing them under a
+    // running stream is safe.
+    headphoneJacks.layoutRead (systemAggregate != nullptr && systemAggregate->isPublished()
+                                   ? systemAggregate->getOutputLayout()
+                                   : std::vector<CombinedDeviceOutputs> {});
+
+    if (combinedDeviceHasHeadphones (headphoneJacks.getLayout()))
     {
         combinedLabel = aggregateName.toStdString();
         while (outputDeviceIdByLabel.count (combinedLabel) > 0)
@@ -2241,8 +2269,11 @@ TakeHealth Application::snapshotTakeHealth() const
         // that window, the next observation saw the camera appear and
         // announced "Camera X is back." for a camera that had never gone
         // anywhere. What `present` means here is "in the take, not lost".
+        // The id goes with it: twins share a display name, and the watchdog
+        // must not read one's state as the other's.
         health.cameras.push_back ({ camera.displayName,
-                                    camera.recording || camera.starting });
+                                    camera.recording || camera.starting,
+                                    camera.id });
 
     health.cameraProblem = cameraController.getProblem().toStdString();
     health.monitorProblem = getMonitorProblem().toStdString();
@@ -2260,6 +2291,7 @@ TakeHealth Application::snapshotTakeHealth() const
         health.samplesOverrun = capture->getWorstChannelOverrunThisTake();
         health.sampleRate = currentSampleRate;
         health.outputClockLost = capture->isOutputClockLost();
+        health.outputRateChanged = capture->isOutputAbandoned() || capture->isOutputOffRate();
         health.writerBehind = capture->getRingFillFraction() >= CapacityMonitor::kFillWarningFraction;
         health.mixOnly = capture->isMixOnly();
     }
@@ -2691,6 +2723,14 @@ void Application::toggleRecording()
             return;
         }
 
+        // The drive check above may be up to one probe tick old; the card
+        // could have been swapped in that time.
+        if (const auto changed = confirmDestinationIsTheCheckedDrive(); changed.isNotEmpty())
+        {
+            recordStartProblem = changed;
+            return;
+        }
+
         std::vector<RecordingChannel> channels;
         for (const auto& d : deviceManager.getDevices())
         {
@@ -2703,6 +2743,10 @@ void Application::toggleRecording()
         }
         if (recordingEngine.start (std::move (channels)))
         {
+            // Before any file of the take is opened: a combine still copying
+            // the last take stops now, and the card is this take's.
+            syncCombineHold();
+
             // recordingStartMs is NOT taken here. It is the take's audio t=0,
             // and no audio exists yet: a capacity probe, one or two mkdirs
             // (including the mirror, possibly on a slow card) and the WAV
@@ -2765,6 +2809,7 @@ void Application::toggleRecording()
                     // Nothing was written, so the engine must not claim a take.
                     recordingEngine.stop();
                     recordingStartMs = 0.0;
+                    syncCombineHold();
 
                     // And the user is told. This path used to return here in
                     // silence: the button un-latched, no message appeared
@@ -2796,6 +2841,7 @@ void Application::toggleRecording()
 
                 recordStartProblem.clear();
                 takeCardUnresponsive = false;
+                lastTakeFinishedWhileQuitting = false;
                 mirrorMissingReported = false;
                 mirrorFinalizeFailureReported = false;
                 mirrorLowSpaceNoticePending = false;
@@ -3137,7 +3183,7 @@ void Application::toggleRecording()
             }
             else if (plan.hasWork())
             {
-                takeCombiner.start (juce::File (currentSessionFolder), plan);
+                takeCombiner.start (juce::File (currentSessionFolder), plan, followTakeFolderAfterTheTake());
             }
             else if (! plan.problem.empty())
             {
@@ -3167,7 +3213,8 @@ void Application::toggleRecording()
                 noteActivity (ActivityLevel::Warning, "Podcast copy",
                               "No podcast-ready copy was made: the card stopped answering.");
             else if (! podcastExporter.start (juce::File (currentSessionFolder), "MIX.wav",
-                                              deliveryTarget.toStdString()))
+                                              deliveryTarget.toStdString(),
+                                              followTakeFolderAfterTheTake()))
                 noteActivity (ActivityLevel::Warning, "Podcast copy",
                               "No podcast-ready copy was made for " + deliveryTarget + ".");
         }
@@ -3245,6 +3292,10 @@ void Application::toggleRecording()
         bufferLadder.setRecording (false);
         syncSleepInhibitor();
 
+        // Every movie is finished and the take's combine is queued: whatever
+        // combining is waiting can have the card now.
+        syncCombineHold();
+
         currentSessionFolder.clear();
         currentMirrorFolder.clear();
         takeFolderTracker.close();
@@ -3302,6 +3353,7 @@ void Application::toggleRecording()
             recordingEngine.stop();
             bufferLadder.setRecording (false);
             syncSleepInhibitor();
+            syncCombineHold(); // still held: the movies are still being written
             return;
         }
 
@@ -3354,6 +3406,13 @@ bool Application::pollCameraFinalization()
 
 bool Application::prepareToQuit()
 {
+    // A take this quit stops, or one whose movies are still being finished,
+    // reports how it went while the app is on its way out. The saved-take
+    // card may open for it in that moment -- the screen keeps refreshing
+    // while the quit waits -- but nobody has had a chance to read it.
+    if (isRecording() || pendingStoppedTakeCompletion != nullptr)
+        lastTakeFinishedWhileQuitting = true;
+
     if (isRecording())
     {
         if (stopReason.isEmpty())
@@ -3375,6 +3434,35 @@ juce::String Application::unfinishedAfterTakeWork() const
     if (podcast)             return "the podcast copy";
     if (combined)            return "the combined video";
     return {};
+}
+
+juce::String Application::unseenProblemWithLastTake() const
+{
+    StoppedTakeOutcome outcome;
+
+    // The two notices are consumed together, by the saved-take card as it
+    // opens. A take that finished during the quit counts as unseen even so:
+    // the card can open in the moment before the app closes over it.
+    outcome.alreadyShown = ! savedTakePending && ! cardRemovalPending
+                        && ! lastTakeFinishedWhileQuitting;
+
+    if (cardRemovalPending)
+        outcome.cardNotice = cardRemovalNotice.message;
+
+    outcome.cardStoppedAnswering = takeCardUnresponsive;
+    outcome.verdict = lastTakeVerdict;
+    outcome.folderName = juce::File (lastSessionFolder).getFileName().toStdString();
+
+    // Kept by the camera side until the next take starts, so it is this one's.
+    outcome.cameraProblem = cameraController.getRecordingFinalizationProblem().toStdString();
+
+    return juce::String (describeUnseenTakeProblem (outcome));
+}
+
+void Application::quitCalledOff()
+{
+    // Staying open: the saved-take card shows the take, as for any other stop.
+    lastTakeFinishedWhileQuitting = false;
 }
 
 juce::String Application::resolveSessionFolderName (juce::Time now, const juce::String& name) const
@@ -3873,6 +3961,13 @@ juce::String Application::getRecordDisabledReason() const
             : juce::String ("Couldn't confirm this drive is fast enough yet. Choose another "
                             "location, or reconnect this drive and try again.");
 
+    // The verdict is for the card that was measured, and the probe has since
+    // found another one -- or none -- at this path. The status tick is about
+    // to throw it away and check the drive that is there; until then it arms
+    // nothing.
+    if (probeSeesAnotherDriveThanChecked (it->second))
+        return "Checking this drive is fast enough...";
+
     if (it != preflightResults.end())
     {
         // The benchmark measured the card; the gate is about this take. They
@@ -4103,6 +4198,13 @@ Application::PreflightBackgroundResult Application::runPreflight (
     if (cancelled.load (std::memory_order_acquire))
         return completed;
 
+    // Which card this measures, read before the test file goes on it. The
+    // verdict is kept for the path, and the same path can later hold another
+    // card; the status probe and Record compare what is there with this, so a
+    // swapped card is checked again rather than armed on the old one's speed
+    // and format.
+    const auto measuredVolume = volumeFingerprintOf (completed.destination);
+
     // Whatever an interrupted earlier check left here goes first. This worker
     // holds the destination's lease, so no other check can be writing one.
     for (const auto& f : folder.findChildFiles (juce::File::findFiles,
@@ -4242,6 +4344,13 @@ Application::PreflightBackgroundResult Application::runPreflight (
     }
 
     result.limitedTo4GiBFiles = PreflightThroughputTest::needsReformat (filesystemKind);
+
+    // Stamped once the test file is gone. A card swapped while it was being
+    // measured is still described by the card it began on, so the probe's
+    // first look after this finds a different one there and has it checked
+    // from the start -- and Record compares again before it arms.
+    result.measuredVolume = measuredVolume;
+    result.measuredVolumeConfirmedAt = std::chrono::steady_clock::now();
 
     completed.result = std::move (result);
     completed.couldNotWrite = couldNotWrite;
@@ -5135,6 +5244,16 @@ void Application::followRenamedTakeFolder()
                   + live + ".");
 }
 
+std::shared_ptr<TakeFolderTracker> Application::followTakeFolderAfterTheTake() const
+{
+    auto tracker = std::make_shared<TakeFolderTracker>();
+
+    if (! tracker->adopt (takeFolderTracker.duplicateDescriptor(), currentSessionFolder.toStdString()))
+        return nullptr;
+
+    return tracker;
+}
+
 void Application::followTakeFolderMovedAfterAudioStopped()
 {
     // A card that has stopped answering is not asked anything more.
@@ -5427,10 +5546,16 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // a full disk, a pulled card): mirror the take state into the sleep
     // assertion. Idempotent, so this costs nothing on an unchanged tick.
     syncSleepInhibitor();
+    syncCombineHold();
 
     // A save location that was not mounted when it was checked for an
     // interrupted take is checked again once it is.
     rescanDestinationIfItHasAppeared();
+
+    // A different card put in at the save location's path -- or the card
+    // taken out -- is checked from scratch rather than armed on the old one's
+    // speed and format.
+    recheckDestinationIfItsDriveChanged();
 
     // Before anything reads the take's files: a folder renamed in Finder
     // mid-take is followed here, well inside the growth check's six seconds.
@@ -5823,10 +5948,57 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         juce::String firstFailure;
         juce::String firstWarning;
         bool bufferLadderStepped = false;
-        bool reopenDeadInputs = false;
+        bool reopenStreams = false;
+        bool outputRateChanged = false;
 
-        for (const auto& failure : audioBackend->takeStreamFailures())
+        // §5.3/§5.4: the headphone output held off the clock on the
+        // platform's word of a rate change, since the last poll -- read
+        // before takeStreamFailures() reads the rate and may let it go. The
+        // software clock takes the rig over a moment after the output stops
+        // pulling, and what the rings lose in that moment, here or just after
+        // this poll, is the hand-over and not the computer missing a
+        // deadline. Counted, it was a third of the way to blaming the
+        // computer and raising the buffer.
         {
+            const bool heldNow = capture != nullptr && capture->isOutputOffRate();
+
+            if (heldNow && ! outputWasOffRate)
+                outputRateHoldGraceUntilMs = juce::Time::getMillisecondCounterHiRes()
+                                           + TakeWatchdog::kOutputSwitchSeconds * 1000.0;
+
+            outputWasOffRate = heldNow;
+        }
+
+        // §2.2: a take stopped for a rate change is stopped once, after the
+        // whole batch has been read. Stopped inside the loop, Stop reopened
+        // the rig there and then, and the rest of the batch was applied to the
+        // streams it had just opened at the right rate: on the combined
+        // device one change is the output's report and each microphone's
+        // together, and each microphone was then called dead, told to set
+        // back an interface that had just been set back, and the rig reopened
+        // a second time straight after the first.
+        const auto failures = audioBackend->takeStreamFailures();
+        const bool microphoneStopsTheTake = microphoneRateChangeStopsTheTake (failures, isRecording());
+        bool stopTakeForRateChange = false;
+
+        for (const auto& failure : failures)
+        {
+            // §6.6: the Mac slept with the rig open. Every stream stopped
+            // together and none of them failed, so no microphone is marked
+            // dead and nothing is reopened. A take running across it has a
+            // gap there, which used to go unrecorded: its record and the
+            // activity log say where. Between takes nothing was lost.
+            if (failure.kind == StreamFailureKind::systemSlept)
+            {
+                if (systemSleptMarksTheTake (failure.kind, isRecording()))
+                {
+                    midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                                 kSystemSleptTakeNote });
+                    noteActivity (ActivityLevel::Warning, "Recording", kSystemSleptActivityLine);
+                }
+                continue;
+            }
+
             // The backend knows an id; the user knows a name. A backend that
             // has a better subject than either -- a report that is not about
             // one device -- supplies it.
@@ -5840,6 +6012,31 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                 for (const auto& d : deviceManager.getDevices())
                     if (d.identity.key() == failure.deviceId)
                         subject = juce::String (d.displayName);
+            }
+
+            if (failure.kind == StreamFailureKind::resumed && failure.deviceId.empty())
+            {
+                // The headphone output back at the rig's rate, after a switch
+                // set it aside (below). Between takes the rig is reopened,
+                // which makes it the clock again. Mid-take the take's streams
+                // stay as they are, and Stop reopens it anyway.
+                if (capture != nullptr && capture->isOutputAbandoned())
+                {
+                    const auto line = subject + " " + juce::String (failure.reason);
+
+                    if (isRecording() || capture->isRecording())
+                    {
+                        noteActivity (ActivityLevel::Warning, subject,
+                                      line + " You'll hear the mix again when you stop.");
+                    }
+                    else
+                    {
+                        noteActivity (ActivityLevel::Recovered, subject,
+                                      line + " You can hear the mix again.");
+                        reopenStreams = true;
+                    }
+                }
+                continue;
             }
 
             // §6.5: a still-listed mic called dead below whose stream is
@@ -5868,6 +6065,107 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                                   "Sending audio again. Its track is live again.");
                 }
                 continue;
+            }
+
+            // §5.3: the headphone output, not a microphone, changed sample
+            // rate -- Audio MIDI Setup, another app, a music player switching
+            // the device to its own rate. (An output that has inputs of its
+            // own is not hogged, so any app may.) Its callback is the rig's
+            // clock, and left alone it went on pulling every microphone at the
+            // wrong rate. Mid-take the take was stopped as if a microphone's
+            // file format had changed, though none had, and the rest of the
+            // show went unrecorded. Between takes nothing reopened it: every
+            // ring overflowed, and three polls later the buffer ladder blamed
+            // the computer and raised the buffer -- or, at its top rung, the
+            // next take recorded with a piece of every track missing.
+            if (streamFailureIsOutputRateChange (failure) && capture != nullptr)
+            {
+                outputRateChanged = true;
+
+                // The combined device's rate is the microphones' own (they are
+                // its sub-devices), and a mixer that is both the headphones and
+                // some of the microphones carries them on the output callback:
+                // either way the take's format did change, whatever the
+                // microphones' own reports say or when they arrive. The open
+                // stream is asked as well as the selection, which can move
+                // mid-take ahead of the reopen at Stop.
+                const bool carriesTakeAudio = selectedOutputDeviceId == kOurAggregateUid
+                                           || capture->getOutputDeviceId() == kOurAggregateUid
+                                           || capture->outputCarriesTakeChannels();
+
+                // Put back once; switched again straight after, something is
+                // fighting for it, and a reopen per switch is a tug-of-war
+                // with the headphones dropping out at every turn.
+                const auto nowMs = juce::Time::getMillisecondCounterHiRes();
+                const bool reopenedRecently = outputRateReopenedFor == selectedOutputDeviceId
+                                           && nowMs - outputRateReopenedAtMs < kDeadInputReopenBackoffMs;
+
+                auto action = outputRateChangeAction (isRecording() || capture->isRecording(),
+                                                      carriesTakeAudio, reopenedRecently,
+                                                      microphoneStopsTheTake);
+                const auto changed = subject + " " + juce::String (failure.reason);
+                juce::String said;
+
+                switch (action)
+                {
+                    case OutputRateChangeAction::carryOnWithoutIt:
+                        said = changed + " Recording carries on, but you won't hear the mix in your "
+                                         "headphones until you stop.";
+
+                        // Stop reopens it at the take's rate. With no software
+                        // clock to take over, nothing else could clock the
+                        // take, and it stops as before.
+                        if (capture->abandonOutputClock (said.toStdString()))
+                            captureRestartDeferred = true;
+                        else
+                            action = OutputRateChangeAction::stopTake;
+                        break;
+
+                    case OutputRateChangeAction::reopenNow:
+                        said = changed + " SobStage is switching it back.";
+                        outputRateReopenedAtMs = nowMs;
+                        outputRateReopenedFor = selectedOutputDeviceId;
+                        reopenStreams = true;
+                        break;
+
+                    case OutputRateChangeAction::reopenAtStop:
+                        // A microphone's change in this batch stops the take
+                        // (below), and Stop's reopen sets the output back too.
+                        // Setting it aside instead would tell the user the
+                        // take carries on without it, a line before it stops.
+                        said = changed + " SobStage is switching it back.";
+                        outputRateReopenedAtMs = nowMs;
+                        outputRateReopenedFor = selectedOutputDeviceId;
+                        captureRestartDeferred = true;
+                        break;
+
+                    case OutputRateChangeAction::setAside:
+                        said = changed + " Something keeps switching it, so the mix is off in your "
+                                         "headphones; recording still works. Set it back in Audio "
+                                         "MIDI Setup to hear the mix again.";
+
+                        if (! capture->abandonOutputClock (said.toStdString()))
+                            said = changed + " Set it back in Audio MIDI Setup.";
+                        break;
+
+                    case OutputRateChangeAction::stopTake:
+                        break;
+                }
+
+                // Whichever way the take goes on or ends, Stop reopens the
+                // rig at its own rate.
+                if (action == OutputRateChangeAction::stopTake)
+                    captureRestartDeferred = true;
+
+                // stopTake goes on to the ordinary path below, which stops the
+                // take as it does for a microphone's rate change.
+                if (action != OutputRateChangeAction::stopTake)
+                {
+                    noteActivity (ActivityLevel::Warning, subject, said);
+                    if (firstWarning.isEmpty())
+                        firstWarning = said;
+                    continue;
+                }
             }
 
             // §5.4's buffer ladder lives or dies here. noteCallbackOverrun()
@@ -5963,7 +6261,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                         switch (deadInputStreamAction (takeRunning, reopenedRecently))
                         {
                             case DeadInputStreamAction::reopenAtStop: captureRestartDeferred = true; break;
-                            case DeadInputStreamAction::reopenNow:    reopenDeadInputs = true; break;
+                            case DeadInputStreamAction::reopenNow:    reopenStreams = true; break;
                             case DeadInputStreamAction::leaveDead:    break;
                         }
                     }
@@ -5972,14 +6270,41 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
             if (stopForSafety)
             {
-                stopReason = "an audio device changed sample rate";
-                toggleRecording();
+                // Stop reopens the rig at its own rate, which sets the device
+                // back. Without that the device-list notification this same
+                // change queued -- run after the stop -- found the rig
+                // unchanged and reopened nothing, and the next take ran with
+                // the device still at the other rate and its one report spent.
+                captureRestartDeferred = true;
+                stopTakeForRateChange = true;
             }
         }
 
-        // After the loop, so several streams dying together reopen once.
-        if (reopenDeadInputs)
+        // After the loop, so the rest of the batch was read against the
+        // take's own streams (isRecording() still true: no microphone in it
+        // was called dead, and nothing was reopened for it).
+        bool stoppedTake = false;
+
+        if (stopTakeForRateChange && isRecording())
+        {
+            stopReason = "an audio device changed sample rate";
+            toggleRecording();
+            stoppedTake = true;
+        }
+
+        // After the loop, so several streams dying together reopen once. A
+        // stop above owes its own reopen (captureRestartDeferred), done by
+        // Stop or, with a camera still finishing, once it has.
+        if (reopenStreams && ! stoppedTake)
             restartCapture();
+
+        // What the rings lost before this poll heard of an output rate
+        // change was that output pulling them at its new rate, not the
+        // computer missing a deadline. Counted by the ladder below on the next
+        // poll, it was a third of the way to blaming the computer and raising
+        // the buffer for a fault that has just been dealt with.
+        if (outputRateChanged && capture != nullptr)
+            reportedRingLossEvents = capture->getRingLossEvents();
 
         // Acted on after the loop, so one batch of overloads produces one step
         // rather than one per report.
@@ -6024,7 +6349,12 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         // once and every tick it lasts, and counted per event -- even capped
         // at three -- one stall was the whole trigger, and the ladder stepped
         // twice inside a second. §5.4's three are three separate occasions.
-        const bool stepped = eventsNow > reportedRingLossEvents && noteCallbackOverrun();
+        //
+        // Not while the headphone output is being handed over for a rate
+        // change (above): those losses are the hand-over's.
+        const bool handingOverForRate = juce::Time::getMillisecondCounterHiRes() < outputRateHoldGraceUntilMs;
+        const bool stepped = eventsNow > reportedRingLossEvents && ! handingOverForRate
+                          && noteCallbackOverrun();
         reportedRingLossEvents = eventsNow;
 
         if (stepped)
@@ -7142,7 +7472,7 @@ bool Application::applyTemplate (const juce::String& name)
     if (destinationChanged && ! s.destinationFolder.empty())
         setDestinationFolder (juce::File (juce::String (s.destinationFolder)));
 
-    applyHeadphoneGains();
+    headphoneJacks.lay();
     reselectOutputDevice();
 
     // A new rate reopens the streams through the hot-plug path, as the rate
@@ -7312,10 +7642,33 @@ Application::RecoveryAcknowledgementResult Application::runRecoveryAcknowledgeme
 
         try
         {
-            const auto contents = file.loadFileAsString().toStdString();
+            // A read that failed is not an empty record. Parsed as one, it had
+            // no stop time, was stamped, and a near-empty record was renamed
+            // over the real one -- which a rename can do to an iCloud
+            // placeholder this Mac could not read offline. Left exactly as it
+            // is, and offered again. A file that WAS read and is empty or cut
+            // short is still stamped below, or a take whose record a power
+            // cut emptied would come back at every launch.
+            const auto bytes = SessionRecovery::readWholeFileChecked (
+                file.getFullPathName().toStdString());
 
             if (wasCancelled())
                 break;
+
+            if (! bytes.has_value())
+            {
+                result.activity.push_back (
+                    { ActivityLevel::Warning,
+                      "Interrupted take",
+                      (file.getParentDirectory().getFileName()
+                       + " wasn't marked as dealt with, because its details file couldn't be "
+                         "read just now. Nothing was changed, so it will be offered again next "
+                         "time.").toStdString() });
+                continue;
+            }
+
+            const auto contents = juce::String::createStringFromData (
+                                      bytes->data(), static_cast<int> (bytes->size())).toStdString();
 
             auto meta = SessionMetadata::fromJsonString (contents);
 
@@ -7517,6 +7870,105 @@ void Application::rescanDestinationIfItHasAppeared()
     startDestinationRecoveryScan();
 }
 
+bool Application::probeSeesAnotherDriveThanChecked (const PreflightResult& verdict) const
+{
+    // Whatever the probe saw last; never a filesystem call here, because this
+    // is asked by the record button's state on every status tick.
+    const auto snapshot = filesystemStatusProbe.getSnapshot();
+
+    return snapshot.ready
+        && snapshot.request.destinationPath == destinationFolder
+        && snapshot.request.sessionFolder.empty()
+        && PreflightThroughputTest::measuredAnotherDrive (verdict, snapshot.destinationVolume,
+                                                          snapshot.sampleStartedAt);
+}
+
+void Application::recheckDestinationIfItsDriveChanged()
+{
+    if (destinationFolder.empty() || recordingEngine.getState() != RecordingState::Idle)
+        return;
+
+    publishCompletedPreflight();
+    const auto verdict = preflightResults.find (destinationFolder);
+
+    if (verdict == preflightResults.end())
+        return;
+
+    // Keeps the probe looking at the save location between takes even when
+    // nothing else on screen is asking about it.
+    filesystemStatusProbe.setRequest (currentFilesystemProbeRequest());
+
+    if (! probeSeesAnotherDriveThanChecked (verdict->second))
+        return;
+
+    forgetCheckedDriveAtDestination();
+}
+
+void Application::forgetCheckedDriveAtDestination()
+{
+    noteActivity (ActivityLevel::Warning, "Save location",
+                  "The drive at " + juce::String (destinationFolder) + " isn't the one that was "
+                  "checked (it was taken out, or another was put in), so it is being checked "
+                  "again before the next take.");
+
+    // Exactly what choosing the location again does (applyDestinationFolder):
+    // the card now at this path has its own interrupted takes, speed and
+    // format. Workers stuck on the old card are abandoned, never joined.
+    if (destinationRecoveryRoot == destinationFolder)
+    {
+        destinationRecoveryTask.abandon();
+        destinationRecoveryRoot.clear();
+        destinationRecoveryStatus = RecoveryScanStatus::NotStarted;
+    }
+
+    startDestinationRecoveryScan();
+
+    preflightResults.erase (destinationFolder);
+    preflightVerdictAtMs.erase (destinationFolder);
+    if (preflightTaskDestination == destinationFolder)
+    {
+        preflightTask.abandon();
+        preflightTaskDestination.clear();
+    }
+
+    beginPreflightForDestination();
+}
+
+juce::String Application::confirmDestinationIsTheCheckedDrive()
+{
+    const auto verdict = preflightResults.find (destinationFolder);
+
+    // A platform that can't tell one volume from another (Windows), or a
+    // verdict that measured nothing, has nothing to compare.
+    if (verdict == preflightResults.end() || ! verdict->second.measuredVolume.known)
+        return {};
+
+    // Under the same deadline as the other card steps at Record: a card that
+    // has stopped answering holds a statfs as long as it holds anything else.
+    const std::string destination = destinationFolder;
+    const auto now = runWithDeadline<VolumeFingerprint> ([destination]
+    {
+        return volumeFingerprintOf (destination);
+    }, kRemovableVolumeDeadline);
+
+    if (! now.has_value())
+    {
+        // The same account, and the only one, that the folder step below
+        // would have given after the same wait.
+        const auto problem = "The card at " + juce::String (destinationFolder) + " stopped answering, "
+                             "so the take couldn't start. Check the card is plugged in, or choose "
+                             "somewhere else.";
+        noteActivity (ActivityLevel::Failed, "Recording", problem);
+        return problem;
+    }
+
+    if (! volumesDiffer (verdict->second.measuredVolume, *now))
+        return {};
+
+    forgetCheckedDriveAtDestination();
+    return "A different drive is at this save location now. Checking it is fast enough...";
+}
+
 void Application::startMirrorRecoveryScan()
 {
     const auto target = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
@@ -7629,6 +8081,9 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
     constexpr int kMaxFoldersExamined = 20;
     const int examine = juce::jmin (folders.size(), kMaxFoldersExamined);
 
+    // Takes whose details file is there but could not be read just now.
+    int couldNotReadNow = 0;
+
     for (int i = 0; i < examine && ! wasCancelled(); ++i)
     {
         const auto folder = folders[i];
@@ -7638,19 +8093,39 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
         if (! metadataFile.existsAsFile() || wasCancelled())
             continue;
 
+        // Read with a check, because a failed read and an empty file used to
+        // look the same here. An iCloud "Optimize Mac Storage" placeholder
+        // opened offline (or a card that hiccups) gave an empty string, which
+        // made a finished take look interrupted -- and then its real record was
+        // overwritten when it was dismissed, or straight away when its audio
+        // could not be read either. Nothing in such a folder is touched: it is
+        // skipped and looked at again next launch.
+        const auto bytes = SessionRecovery::readWholeFileChecked (
+            metadataFile.getFullPathName().toStdString());
+
+        if (wasCancelled())
+            return result;
+
+        if (! bytes.has_value())
+        {
+            ++couldNotReadNow;
+            continue;
+        }
+
         SessionMetadata meta;
 
         // A session.json truncated by the same power cut that interrupted the
         // take is not a reason to fail: the audio beside it is still worth
-        // recovering, so an unreadable one is treated as interrupted.
+        // recovering, so one that was read but says nothing is treated as
+        // interrupted.
         bool metadataUnreadable = false;
 
         try
         {
-            const auto text = metadataFile.loadFileAsString().toStdString();
-
-            if (wasCancelled())
-                return result;
+            // Through juce::String as loadFileAsString did, so a byte-order
+            // mark is handled the same way it always was.
+            const auto text = juce::String::createStringFromData (
+                                  bytes->data(), static_cast<int> (bytes->size())).toStdString();
 
             const auto parsed = JsonValue::parse (text);
 
@@ -7822,6 +8297,24 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
             if (! wasCancelled())
                 (void) replaceWithTextChecked (metadataFile, juce::String (meta.toJsonString()));
         }
+    }
+
+    // One line for all of them: a folder of takes iCloud has moved off this
+    // Mac would otherwise be twenty warnings at every offline launch.
+    if (couldNotReadNow > 0 && ! wasCancelled())
+    {
+        const bool one = couldNotReadNow == 1;
+
+        report (ActivityLevel::Warning,
+                (one ? juce::String ("One recent take") : juce::String (couldNotReadNow) + " recent takes")
+                + " in " + root.getFileName()
+                + (one ? " wasn't" : " weren't")
+                + " checked for an interruption, because "
+                + (one ? "its details file" : "their details files")
+                + " couldn't be read just now. Nothing was changed. If "
+                + (one ? "it's" : "they're")
+                + " kept in iCloud or another online storage service, connect to the internet. "
+                  "SobStage will check again next time it opens.");
     }
 
     return result;

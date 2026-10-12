@@ -9,11 +9,11 @@
 #import <Foundation/Foundation.h>
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -59,7 +59,7 @@ bool writeWav (const std::string& path, double seconds)
     return static_cast<bool> (f);
 }
 
-bool writeMovie (const std::string& path, double seconds)
+bool writeMovie (const std::string& path, double seconds, int fps = 30)
 {
     @autoreleasepool
     {
@@ -90,7 +90,6 @@ bool writeMovie (const std::string& path, double seconds)
 
         [writer startSessionAtSourceTime:kCMTimeZero];
 
-        const int fps = 30;
         const int frameCount = static_cast<int> (seconds * fps);
 
         for (int i = 0; i < frameCount; ++i)
@@ -130,6 +129,11 @@ struct Opened
     int videoTracks = 0, audioTracks = 0;
     double videoSeconds = 0.0, audioSeconds = 0.0;
 };
+
+bool fileExists (const std::string& path)
+{
+    return [[NSFileManager defaultManager] fileExistsAtPath:[NSString stringWithUTF8String:path.c_str()]];
+}
 
 Opened open (const std::string& path)
 {
@@ -173,7 +177,7 @@ int main()
     check (writeWav (mix, 3.0), "made a 3 s 24-bit mix");
     check (writeWav (mixA, 1.0) && writeWav (mixB, 2.0), "made a mix split in two parts");
 
-    const std::atomic<bool> notCancelled { false };
+    const std::function<bool()> notCancelled = [] { return false; };
 
     // One mix; the sound started half a second before the picture.
     {
@@ -220,6 +224,157 @@ int main()
         check (o.videoTracks == 1 && o.audioTracks == 1, "the split result has one picture and one sound");
         check (std::abs (o.audioSeconds - 1.8) < 0.1, "the lead is skipped across the part boundary");
         check (std::abs (o.videoSeconds - 1.8) < 0.1, "the picture ends with the sound, as ffmpeg's -shortest does");
+    }
+
+    // The take folder renamed in Finder in the moment between the export
+    // ending and the finished file being named. The rename is made from the
+    // combine asking where the folder is, which it does only once the export
+    // has ended. The finished file is named in the folder as it is now, not
+    // looked for in the old one and left hidden for the next launch to delete
+    // as unfinished. A rename while the export is still writing is checked
+    // next.
+    {
+        const auto before = dir + "/Take-before";
+        const auto after = dir + "/Take-after";
+        [[NSFileManager defaultManager] createDirectoryAtPath:[NSString stringWithUTF8String:before.c_str()]
+                                  withIntermediateDirectories:YES attributes:nil error:nil];
+        check (writeMovie (before + "/V01_Cam.mov", 2.0) && writeWav (before + "/MIX.wav", 3.0),
+               "made a take to rename");
+
+        bool renamed = false;
+        const std::function<std::string()> folderNow = [&]
+        {
+            if (! renamed)
+                renamed = std::rename (before.c_str(), after.c_str()) == 0;
+
+            return renamed ? after : before;
+        };
+
+        const auto problem = mma::combineMovieWithSound (before + "/V01_Cam.mov", { before + "/MIX.wav" },
+                                                         before + "/V01_Cam_with-sound.mov", 0.5,
+                                                         notCancelled, folderNow);
+        if (! problem.empty())
+            std::printf ("  problem: %s\n", problem.c_str());
+        check (renamed && problem.empty(), "a take folder renamed as the export ended still gets its combined file");
+        check ([[NSFileManager defaultManager] fileExistsAtPath:[NSString stringWithUTF8String:(after + "/V01_Cam_with-sound.mov").c_str()]],
+               "the combined file is in the folder under its new name");
+        check (! [[NSFileManager defaultManager] fileExistsAtPath:[NSString stringWithUTF8String:(after + "/.V01_Cam_with-sound.mov").c_str()]],
+               "no hidden working file is left in the renamed folder");
+    }
+
+    // The take folder renamed in Finder while AVFoundation is still writing
+    // the export into it -- the case a long take meets, minutes into its
+    // combine. The rename is made from shouldStop, which the combine asks
+    // only after the export has run 100 ms without finishing, so the folder
+    // moves under a running export. The take is fifteen minutes of sound,
+    // about 130 MB, far more than an export copies in 100 ms. If shouldStop
+    // is still never asked, nothing was renamed and the check fails rather
+    // than passing untested.
+    //
+    // Either outcome of the real framework is fine for SobStage, and the log
+    // says which one this Mac gave: AVFoundation goes on writing into the
+    // renamed folder and the finished file is named there; or it fails, and
+    // leaves nothing hidden there, and TakeCombiner -- seeing the folder has
+    // moved -- makes it once more from the new place.
+    const auto longBefore = dir + "/Long-before";
+    const auto longAfter = dir + "/Long-after";
+    bool longRenamed = false;
+    {
+        const double takeSeconds = 900.0;
+        const double leadSeconds = 0.5;
+        const auto working = std::string ("/.V01_Cam_with-sound.mov");
+        const auto finished = std::string ("/V01_Cam_with-sound.mov");
+
+        [[NSFileManager defaultManager] createDirectoryAtPath:[NSString stringWithUTF8String:longBefore.c_str()]
+                                  withIntermediateDirectories:YES attributes:nil error:nil];
+        // Two frames a second keeps the picture quick to make; the sound is
+        // what makes the export long.
+        check (writeMovie (longBefore + "/V01_Cam.mov", takeSeconds, 2) && writeWav (longBefore + "/MIX.wav", takeSeconds),
+               "made a fifteen-minute take to rename while it combines");
+
+        int polls = 0;
+        int pollsAfterRename = 0;
+        bool workingFileWasThere = false;
+        const std::function<bool()> renameMidExport = [&]
+        {
+            ++polls;
+
+            if (longRenamed)
+            {
+                ++pollsAfterRename;
+                return false;
+            }
+
+            workingFileWasThere = fileExists (longBefore + working);
+            longRenamed = std::rename (longBefore.c_str(), longAfter.c_str()) == 0;
+            return false;
+        };
+        const std::function<std::string()> folderNow = [&] { return longRenamed ? longAfter : longBefore; };
+
+        const auto problem = mma::combineMovieWithSound (longBefore + "/V01_Cam.mov", { longBefore + "/MIX.wav" },
+                                                         longBefore + finished, leadSeconds,
+                                                         renameMidExport, folderNow);
+        std::printf ("  asked whether to stop %d times while the export ran, %d of them after the rename; "
+                     "its working file %s already in the folder when it was renamed\n",
+                     polls, pollsAfterRename, workingFileWasThere ? "was" : "was not");
+        check (longRenamed, "the folder was renamed while the export was still running");
+
+        if (longRenamed)
+        {
+            check (! fileExists (longAfter + working) && ! fileExists (longBefore + working),
+                   "no hidden working file is left in either folder");
+
+            if (problem.empty())
+            {
+                std::printf ("  AVFoundation went on writing into the renamed folder\n");
+            }
+            else
+            {
+                std::printf ("  the combine failed once the folder moved: %s\n", problem.c_str());
+                check (! fileExists (longAfter + finished), "the failed combine left no file named as the finished one");
+
+                // TakeCombiner sees the folder has moved and tries once more,
+                // from where it is now.
+                const auto again = mma::combineMovieWithSound (longAfter + "/V01_Cam.mov", { longAfter + "/MIX.wav" },
+                                                               longAfter + finished, leadSeconds,
+                                                               notCancelled, folderNow);
+                if (! again.empty())
+                    std::printf ("  problem: %s\n", again.c_str());
+                check (again.empty() && ! fileExists (longAfter + working),
+                       "tried once more from the renamed folder, as TakeCombiner does, it combines");
+            }
+
+            const auto o = open (longAfter + finished);
+            check (o.videoTracks == 1 && o.audioTracks == 1
+                       && std::abs (o.audioSeconds - (takeSeconds - leadSeconds)) < 0.1
+                       && std::abs (o.videoSeconds - (takeSeconds - leadSeconds)) < 0.1,
+                   "the combined file is whole, in the folder under its new name");
+        }
+    }
+
+    // Stopped -- quitting, or a take starting on the card -- just after the
+    // folder was renamed under the running export: the unfinished file is
+    // cleared from the folder as it is now, not looked for under the old
+    // name and left hidden.
+    if (longRenamed)
+    {
+        const auto stoppedFolder = dir + "/Long-stopped";
+        bool renamedAgain = false;
+        const std::function<bool()> renameThenStop = [&]
+        {
+            if (! renamedAgain)
+                renamedAgain = std::rename (longAfter.c_str(), stoppedFolder.c_str()) == 0;
+
+            return true;
+        };
+        const std::function<std::string()> folderNow = [&] { return renamedAgain ? stoppedFolder : longAfter; };
+
+        const auto problem = mma::combineMovieWithSound (longAfter + "/V01_Cam.mov", { longAfter + "/MIX.wav" },
+                                                         longAfter + "/V01_Cam_stopped.mov", 0.5,
+                                                         renameThenStop, folderNow);
+        check (renamedAgain && ! problem.empty(), "a combine stopped after its folder was renamed says it stopped");
+        check (! fileExists (stoppedFolder + "/.V01_Cam_stopped.mov") && ! fileExists (stoppedFolder + "/V01_Cam_stopped.mov"),
+               "and leaves no working or combined file in the renamed folder");
     }
 
     // A missing picture is reported, not a crash or an empty file.

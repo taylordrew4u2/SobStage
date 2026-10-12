@@ -6,13 +6,20 @@ do rather than leaving them to guess: the app on the left, the Applications
 folder on the right, an arrow between them, and the one first-launch step
 underneath. Same §9.2 palette as the app and the icon.
 
+The window size and every icon position live in Tools/dmg_layout.py, which the
+release workflow also uses to place the icons and to check that none of them
+covers this text. Move any text here and move its INSTRUCTIONS area there
+(Tests/test_dmg_layout.py fails until both agree).
+
 Run:  python3 Tools/make_dmg_background.py
-Out:  Resources/DmgBackground.png  (660x420 @1x)
+Out:  Resources/DmgBackground.png  (WINDOW_WIDTH x WINDOW_HEIGHT @1x)
       Resources/DmgBackground@2x.png
 """
 
 import os
 from PIL import Image, ImageDraw, ImageFont
+
+from dmg_layout import WINDOW_HEIGHT, WINDOW_WIDTH
 
 # §9.2 palette, from the `palette` namespace in Source/UI/AppLookAndFeel.h.
 BONE = (227, 234, 242)          # palette::bone
@@ -22,25 +29,28 @@ ACCENT = (34, 211, 238)         # palette::accent
 BACKDROP_TOP = (28, 39, 51)     # palette::surfaceHigh
 BACKDROP_BOTTOM = (10, 14, 19)  # palette::background
 
-W, H = 660, 520
+W, H = WINDOW_WIDTH, WINDOW_HEIGHT
 SS = 2
 
 
 def load_font(size, bold=False, mono=False):
+    # Liberation before DejaVu: the committed background was drawn with
+    # Liberation Sans and Mono, and a machine with both fonts must redraw it
+    # the same way.
     if mono:
         candidates = [
             "/System/Library/Fonts/SFNSMono.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
         ]
     else:
         candidates = [
             "/System/Library/Fonts/Supplemental/Arial Bold.ttf" if bold
             else "/System/Library/Fonts/Supplemental/Arial.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
-            else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf" if bold
             else "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
+            else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         ]
     for path in candidates:
         if os.path.exists(path):
@@ -67,7 +77,8 @@ def main():
     centred(d, 40 * SS, "SobStage", load_font(25 * SS, bold=True), BONE)
     centred(d, 78 * SS, "Drag the crying face onto Applications", load_font(14 * SS), SECONDARY)
 
-    # Arrow between the two icon positions the AppleScript sets (165 and 495).
+    # Arrow between the app and Applications icons (x 165 and 495 in
+    # Tools/dmg_layout.py).
     y = 205 * SS
     x0, x1 = 268 * SS, 392 * SS
     # The accent, not the dimmest tone available. This arrow is the entire

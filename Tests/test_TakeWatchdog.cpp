@@ -158,6 +158,84 @@ TEST_CASE (TakeWatchdog_ACameraThatVanishesFromTheListIsGoneToo)
     REQUIRE (back.empty());
 }
 
+namespace {
+
+/// Two capture dongles of the same model: the OS gives them one name and
+/// two device ids. `a` and `b` say whether each is in the take.
+TakeHealth twins (bool a, bool b)
+{
+    auto h = healthyRig();
+    h.cameras = { { "USB2 Video", a, "unit-A" }, { "USB2 Video", b, "unit-B" } };
+    return h;
+}
+
+size_t countKind (const std::vector<TakeAlert>& alerts, TakeAlert::Kind kind)
+{
+    size_t n = 0;
+    for (const auto& a : alerts)
+        if (a.kind == kind)
+            ++n;
+    return n;
+}
+
+} // namespace
+
+TEST_CASE (TakeWatchdog_ATwinThatNeverStartedIsNotALossAtTheStart)
+{
+    // Unit B has no HDMI signal, so it never starts; it is still in the take's
+    // roster as absent. Matched by name, B read A's "present" and the first
+    // tick of the take said "USB2 Video has gone away" about nothing.
+    TakeWatchdog w;
+    w.beginTake (twins (true, false));
+    REQUIRE (w.observe (twins (true, false)).empty());
+
+    // A's real loss later in the take is still said, once.
+    const auto alerts = w.observe (twins (false, false));
+    REQUIRE (alerts.size() == 1);
+    REQUIRE (alerts[0].kind == TakeAlert::Kind::CameraLost);
+    REQUIRE (alerts[0].message.find ("USB2 Video") != std::string::npos);
+    REQUIRE (w.observe (twins (false, false)).empty());
+}
+
+TEST_CASE (TakeWatchdog_ATwinThatNeverStartedListedFirstDoesNotHideTheOthersLoss)
+{
+    // The same rig with the absent unit first in the list. By name, A's
+    // "was present" came from B's absent entry, so A's loss was never said.
+    TakeWatchdog w;
+    w.beginTake (twins (false, true));
+    REQUIRE (w.observe (twins (false, true)).empty());
+
+    const auto alerts = w.observe (twins (false, false));
+    REQUIRE (countKind (alerts, TakeAlert::Kind::CameraLost) == 1);
+}
+
+TEST_CASE (TakeWatchdog_EachTwinLostIsSaid)
+{
+    // Two working twins. The latch was by name, so the second one lost said
+    // nothing.
+    TakeWatchdog w;
+    w.beginTake (twins (true, true));
+    REQUIRE (w.observe (twins (true, true)).empty());
+
+    REQUIRE (countKind (w.observe (twins (false, true)), TakeAlert::Kind::CameraLost) == 1);
+    REQUIRE (countKind (w.observe (twins (false, false)), TakeAlert::Kind::CameraLost) == 1);
+    REQUIRE (w.observe (twins (false, false)).empty());
+
+    // A twin that drops out of the list altogether is carried forward under
+    // its own id, not merged into the one still listed.
+    TakeWatchdog v;
+    v.beginTake (twins (true, true));
+    auto onlyB = twins (true, true);
+    onlyB.cameras.erase (onlyB.cameras.begin());
+    REQUIRE (countKind (v.observe (onlyB), TakeAlert::Kind::CameraLost) == 1);
+    REQUIRE (v.observe (onlyB).empty());
+
+    auto none = onlyB;
+    none.cameras.clear();
+    REQUIRE (countKind (v.observe (none), TakeAlert::Kind::CameraLost) == 1);
+    REQUIRE (v.observe (none).empty());
+}
+
 TEST_CASE (TakeWatchdog_DroppedAudioIsSaidOnceThenAtMostOnceAMinute)
 {
     // A struggling machine drops a little on every tick. Said on every
@@ -278,6 +356,130 @@ TEST_CASE (TakeWatchdog_OutputClockLostIsSaidOnceAndComesBack)
     REQUIRE (back.size() == 1);
     REQUIRE (back[0].kind == TakeAlert::Kind::OutputBack);
     REQUIRE (back[0].recovery);
+}
+
+TEST_CASE (TakeWatchdog_AnOutputSetAsideForARateChangeIsSaidOnceInItsOwnWords)
+{
+    // Another app switched the headphones to 44.1 kHz mid-take, and the take
+    // carries on without them. The output is still plugged in and nobody took
+    // it, so "has stopped -- unplugged, or taken by another app ... until it
+    // comes back" would be wrong; the monitor problem says what happened.
+    TakeWatchdog w;
+    w.beginTake (healthyRig());
+
+    auto now = healthyRig();
+    now.outputClockLost = true;
+    now.outputRateChanged = true;
+    now.monitorProblem = "Your sound output changed to 44.1 kHz while SobStage is using 48 kHz. "
+                         "Recording carries on, but you won't hear the mix in your headphones "
+                         "until you stop.";
+
+    const auto alerts = w.observe (now);
+    REQUIRE (alerts.size() == 1);
+    REQUIRE (alerts[0].kind == TakeAlert::Kind::MonitorTrouble);
+    REQUIRE (alerts[0].message == now.monitorProblem);
+    REQUIRE_FALSE (has (alerts, TakeAlert::Kind::OutputLost));
+    REQUIRE (w.observe (now).empty());
+}
+
+TEST_CASE (TakeWatchdog_SoundLostAsTheOutputChangesRateIsPutDownToTheSwitch)
+{
+    // Another app switches the headphone output's rate mid-take. The output
+    // is held off the clock at once and the software clock takes the rig
+    // over a moment later; at the smallest buffer the rings can overflow in
+    // that moment. That is the switch, not the computer: "could not keep up
+    // ... Close other apps" sent the user after the wrong thing.
+    TakeWatchdog w;
+    auto start = healthyRig();
+    start.elapsedSeconds = 0.0;
+    w.beginTake (start);
+
+    auto now = start;
+    now.elapsedSeconds = 10.0;
+    now.outputClockLost = true;
+    now.outputRateChanged = true;
+    now.samplesOverrun = 300;
+
+    auto alerts = w.observe (now);
+    REQUIRE (has (alerts, TakeAlert::Kind::AudioDropped));
+    for (const auto& a : alerts)
+        if (a.kind == TakeAlert::Kind::AudioDropped)
+        {
+            REQUIRE (a.message.find ("sound output changed rate") != std::string::npos);
+            REQUIRE (a.message.find ("could not keep up") == std::string::npos);
+            REQUIRE (a.message.find ("Close other apps") == std::string::npos);
+            REQUIRE_FALSE (a.recovery);
+        }
+
+    // A tick later, still the switch: said once.
+    now.elapsedSeconds = 10.5;
+    now.samplesOverrun = 400;
+    REQUIRE_FALSE (has (w.observe (now), TakeAlert::Kind::AudioDropped));
+
+    // Long after, with the output still set aside, a ring losing sound is
+    // the computer again -- said in the words it always was, as the first.
+    now.elapsedSeconds = 30.0;
+    now.samplesOverrun = 900;
+    alerts = w.observe (now);
+    REQUIRE (has (alerts, TakeAlert::Kind::AudioDropped));
+    for (const auto& a : alerts)
+        if (a.kind == TakeAlert::Kind::AudioDropped)
+            REQUIRE (a.message.find ("could not keep up") != std::string::npos);
+}
+
+TEST_CASE (TakeWatchdog_TheSwitchCoversTheTickAfterItAndNotTheDrive)
+{
+    // The hold is seen on one tick and the rings' loss on the next.
+    TakeWatchdog w;
+    auto start = healthyRig();
+    w.beginTake (start);
+
+    auto now = start;
+    now.elapsedSeconds = 5.0;
+    now.outputClockLost = true;
+    now.outputRateChanged = true;
+    REQUIRE_FALSE (has (w.observe (now), TakeAlert::Kind::AudioDropped));
+
+    now.elapsedSeconds = 5.5;
+    now.samplesOverrun = 200;
+    auto alerts = w.observe (now);
+    REQUIRE (has (alerts, TakeAlert::Kind::AudioDropped));
+    for (const auto& a : alerts)
+        if (a.kind == TakeAlert::Kind::AudioDropped)
+            REQUIRE (a.message.find ("sound output changed rate") != std::string::npos);
+
+    // The drive dropping frames in the same window is the drive's, not the
+    // switch's, even with the rings losing some too, and is said as it
+    // always was.
+    TakeWatchdog d;
+    d.beginTake (start);
+    auto drive = start;
+    drive.elapsedSeconds = 5.0;
+    drive.outputClockLost = true;
+    drive.outputRateChanged = true;
+    drive.framesDropped = 480;
+    drive.samplesOverrun = 100;
+    alerts = d.observe (drive);
+    REQUIRE (has (alerts, TakeAlert::Kind::AudioDropped));
+    for (const auto& a : alerts)
+        if (a.kind == TakeAlert::Kind::AudioDropped)
+            REQUIRE (a.message.find ("could not keep up") != std::string::npos);
+
+    // An output already set aside when the take started switched nothing
+    // during it.
+    TakeWatchdog e;
+    auto asideAtStart = start;
+    asideAtStart.outputClockLost = true;
+    asideAtStart.outputRateChanged = true;
+    e.beginTake (asideAtStart);
+    auto later = asideAtStart;
+    later.elapsedSeconds = 1.0;
+    later.samplesOverrun = 100;
+    alerts = e.observe (later);
+    REQUIRE (has (alerts, TakeAlert::Kind::AudioDropped));
+    for (const auto& a : alerts)
+        if (a.kind == TakeAlert::Kind::AudioDropped)
+            REQUIRE (a.message.find ("could not keep up") != std::string::npos);
 }
 
 TEST_CASE (TakeWatchdog_RingOverrunsCountAsDroppedAudio)

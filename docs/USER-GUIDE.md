@@ -153,7 +153,7 @@ files really are empty and the card says so instead of calling it saved.
 
 > The screenshots are historical UI checkpoints from several earlier binaries;
 > the version visible in each masthead identifies the build. They are retained
-> to show the implemented flows, not as proof of the v1.13.25 release candidate.
+> to show the implemented flows, not as proof of the v1.13.26 release candidate.
 > They were rendered headless on Linux by
 > [`Tools/screenshot_app.sh`](../Tools/screenshot_app.sh) against the virtual ALSA microphones
 > [`Tools/setup_alsa_fixture.sh`](../Tools/setup_alsa_fixture.sh) creates — the
@@ -208,8 +208,12 @@ files really are empty and the card says so instead of calling it saved.
 - **Everyone hears the same mix (macOS)** — the headphone mix plays out of
   every microphone's own jack at once through the SobStage device. Each
   person's jack can be switched off in Settings; a switched-off jack gets
-  silence, never a different mix. Picking another output under **Monitoring
-  and output** in Settings turns this off, and that choice is remembered.
+  no mix, never a different one. It still plays the start and stop chirps
+  and the alarm siren, so switching everyone off cannot silence an alarm.
+  Picking another output under **Monitoring and output** in Settings turns
+  this off, and that choice is remembered. Picked during a take, the new
+  output takes over when you press Stop; until then everyone keeps hearing
+  the mix where they were, even if a microphone is plugged in or pulled out.
 
 - **Headphones first; the tracks are lined up afterwards.** Microphones and
   interfaces don't hand their sound over at the same moment: each has its
@@ -255,6 +259,31 @@ files really are empty and the card says so instead of calling it saved.
   the folder becomes `2026-08-27_1030_<name>`. Leaving it empty is fine.
 - **Spacebar** mutes and unmutes the headphones instantly. Recording is never
   affected by muting.
+- **The Mac sleeping (macOS).** Close the lid with the app open and, when the
+  Mac wakes, the app waits for your microphones and headphones to start again
+  rather than calling them unplugged. The same goes for the Mac waking with
+  the lid shut to back up or sync, for as long as that takes, and for a Mac
+  that is slow to fall asleep. One that still hasn't started, a few seconds
+  after the rest, is reported as usual. If the Mac sleeps during a take
+  (closing the lid on battery does that, whatever the app asks), the take
+  carries on when it wakes, with a gap where it slept, and the take's
+  `activity.log` and `session.json` say where.
+- **Something switching your headphones to another sample rate (macOS).**
+  Audio MIDI Setup, a music player or another audio app can change the
+  sample rate of the output your headphones are on. Between takes the app
+  switches it straight back and says so. During a take the recording carries
+  on, but you won't hear the mix in your headphones until you stop; the app
+  switches the output back when the take ends. The recording keeps time with
+  the cameras through the switch. At the smallest buffer size a moment of
+  sound can be lost as it happens; the take's card says so, and doesn't
+  blame your computer for it. If it is switched again
+  straight after the app put it back, the app stops fighting over it: the mix
+  stays off (recording still works) until the output is back at the app's
+  rate -- set it back in Audio MIDI Setup and the mix returns. A microphone
+  changing rate still stops the take, because its file would no longer match
+  its sound, and so does the SobStage device that plays the mix out of every
+  microphone's own jack, since its rate is theirs; the app sets it back when
+  the take ends.
 - **Help** is in the masthead beside Settings. If a meter is flat or a take
   came out silent, start there: it lists the causes in the order they actually
   turn up, with what to do about each.
@@ -275,6 +304,21 @@ files really are empty and the card says so instead of calling it saved.
   naming every file that was written, with its size, plus the backup copy's
   location and an **Open the folder** button. If the files came out empty it
   says so, and says to check the mute switches on the mics.
+- **Quitting asks before it costs you anything.** During a take, quitting
+  asks first (*Keep Recording* is the default). If the take it stops turns out
+  to have a problem — the card stopped answering, the files hold no sound, a
+  camera couldn't finish its movie — the app says so before it closes;
+  *Don't Quit* keeps it open and shows the take. If the combined video or the
+  podcast-ready copy is still being made, *Quit When Done* closes the app by
+  itself once it is finished, and says so meanwhile ("SobStage will quit once
+  it has finished the combined video.") on the line under the record button
+  — and at the foot of any card covering that line, such as the saved-take
+  card.
+  Quitting again while it waits asks again; only *Quit Now* cancels that file.
+  If SobStage is hidden or behind another app when you quit it from the Dock,
+  it comes to the front (or its Dock icon bounces) to ask. On a Mac, a Shut
+  Down, Restart or Log Out stops when SobStage asks a question: once SobStage
+  has closed, choose it again.
 
 ## Loudness — aiming at where the take is going
 
@@ -288,7 +332,8 @@ files really are empty and the card says so instead of calling it saved.
   to move and by how much. **After each take a ready-to-upload copy of the
   mix is saved beside it** ("MIX - Apple-Podcasts.wav"), turned to that
   loudness with its loudest peaks gently limited so they don't clip. The
-  stems and the original mix are never changed.
+  stems and the original mix are never changed. Renaming the take's folder in
+  Finder while the copy is being made is fine; the copy follows it.
 - **Mono needs a different number, and this is the part that catches people.**
   Every file this app writes is mono, and a mono file played through both
   speakers is the same signal twice — which measures **3 LU louder** than the
@@ -328,9 +373,11 @@ this feature works out for you.
 - On a Mac, a camera or capture card that sends only black (no signal, wrong
   input mode, or an HDCP-protected source) is named on its tile after about
   1.5 s, and an HDMI capture dongle is switched to a 30 fps mode when the one
-  picked by default is slower. A camera with a 4K mode that runs at 30 fps
-  (Continuity Camera, a 4K webcam, a USB 3 capture card) records in 4K; a
-  USB 2 capture dongle tops out at 1080p whatever its HDMI input accepts.
+  picked by default is slower. It is switched again each time it reopens (a
+  Quality change, or switching it off and on). A camera with a 4K mode that
+  runs at 30 fps (Continuity Camera, a 4K webcam, a USB 3 capture card)
+  records in 4K; a USB 2 capture dongle tops out at 1080p whatever its HDMI
+  input accepts.
 - **Quality, per camera** (Cameras panel): **Best (up to 4K)**, **1080p** or
   **720p (smaller files)**. Each camera row says what it is actually running at
   ("Running at 3840 x 2160, 30 fps"), and the free-space and card-speed checks
@@ -359,14 +406,30 @@ this feature works out for you.
   installing: SobStage uses macOS's own video tools. **On Windows it needs
   [ffmpeg](https://ffmpeg.org)**; if it is missing, the toggle says so before a
   take rather than after one.
+  The combined file is made after the take stops, and **never while the next
+  take records**: press Record while it is still being made and it stops,
+  deletes its unfinished copy, and starts again from the beginning once that
+  take is over, so the take has the card to itself. A card without room for
+  the combined file and 1 GB to spare doesn't get one; the line under the
+  record button says so. Renaming the take's folder in Finder while it is
+  being made is fine: the file ends up in the folder under its new name.
 - **A camera counts against the card's speed, not just its space.** §6.4 blocks
   arming when the card cannot sustain twice what the take needs; that figure now
   includes the video, because a card that keeps up with eight microphones can
   still be too slow once a camera is writing alongside them. Refusing before the
   take is the entire point — §6.4 says never degrade mid-take.
+- **Swapping cards between sets is noticed.** A Mac puts every card at
+  `/Volumes/<its name>`, so two cards with the same name (say, both formatted
+  in the same camera) land at the same save location. When the card there is
+  taken out or replaced, SobStage says so, and checks the new card's speed and
+  format and looks for interrupted takes on it before Record turns back on — a
+  FAT32 card no longer slips in on the last card's results and stops the
+  camera 4 GB into the show. Record also looks once more as you press it.
 - **Each camera says what it will write** — `Writes V01_Kitchen-Cam.mov`,
   under its name, updating as you rename it. Renaming is the moment you want to
-  know what the name does.
+  know what the name does. During a take it says `Recording to` the file it is
+  actually writing, and that name stays put if another camera is unplugged or
+  plugged in mid-take.
 - **Every camera plugged in records**, each to its own file for the whole
   take, without a trip to this panel first. Switching one off here is the
   exception, and that choice is remembered across an unplug and a relaunch.
@@ -410,6 +473,11 @@ recording remain part of the physical-hardware gate.
   movies in the take are counted on the card too, but nothing repairs them:
   a Mac's (`.mov`) plays up to its last ten-second fragment, and one from a
   Windows camera (`.wmv`) was not finished and may not open.
+  A take whose `session.json` can't be read at that moment — say a folder in
+  iCloud with "Optimize Mac Storage" on, opened without internet — is left
+  exactly as it is and checked again next launch; the activity list says how
+  many were skipped. It is never mistaken for an interrupted take, and its
+  details are never overwritten.
 
 <p align="center">
   <img src="images/recovered.png" alt="A card headed 'Recovered.' explaining that the app stopped before the take was finished, listing the session folder with '3 files, 4s of sound, and 1 empty file left alone', and buttons reading Done and Open the folder" width="660">

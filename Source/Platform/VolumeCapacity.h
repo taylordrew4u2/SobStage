@@ -5,6 +5,7 @@
 #include <string>
 
 #include "../Core/MirrorPolicy.h"
+#include "../Core/VolumeFingerprint.h"
 
 namespace mma {
 
@@ -42,5 +43,16 @@ std::optional<uint64_t> availableBytesForRecording (const std::string& path) noe
 /// Both fields empty when the system cannot say. Like the capacity query this
 /// can block on a disappearing volume.
 VolumeIdentity volumeIdentityOf (const std::string& path) noexcept;
+
+/// Which volume is mounted where `path` (UTF-8) points, for telling one card
+/// from another that took its place (see VolumeFingerprint). A path that is
+/// not there is answered for its nearest existing parent -- with the card out,
+/// the startup disk -- so a missing card reads as a different volume.
+///
+/// Mac: statfs's mount point, type and device, the volume UUID and size.
+/// Linux: the mount point found by st_dev, the filesystem type number, st_dev
+/// and the size. Windows: unknown. Can block on a disappearing volume like
+/// the queries above, so it is asked on a worker or under a deadline.
+VolumeFingerprint volumeFingerprintOf (const std::string& path) noexcept;
 
 } // namespace mma

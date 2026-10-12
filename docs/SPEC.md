@@ -107,9 +107,10 @@ The master's own crystal is part of what this measures. A gate that gives the ma
 ```
 Computer -> combined device (SobStage) -> every microphone's own headphone jack
 ```
-- **Default (macOS): everyone hears everything through their own microphone.** The monitor output is the combined device of §7 — the same "SobStage" other apps record from — so the one mix plays out of every microphone's headphone jack at once. Each person's jack can be switched off in Settings ("Who hears the mix in their headphones"); a switched-off jack gets silence, never a different mix.
+- **Default (macOS): everyone hears everything through their own microphone.** The monitor output is the combined device of §7 — the same "SobStage" other apps record from — so the one mix plays out of every microphone's headphone jack at once. Each person's jack can be switched off in Settings ("Who hears the mix in their headphones"); a switched-off jack gets no mix, never a different one. It still carries the app's own sounds (the start and stop chirps and the fault siren), so a rig with every jack switched off still hears an alarm.
 - The combined device is never hog-moded: other apps must still be able to record from it.
 - Picking any other output in Settings turns this off and remembers that choice; the priority order of §5.3 then applies as before. Where no combined device exists, or no microphone in it has a headphone jack, §5.3 applies.
+- During a take the headphone stream stays where it was opened until Stop, whatever output is picked meanwhile. While that stream is on the combined device, the combined device is not re-made until Stop either (a microphone plugged in or pulled, a rename, or macOS having removed it): re-making it under the take's mix would silence every jack for the rest of the take. This goes by the stream that is open, never by the output picked, and so do the per-jack gains, which follow every change in the combined device's layout.
 - Hardware with non-defeatable analog direct monitoring (§14.5) means a listener hears their own voice twice (0 ms analog + the mix). Accepted: the user asked for every mic's jack to carry the whole room.
 
 ### 5.3 Output device selection
@@ -127,6 +128,32 @@ If the selected output still refuses its real low-latency open, show the reason
 and reopen the microphones input-only under the software clock. Headphone
 monitoring is off, but recording remains available; an output failure must not
 become a recording-input failure.
+The same holds when another process changes the open output's nominal sample
+rate (an output with inputs of its own is not hogged, so any app can). Its
+callback is the clock every input is pulled on (§3.2), so it must not go on
+pulling at the new rate -- not even until the app's next look at its streams:
+it stops pulling on the platform's own notification of the change, before
+the new rate is read or anything decided, and the software clock takes over
+from the last block it pulled, so the take keeps wall-clock length and no
+ring backs up behind it. A notification that changed nothing costs the
+headphones only until the rate is read back. Between takes, reopen the rig at
+its own rate, which sets the output back; if it changes again within 30 s of
+that, stop using it as the clock (headphones silent, the software clock
+pulls) until it returns to the rig's rate, rather than fight over it.
+Mid-take, stop using it as the
+clock and carry the take on under the software clock with the headphones
+silent; Stop reopens it. Only an output that itself carries take audio -- the
+combined device, whose rate is its microphones', or a duplex mixer -- stops
+the take, as a microphone's rate change does (§2.2). Reports that arrive
+together (one change on the combined device is its output's and each
+microphone's) are all read before that stop, so the take stops once and the
+rig reopens once; none of them is applied to the streams Stop has just
+reopened, and an output switched with a microphone is put back by that
+reopen rather than set aside. Ring losses from the mismatch -- at the
+smallest buffers the rings can overflow in the moment before the software
+clock takes over -- are not counted toward §5.4's buffer ladder for 2 s from
+when the app first sees the output held, and a take reports them as the
+output's switch, not as the computer failing to keep up.
 ### 5.4 Latency budget — hard constraint
 Zero latency is not achievable in a software monitor path. The requirement is a budget.
 - **Target: under 6 ms** mic diaphragm to headphone, **measured by loopback at startup, not estimated.**
@@ -195,6 +222,19 @@ A novice losing track of their recording is a total product failure even when th
 - If internal space drops below 1 GB during recording, stop the mirror, keep the card write going, and note it in `session.json`. Do not interrupt the recording and do not show a modal.
 ### 6.4 Pre-flight
 Run on volume selection and again on arming; cache per volume ID with a 30-day expiry.
+- A result belongs to the volume it measured, not the path: a different card
+  can mount at the same `/Volumes/<name>`. Record the measured volume's identity
+  (mount point, filesystem type, device, volume UUID, size) with the result.
+  Between takes, the status worker reads the identity at the destination; when
+  a look begun after the result shows a different volume, or none, discard the
+  result and run the check and the interrupted-take scan again for whatever is
+  there. At arming, read the identity once more under the card deadline and
+  refuse if it differs.
+- Size tells volumes apart only for FAT and ExFAT, whose size is fixed when
+  formatted. A ZFS dataset, a network share or a FUSE mount reports a size that
+  moves while it stays mounted (ZFS counts the pool's free space), so for those
+  a changed size alone never makes it another volume; a different mount point,
+  type, device or UUID still does.
 - Run the filesystem work away from the window thread. Only one check for the
   current destination may publish; changing destinations abandons the old
   result, and launch, destination changes and shutdown never join the worker.
@@ -220,7 +260,11 @@ Run on volume selection and again on arming; cache per volume ID with a 30-day e
 ### 6.6 Crash and power loss
 - Update WAV headers every 5 seconds so an interrupted file remains playable to within 5 seconds of the cut.
 - On launch, scan the last-used card and the enabled mirror directory for
-  sessions lacking a stop timestamp. Run both scans away from the window thread;
+  sessions lacking a stop timestamp. A session record that could not be read
+  (it would not open, or delivered fewer bytes than its size, as a cloud-only
+  placeholder does offline) is not a missing stop timestamp: leave that folder
+  untouched and report it. One that was read and is empty or cut short is
+  treated as interrupted. Run both scans away from the window thread;
   they must never delay the first window, a destination change or shutdown.
   Discard an obsolete result if its destination changes while it is running.
 - Block recording until every required recovery scan succeeds. Failure to start
@@ -229,6 +273,7 @@ Run on volume selection and again on arming; cache per volume ID with a 30-day e
   before recording can begin.
 - Discard any recovered file containing under 1 second of audio; report it as empty rather than presenting an unplayable stub.
 - **Inhibit system sleep, screensaver, and display sleep for the duration of a recording.** A laptop sleeping mid-take is a common and total failure.
+- A Mac that sleeps anyway (its lid closed between takes, or on battery mid-take, which no assertion prevents) must not wake to a rig of "unplugged" devices. CoreAudio says nothing when a device stops calling its IOProc, so the backend calls a stream dead after 5 s without a callback; that watchdog runs on the host clock, which stops during sleep. Sleep itself is noticed by CLOCK_MONOTONIC_RAW (which counts through sleep and, unlike the time of day, is never stepped by a time sync) gaining on the host clock between polls, and the watchdog then waits until audio runs on any open device (the Mac fully awake, audio back on: not a dark wake with the lid shut) before giving every device its 5 s again. If nothing runs within a minute it resumes anyway, so a rig that never comes back is still reported. That minute counts only while the Mac says its audio is on (IOKit's system capabilities): a dark wake (Power Nap, a backup, iCloud, with the lid shut) can last minutes with the app polling and CoreAudio stopped, and none of it counts, however long it lasts. The watchdog is held the same way when it is about to call a device dead and the Mac says its audio is off with no sleep seen yet, which is the Mac on its way to sleep. The power manager is asked only then, never on an ordinary poll. Holding the watchdog is not silence about the sleep: once per sleep with the rig open the backend reports it, against no device, and a take running across it gets "The Mac went to sleep: this take has a gap here." in its session.json dropouts at that moment and a warning in activity.log, since its stems join the audio from before the sleep to the audio from after it. No microphone is marked dead and nothing is reopened for it; between takes nothing is said.
 - Monitor for thermal throttling and sustained CPU pressure above 80% for 30 seconds; warn before it causes dropouts.
 ---
 ## 7. App-facing device strategy

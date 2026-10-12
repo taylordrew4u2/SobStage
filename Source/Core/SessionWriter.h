@@ -136,6 +136,14 @@ private:
     std::string makePathForSplit (int index) const;
     bool openNewFile (int index);
 
+    /// Moves basePathNoExt into the folder the open file is in now, when that
+    /// is not the folder the take was opened in. The 3.9 GB roll-over builds
+    /// the next file's name from basePathNoExt, and every other write follows
+    /// a take folder renamed in Finder through the open file -- the roll-over
+    /// alone went back to the old path, found no folder there, and stopped the
+    /// take under "the card may be full".
+    void followFolderOf (const std::string& liveFilePath);
+
     /// RIFF chunks occupy an even number of bytes: an odd data chunk is
     /// followed by one pad byte its size does not count. Appended only when a
     /// file is finished (close, or the rollover to the next split) -- never

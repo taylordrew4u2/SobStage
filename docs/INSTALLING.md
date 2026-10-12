@@ -8,7 +8,7 @@ Downloads, checksum verification, per-platform installation, what each platform 
 [`CHANGELOG.md`](../CHANGELOG.md) lists what changed in each one and what is still
 missing.
 
-The source currently describes the **v1.13.25 release candidate**. It is not a
+The source currently describes the **v1.13.26 release candidate**. It is not a
 general-release claim: signing, artifact inspection and physical-hardware gates
 are tracked in [`RELEASE_CHECKLIST.md`](../RELEASE_CHECKLIST.md). For help, see
 [`SUPPORT.md`](../SUPPORT.md); data handling is documented in
@@ -34,7 +34,9 @@ Builds for macOS, Windows and Linux are produced by the
   commit.
 
 Each archive and the disk image contain the application, this README, `LICENSE`,
-`LICENSING.md`, `SUPPORT.md`, `PRIVACY.md` and the release checklist.
+`LICENSING.md`, `SUPPORT.md`, `PRIVACY.md` and the release checklist. In the
+disk image, everything after `LICENSE` is in a **More documents** folder, so no
+icon covers the install steps shown in its window.
 Tagged releases also carry `SobStage-<version>-source.zip`, containing the exact
 SobStage and pinned JUCE source revisions, and `SHA256SUMS` covering every
 download.
@@ -94,15 +96,15 @@ Step-by-step setup is in [Installing](#installing) below.
 
 ## What to expect on your platform
 
-This is the **v1.13.25 release candidate**. The recording engine is covered by
-878 unit tests plus capture and platform harnesses. What differs by platform is
+This is the **v1.13.26 release candidate**. The recording engine is covered by
+950 unit tests plus capture and platform harnesses. What differs by platform is
 how much of the *device* layer has been run against a live audio system and
 physical hardware.
 
 | Platform | Status | What this means for you |
 |---|---|---|
 | **Linux** | External-only policy and real ALSA API exercised; physical hardware unverified | The production build lists kernel ALSA cards only when sysfs proves they are removable. A separately compiled test binary admits file-backed virtual microphones so capture and hot-plug can run through ALSA in CI. Multi-input hardware, driver timing and real USB devices still require bench validation. Linux is an early-use build, not a v1 production target. |
-| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. An input HAL open now stops holding the UI after five seconds and quarantines late cleanup so a wedged USB interface cannot freeze launch or quit; the simulator also covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. An older v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a first-frame enqueue, but no visible non-black preview or completed camera recording has been verified for the v1.13.25 candidate. |
+| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. An input HAL open now stops holding the UI after five seconds and quarantines late cleanup so a wedged USB interface cannot freeze launch or quit; the simulator also covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. An older v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a first-frame enqueue, but no visible non-black preview or completed camera recording has been verified for the v1.13.26 candidate. |
 | **Windows** | WASAPI and external-only policy simulated; physical hardware unverified | Enumeration follows each endpoint into the Plug and Play device tree, requires an eligible wired branch plus positive removable capability and removal-policy evidence on the same node, and fails closed otherwise. Fixed/internal USB, known phone, Bluetooth, software and unknown sources are omitted in simulation. Exclusive-mode format negotiation, 16/24/32-bit conversion and the worker-thread handshake execute in CI. A real microphone, output device, driver timing and camera capture have not completed the hardware matrix. |
 
 The automated environment can exercise ALSA through virtual PCMs and the other
@@ -127,8 +129,9 @@ unsigned on Windows; the workflow signs and notarizes once the credentials in
 
 ### macOS
 
-1. Double-click `SobStage-macOS.dmg`. A window opens showing the app
-   and an arrow pointing at your **Applications** folder.
+1. Double-click `SobStage-macOS.dmg`. A window opens showing the app,
+   an arrow pointing at your **Applications** folder, and the Terminal
+   command for step 3.
 2. Drag the crying face onto **Applications**. That is the install.
 3. Open **Terminal** and run this once before first launch:
 
@@ -237,8 +240,10 @@ ID signed build keeps the permission across updates.
   destination-status polling use the same detached, one-at-a-time pattern, and
   a result for a destination you have since changed is ignored. The app
   benchmarks a new destination away from the window thread before enabling the
-  record button (§6.4). The benchmark measures the card once; whether that is
-  fast enough is decided fresh each time you reach for record, so switching a
+  record button (§6.4). The benchmark measures the card once (another card put
+  in at the same `/Volumes` name is a different card, and is measured afresh);
+  whether that is fast enough is decided fresh each time you reach for record,
+  so switching a
   camera on can block arming a card that was fine for the microphones alone —
   and the message says the cameras are what did it. A benchmark that cannot be
   started or completed blocks recording with an explanation; it cannot silently
