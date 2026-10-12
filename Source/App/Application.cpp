@@ -1891,12 +1891,15 @@ void Application::rescanDevices()
     // The rate change itself fires this notification, and reopening here --
     // which sets the rate back -- is the very tug-of-war setting it aside
     // ended. It comes back when it is back at the rig's rate, or the rig
-    // changes.
+    // changes. Nor is one held off the clock on the platform's word of a rate
+    // change that the poll has yet to read: the poll decides what happens to
+    // it.
     if (capture != nullptr && capture->isMonitoring()
         && ! lastStartedRigSignature.empty()
         && deadInputStreams.empty()
         && capture->getDevicesThatFailedToOpen().empty()
-        && (selectedOutputDeviceId.empty() || capture->hasOutputStream() || capture->isOutputAbandoned())
+        && (selectedOutputDeviceId.empty() || capture->hasOutputStream() || capture->isOutputAbandoned()
+            || capture->isOutputOffRate())
         && describeRig() == lastStartedRigSignature)
         return;
 
@@ -2303,7 +2306,7 @@ TakeHealth Application::snapshotTakeHealth() const
         health.samplesOverrun = capture->getWorstChannelOverrunThisTake();
         health.sampleRate = currentSampleRate;
         health.outputClockLost = capture->isOutputClockLost();
-        health.outputRateChanged = capture->isOutputAbandoned();
+        health.outputRateChanged = capture->isOutputAbandoned() || capture->isOutputOffRate();
         health.writerBehind = capture->getRingFillFraction() >= CapacityMonitor::kFillWarningFraction;
         health.mixOnly = capture->isMixOnly();
     }
@@ -5963,6 +5966,24 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         bool reopenStreams = false;
         bool outputRateChanged = false;
 
+        // §5.3/§5.4: the headphone output held off the clock on the
+        // platform's word of a rate change, since the last poll -- read
+        // before takeStreamFailures() reads the rate and may let it go. The
+        // software clock takes the rig over a moment after the output stops
+        // pulling, and what the rings lose in that moment, here or just after
+        // this poll, is the hand-over and not the computer missing a
+        // deadline. Counted, it was a third of the way to blaming the
+        // computer and raising the buffer.
+        {
+            const bool heldNow = capture != nullptr && capture->isOutputOffRate();
+
+            if (heldNow && ! outputWasOffRate)
+                outputRateHoldGraceUntilMs = juce::Time::getMillisecondCounterHiRes()
+                                           + TakeWatchdog::kOutputSwitchSeconds * 1000.0;
+
+            outputWasOffRate = heldNow;
+        }
+
         // §2.2: a take stopped for a rate change is stopped once, after the
         // whole batch has been read. Stopped inside the loop, Stop reopened
         // the rig there and then, and the rest of the batch was applied to the
@@ -6343,7 +6364,12 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         // once and every tick it lasts, and counted per event -- even capped
         // at three -- one stall was the whole trigger, and the ladder stepped
         // twice inside a second. §5.4's three are three separate occasions.
-        const bool stepped = eventsNow > reportedRingLossEvents && noteCallbackOverrun();
+        //
+        // Not while the headphone output is being handed over for a rate
+        // change (above): those losses are the hand-over's.
+        const bool handingOverForRate = juce::Time::getMillisecondCounterHiRes() < outputRateHoldGraceUntilMs;
+        const bool stepped = eventsNow > reportedRingLossEvents && ! handingOverForRate
+                          && noteCallbackOverrun();
         reportedRingLossEvents = eventsNow;
 
         if (stepped)

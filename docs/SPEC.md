@@ -130,10 +130,16 @@ become a recording-input failure.
 The same holds when another process changes the open output's nominal sample
 rate (an output with inputs of its own is not hogged, so any app can). Its
 callback is the clock every input is pulled on (§3.2), so it must not go on
-pulling at the new rate. Between takes, reopen the rig at its own rate, which
-sets the output back; if it changes again within 30 s of that, stop using it
-as the clock (headphones silent, the software clock pulls) until it returns
-to the rig's rate, rather than fight over it. Mid-take, stop using it as the
+pulling at the new rate -- not even until the app's next look at its streams:
+it stops pulling on the platform's own notification of the change, before
+the new rate is read or anything decided, and the software clock takes over
+from the last block it pulled, so the take keeps wall-clock length and no
+ring backs up behind it. A notification that changed nothing costs the
+headphones only until the rate is read back. Between takes, reopen the rig at
+its own rate, which sets the output back; if it changes again within 30 s of
+that, stop using it as the clock (headphones silent, the software clock
+pulls) until it returns to the rig's rate, rather than fight over it.
+Mid-take, stop using it as the
 clock and carry the take on under the software clock with the headphones
 silent; Stop reopens it. Only an output that itself carries take audio -- the
 combined device, whose rate is its microphones', or a duplex mixer -- stops
@@ -142,8 +148,11 @@ together (one change on the combined device is its output's and each
 microphone's) are all read before that stop, so the take stops once and the
 rig reopens once; none of them is applied to the streams Stop has just
 reopened, and an output switched with a microphone is put back by that
-reopen rather than set aside. Ring losses from the mismatch are not counted
-toward §5.4's buffer ladder.
+reopen rather than set aside. Ring losses from the mismatch -- at the
+smallest buffers the rings can overflow in the moment before the software
+clock takes over -- are not counted toward §5.4's buffer ladder for 2 s from
+when the app first sees the output held, and a take reports them as the
+output's switch, not as the computer failing to keep up.
 ### 5.4 Latency budget — hard constraint
 Zero latency is not achievable in a software monitor path. The requirement is a budget.
 - **Target: under 6 ms** mic diaphragm to headphone, **measured by loopback at startup, not estimated.**

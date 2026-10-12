@@ -64,6 +64,7 @@ public:
     int getOutputPresentationLatencyFrames() const override;
     int getInputLatencyFrames (const std::string& deviceId) const override;
     uint64_t getOutputGlitchCount() const override;
+    bool isOutputOffRate() const noexcept override { return outputOffRate->load(); }
 
 private:
     // Open streams, each owning its IOProc registration. Held as pointers so
@@ -101,6 +102,12 @@ private:
     std::string lastOpenError;
 
     std::string hotplugProblem;
+
+    /// isOutputOffRate(): raised by the open output's nominal-rate listener
+    /// on the HAL's word, lowered by takeStreamFailures() when it reads the
+    /// stream's rate back, and on close. Shared with that output's stream
+    /// (CoreAudioStream::outputOffRate), which can outlive this backend.
+    std::shared_ptr<std::atomic<bool>> outputOffRate = std::make_shared<std::atomic<bool>> (false);
 
     /// A device that would not take the requested buffer size. Not a failure --
     /// the stream opens and records -- but the extra latency was invisible.

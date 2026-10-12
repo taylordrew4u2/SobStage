@@ -413,6 +413,23 @@ public:
     /// on a platform that does not report it.
     virtual int getInputLatencyFrames (const std::string& /*deviceId*/) const { return 0; }
 
+    /// §5.3: true from the moment the platform says the open monitor output's
+    /// device changed its nominal sample rate until the backend has read it
+    /// back at the rate the stream was opened at, or the stream has closed.
+    /// Its callback keeps coming meanwhile, at a rate the rig is not running
+    /// at, so the owner must not let it pull anything: it was the clock every
+    /// microphone is pulled on, and in the half second before the app's next
+    /// poll read the report it pulled every ring at the other app's rate --
+    /// every track short against the wall clock and the cameras for the rest
+    /// of the take, and every ring left full for the buffer ladder to blame on
+    /// the computer.
+    ///
+    /// Raised on the platform's notification alone, before anyone has read
+    /// the new rate; a notification that changed nothing costs the
+    /// headphones until that read. Any thread, real-time safe: the output
+    /// callback asks it. False where the platform cannot say.
+    virtual bool isOutputOffRate() const noexcept { return false; }
+
     /// Empty unless this backend cannot watch for microphones being plugged in
     /// or pulled out. Then it says so in the user's words: nothing about the
     /// rig will be noticed until the app is restarted, and §6.5's mid-take

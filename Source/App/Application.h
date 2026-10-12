@@ -851,6 +851,13 @@ private:
     double outputRateReopenedAtMs = 0.0;
     std::string outputRateReopenedFor;
 
+    // Until when the rings' losses are put down to the headphone output being
+    // handed over to the software clock for a rate change, not to the
+    // computer (§5.4's ladder does not count them), and whether the last
+    // poll saw it held off the clock -- the grace starts when it is first seen.
+    double outputRateHoldGraceUntilMs = 0.0;
+    bool outputWasOffRate = false;
+
     // Whether the mirror was still writing when this take was stopped, sampled
     // before stopRecording() tears the pipeline down. Read after, isMirroring()
     // is always false, so every finished take claimed its backup never ran --

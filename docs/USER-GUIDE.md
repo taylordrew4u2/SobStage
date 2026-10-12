@@ -271,7 +271,10 @@ files really are empty and the card says so instead of calling it saved.
   sample rate of the output your headphones are on. Between takes the app
   switches it straight back and says so. During a take the recording carries
   on, but you won't hear the mix in your headphones until you stop; the app
-  switches the output back when the take ends. If it is switched again
+  switches the output back when the take ends. The recording keeps time with
+  the cameras through the switch. At the smallest buffer size a moment of
+  sound can be lost as it happens; the take's card says so, and doesn't
+  blame your computer for it. If it is switched again
   straight after the app put it back, the app stops fighting over it: the mix
   stays off (recording still works) until the output is back at the app's
   rate -- set it back in Audio MIDI Setup and the mix returns. A microphone

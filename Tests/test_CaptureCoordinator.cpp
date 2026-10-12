@@ -127,6 +127,11 @@ public:
     std::string getLastOpenError() const override { return inputOpenError; }
 
     void closeAllStreams() override { ++closeAllCalls; }
+
+    /// The platform's word that the output's rate has changed, as CoreAudio's
+    /// nominal-rate listener raises it: before any poll has read the report.
+    std::atomic<bool> outputOffRate { false };
+    bool isOutputOffRate() const noexcept override { return outputOffRate.load(); }
 };
 
 std::vector<CaptureChannel> twoMics()
@@ -3343,6 +3348,184 @@ TEST_CASE (CaptureCoordinator_AnOutputSwitchedToAnotherRateStopsClockingTheTake)
     REQUIRE_FALSE (c.isOutputAbandoned());
     REQUIRE (c.hasOutputStream());
     REQUIRE (c.getMonitorProblem().empty());
+    c.stopMonitoring();
+}
+
+TEST_CASE (CaptureCoordinator_AnOutputStopsClockingTheTakeOnThePlatformsWordOfARateChange)
+{
+    // Another app switches the headphone output to 44.1 kHz mid-take. The
+    // app hears of it on its next poll, up to half a second later; until then
+    // the output's callback went on pulling every microphone at its new rate
+    // -- 59 frames a period where each microphone delivered 64. Set aside at
+    // the poll, the software clock picked up from that callback, a moment
+    // old, owing nothing: the shortfall was never pulled, so every track ran
+    // that much short of the wall clock and the cameras for the rest of the
+    // take, and every ring was left full for the drift loop to drain over
+    // minutes, overflowing -- counted against the computer -- meanwhile.
+    //
+    // The platform's word (the backend's rate listener) now holds the output
+    // off the clock at once, before any poll: it pulls nothing, and the
+    // software clock takes over from the last block it really pulled.
+    const auto dir = tempDir();
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.startRecording (dir, 16, "2026-09-07T00:00:00Z"));
+
+    std::vector<float> a (64, 0.5f), outL (64, 0.0f);
+    const float* ins[] = { a.data() };
+    float* outs[] = { outL.data() };
+
+    const auto driveWithTheOutput = [&] (int blocks, int outputFrames)
+    {
+        for (int i = 0; i < blocks; ++i)
+        {
+            backend.inputCallbacks[0] (ins, 1, nullptr, 0, 64);
+            backend.inputCallbacks[1] (ins, 1, nullptr, 0, 64);
+            std::fill (outL.begin(), outL.end(), 0.25f);
+            backend.outputCallback (nullptr, 0, outs, 1, outputFrames);
+            std::this_thread::sleep_for (std::chrono::microseconds (1333));
+        }
+    };
+
+    // Whether every ring is down near its target fill (an eighth) at some
+    // point over a few more blocks: a ring backed up behind an output pulling
+    // slow stays pinned near full, while one a busy machine's scheduling
+    // briefly fills comes straight back down.
+    const auto ringsAreWhereTheyWere = [&]
+    {
+        double lowest[2] = { 1.0, 1.0 };
+
+        for (int i = 0; i < 20; ++i)
+        {
+            driveWithTheOutput (1, backend.outputOffRate.load() ? 59 : 64);
+            for (int ch = 0; ch < 2; ++ch)
+                lowest[ch] = std::min (lowest[ch], c.getChannelFillFraction (ch));
+        }
+
+        for (int ch = 0; ch < 2; ++ch)
+            if (lowest[ch] >= 0.5)
+            {
+                std::printf ("  channel %d's ring stayed at least %.0f%% full\n", ch, lowest[ch] * 100.0);
+                return false;
+            }
+        return true;
+    };
+
+    driveWithTheOutput (100, 64);
+    REQUIRE (c.hasOutputStream());
+    REQUIRE_FALSE (c.isOutputOffRate());
+    REQUIRE (ringsAreWhereTheyWere());
+
+    const auto before = c.getFramesAccepted();
+    const auto started = std::chrono::steady_clock::now();
+    const uint64_t overrunBefore[2] = { c.getChannelOverrunSamples (0), c.getChannelOverrunSamples (1) };
+
+    // The listener's word. Nothing has read the new rate yet, and the app
+    // has decided nothing.
+    backend.outputOffRate = true;
+
+    // At once: the app's own sounds go another way.
+    REQUIRE (c.isOutputOffRate());
+    REQUIRE_FALSE (c.hasOutputStream());
+    REQUIRE_FALSE (c.isOutputAbandoned());
+
+    // Half a second, the longest the poll can take to come round: the
+    // microphones at 48 kHz, the output calling back at 44.1 kHz's pace.
+    driveWithTheOutput (375, 59);
+
+    // The output pulled nothing at its new rate -- it was handed silence --
+    // and the software clock is pulling instead...
+    for (size_t i = 0; i < 59; ++i)
+        REQUIRE (outL[i] == 0.0f);
+    REQUIRE (c.isOutputClockLost());
+
+    // ...so no ring backed up behind it...
+    REQUIRE (ringsAreWhereTheyWere());
+
+    // ...and the software clock took over on that same word, not a stale
+    // window later: waiting for the output's stamp to go stale left a tenth
+    // of a second with nothing pulling, most of it overflowing every ring.
+    // The ring's own headroom covers the clock's next look at the smallest
+    // buffer, all but a few milliseconds; this allows for a busy machine.
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        const auto lost = c.getChannelOverrunSamples (ch) - overrunBefore[ch];
+        if (lost >= 48000 * 40 / 1000)
+            std::printf ("  channel %d lost %llu samples over the hand-over\n", ch, (unsigned long long) lost);
+        REQUIRE (lost < 48000 * 40 / 1000);
+    }
+
+    // The poll reads the report and sets the output aside for the take.
+    REQUIRE (c.abandonOutputClock ("Your sound output changed to 44.1 kHz while SobStage is using 48 kHz."));
+    driveWithTheOutput (75, 59);
+    REQUIRE (ringsAreWhereTheyWere());
+
+    // The take is as long as the wall clock says, from the moment of the
+    // switch: nothing short, nothing pulled twice.
+    {
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        const auto accepted = static_cast<int64_t> (c.getFramesAccepted() - before);
+        const auto wallFrames = static_cast<int64_t> (
+            std::chrono::duration<double> (elapsed).count() * 48000.0);
+
+        // The same scheduling slack as the clock-loss test above.
+        constexpr int64_t kTolerance = 48000 * 60 / 1000;
+
+        if (std::llabs (accepted - wallFrames) > kTolerance)
+            std::printf ("  across the switch: accepted %lld frames in %lld frames of wall time\n",
+                         (long long) accepted, (long long) wallFrames);
+
+        REQUIRE (accepted >= wallFrames - kTolerance);
+        REQUIRE (accepted <= wallFrames + kTolerance);
+    }
+
+    c.stopRecording();
+    c.stopMonitoring();
+}
+
+TEST_CASE (CaptureCoordinator_AnOutputBackAtItsRateBeforeThePollClocksTheRigAgain)
+{
+    // Switched away and straight back inside one poll -- or the platform
+    // telling of a change that changed nothing. The backend reads the rate
+    // back as the stream's and lets go; nothing set the output aside, so it
+    // is the clock again and the headphones hear the mix.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    std::vector<float> a (64, 0.5f), outL (64, 0.0f);
+    const float* ins[] = { a.data() };
+    float* outs[] = { outL.data() };
+
+    const auto drive = [&] (int blocks)
+    {
+        for (int i = 0; i < blocks; ++i)
+        {
+            backend.inputCallbacks[0] (ins, 1, nullptr, 0, 64);
+            backend.inputCallbacks[1] (ins, 1, nullptr, 0, 64);
+            backend.outputCallback (nullptr, 0, outs, 1, 64);
+            std::this_thread::sleep_for (std::chrono::microseconds (1333));
+        }
+    };
+
+    drive (50);
+    REQUIRE (c.hasOutputStream());
+
+    backend.outputOffRate = true;
+    drive (60);
+    REQUIRE (c.isOutputClockLost());
+    REQUIRE_FALSE (c.hasOutputStream());
+
+    backend.outputOffRate = false;
+    drive (60);
+    REQUIRE_FALSE (c.isOutputOffRate());
+    REQUIRE_FALSE (c.isOutputClockLost());
+    REQUIRE (c.hasOutputStream());
+    REQUIRE_FALSE (c.isOutputAbandoned());
+    REQUIRE (c.getMonitorProblem().empty());
+
     c.stopMonitoring();
 }
 

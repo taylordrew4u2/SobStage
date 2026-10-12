@@ -233,11 +233,25 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
                                                        float* const* outputs, int numOutputs,
                                                        int numSamples)
     {
-        // Set aside (abandonOutputClock): this device is calling back at a
-        // rate the rig is not running at, and the software clock is pulling.
-        // Silence, before the stamp, so the takeover's catch-up starts from
-        // the last block this callback actually pulled.
-        if (outputAbandoned.load (std::memory_order_acquire))
+        // Set aside (abandonOutputClock), or the platform has just said this
+        // device changed its rate and the app has yet to hear of it
+        // (IAudioBackend::isOutputOffRate): either way it is calling back at
+        // a rate the rig is not running at, and the software clock is
+        // pulling. Silence, before the stamp, so the takeover's catch-up
+        // starts from the last block this callback actually pulled.
+        //
+        // The backend's word is taken before the app's: in the half second
+        // until the app's next poll, this callback went on pulling every
+        // microphone at the other rate. That shortfall was never pulled back
+        // -- the takeover started from a callback a moment old -- so every
+        // track ran that much short of the wall clock and the cameras for
+        // the rest of the take, with every ring left full behind it.
+        //
+        // A mixer whose microphones come in on this callback goes quiet with
+        // it for that moment. Their rate is the output's, so their audio is
+        // no longer the take's format either, and the take stops for them
+        // (OutputRateChangeAction::stopTake).
+        if (outputAbandoned.load (std::memory_order_acquire) || backend.isOutputOffRate())
         {
             for (int ch = 0; ch < numOutputs; ++ch)
                 if (outputs != nullptr && outputs[ch] != nullptr)
@@ -541,8 +555,13 @@ void CaptureCoordinator::runSoftwareClock()
         const auto now = clock::now();
 
         // An abandoned output goes on calling back -- at the wrong rate -- so
-        // its stamp never goes stale; the flag is the only way to know.
-        bool takeOver = ! outputStreamOpen || outputAbandoned.load (std::memory_order_acquire);
+        // its stamp never goes stale; the flag is the only way to know. One
+        // the platform has just said changed rate is taken over from the
+        // same word, at this look rather than a stale window later: its
+        // callback has stopped pulling, and the rings would back up behind
+        // it for a tenth of a second.
+        bool takeOver = ! outputStreamOpen || outputAbandoned.load (std::memory_order_acquire)
+                     || backend.isOutputOffRate();
 
         if (! takeOver)
         {

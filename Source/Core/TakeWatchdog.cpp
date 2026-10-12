@@ -10,6 +10,8 @@ void TakeWatchdog::beginTake (const TakeHealth& baseline)
     warnedTwoMinutes = false;
     droppedReported = false;
     droppedReportedAt = 0.0;
+    outputSwitchedAt = -1.0;
+    outputSwitchLossReported = false;
     lostCamerasThisTake.clear();
 }
 
@@ -118,7 +120,33 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
     else if (! now.outputClockLost && last.outputClockLost)
         alerts.push_back ({ TakeAlert::Kind::OutputBack, "The headphone output is back.", true });
 
-    if (now.framesDropped > last.framesDropped || now.samplesOverrun > last.samplesOverrun)
+    // The headphone output held off the clock for a rate change: the rings
+    // can lose a moment of sound while the software clock takes the rig over
+    // from it. That is the switch, not this computer failing to keep up, and
+    // "Close other apps" would send the user after the wrong thing.
+    if (now.outputRateChanged && ! last.outputRateChanged)
+    {
+        outputSwitchedAt = now.elapsedSeconds;
+        outputSwitchLossReported = false;
+    }
+
+    const bool ringsLost = now.samplesOverrun > last.samplesOverrun;
+    const bool writerDropped = now.framesDropped > last.framesDropped;
+    const bool aroundOutputSwitch = outputSwitchedAt >= 0.0
+                                 && now.elapsedSeconds - outputSwitchedAt <= kOutputSwitchSeconds;
+
+    if (ringsLost && ! writerDropped && aroundOutputSwitch)
+    {
+        if (! outputSwitchLossReported)
+        {
+            alerts.push_back ({ TakeAlert::Kind::AudioDropped,
+                                "A moment of sound was dropped as your sound output changed rate. "
+                                "The take carries on.",
+                                false });
+            outputSwitchLossReported = true;
+        }
+    }
+    else if (writerDropped || ringsLost)
     {
         const bool due = ! droppedReported
                       || now.elapsedSeconds - droppedReportedAt >= kDroppedRepeatSeconds;

@@ -993,6 +993,9 @@ void aLiveSampleRateChangeIsReportedAndReenumerated()
 
     check (deviceChanges == 1,
            "the property event is bridged into the ordinary re-enumeration callback");
+    check (! backend.isOutputOffRate(),
+           "a microphone's rate change does not hold an output off the clock: there is none, and "
+           "the take's own format is what changed");
     check (backend.takeStreamFailures().empty(),
            "an unchanged mismatch is not repeated on every status poll");
 
@@ -1039,9 +1042,16 @@ void aLiveOutputRateChangeIsReportedAsTheOutputsAndSoIsItsReturn()
 
     check (backend.openExclusiveOutputStream ("uid-rate-out", 48000.0, 256, silent),
            "the output opens at 48 kHz");
+    check (! backend.isOutputOffRate(), "a new output is the rig's clock");
 
     check (fakeca::setNominalRateExternally (id, 44100.0),
            "another app switches the output to 44.1 kHz");
+
+    // The app's next poll can be half a second away, and the output's
+    // callback -- the clock every microphone is pulled on -- runs at the new
+    // rate meanwhile. It is held off the clock on the listener's word alone.
+    check (backend.isOutputOffRate(),
+           "the output is held off the clock the moment the device says its rate changed, before any poll");
 
     const auto changed = backend.takeStreamFailures();
     check (changed.size() == 1, "the change is reported on the next message-thread poll");
@@ -1061,11 +1071,15 @@ void aLiveOutputRateChangeIsReportedAsTheOutputsAndSoIsItsReturn()
     }
 
     check (deviceChanges == 1, "the change is still bridged into re-enumeration");
+    check (backend.isOutputOffRate(), "read at the other rate, it stays held off the clock");
     check (backend.takeStreamFailures().empty(), "an unchanged switch is not repeated on every poll");
+    check (backend.isOutputOffRate(), "and stays held while it is at that rate");
 
     fakeca::setNominalRateExternally (id, 48000.0);
+    check (backend.isOutputOffRate(), "back at 48 kHz, it is held until a poll has read the rate");
     const auto back = backend.takeStreamFailures();
     check (back.size() == 1, "its return to the stream's rate is reported");
+    check (! backend.isOutputOffRate(), "and, read back at the stream's rate, it may clock the rig again");
 
     if (! back.empty())
     {
@@ -1078,12 +1092,35 @@ void aLiveOutputRateChangeIsReportedAsTheOutputsAndSoIsItsReturn()
 
     check (backend.takeStreamFailures().empty(), "and only once");
 
+    // The device telling of a change that changed nothing -- the notification
+    // of SobStage's own rate set arriving late, or a switch away and back
+    // inside one poll. Held until the poll reads the rate, then let go
+    // without a word, and without re-enumerating the devices: that ran while
+    // the software clock was still handing the rig back to the output, which
+    // then looked lost, and every stream was reopened for it.
+    const int changesBeforeNothing = deviceChanges;
+    fakeca::setNominalRateExternally (id, 48000.0);
+    check (backend.isOutputOffRate(), "a notification that changed nothing still holds the output until read");
+    check (backend.takeStreamFailures().empty(), "read at the stream's rate, it is not news");
+    check (! backend.isOutputOffRate(), "and the output is the clock again");
+    check (deviceChanges == changesBeforeNothing, "nor is the device list read again for it");
+
     fakeca::setNominalRateExternally (id, 44100.0);
     check (backend.takeStreamFailures().size() == 1, "a later switch is reported again");
+    check (backend.isOutputOffRate(), "and held off the clock again");
 
     backend.closeAllStreams();
     check (fakeca::propertyListenerCount (id) == 0,
            "closing the stream removes every per-device listener");
+    check (! backend.isOutputOffRate(), "with no output open, nothing is held off the clock");
+
+    // A new output on the same backend starts as the clock, whatever the last
+    // one's rate was doing.
+    fakeca::setNominalRateExternally (id, 48000.0);
+    check (backend.openExclusiveOutputStream ("uid-rate-out", 48000.0, 256, silent),
+           "the output opens again");
+    check (! backend.isOutputOffRate(), "and is the rig's clock");
+    backend.closeAllStreams();
 }
 
 /// H11: kAudioDevicePropertyDeviceIsAlive reaches the backend before the

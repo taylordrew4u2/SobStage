@@ -382,6 +382,106 @@ TEST_CASE (TakeWatchdog_AnOutputSetAsideForARateChangeIsSaidOnceInItsOwnWords)
     REQUIRE (w.observe (now).empty());
 }
 
+TEST_CASE (TakeWatchdog_SoundLostAsTheOutputChangesRateIsPutDownToTheSwitch)
+{
+    // Another app switches the headphone output's rate mid-take. The output
+    // is held off the clock at once and the software clock takes the rig
+    // over a moment later; at the smallest buffer the rings can overflow in
+    // that moment. That is the switch, not the computer: "could not keep up
+    // ... Close other apps" sent the user after the wrong thing.
+    TakeWatchdog w;
+    auto start = healthyRig();
+    start.elapsedSeconds = 0.0;
+    w.beginTake (start);
+
+    auto now = start;
+    now.elapsedSeconds = 10.0;
+    now.outputClockLost = true;
+    now.outputRateChanged = true;
+    now.samplesOverrun = 300;
+
+    auto alerts = w.observe (now);
+    REQUIRE (has (alerts, TakeAlert::Kind::AudioDropped));
+    for (const auto& a : alerts)
+        if (a.kind == TakeAlert::Kind::AudioDropped)
+        {
+            REQUIRE (a.message.find ("sound output changed rate") != std::string::npos);
+            REQUIRE (a.message.find ("could not keep up") == std::string::npos);
+            REQUIRE (a.message.find ("Close other apps") == std::string::npos);
+            REQUIRE_FALSE (a.recovery);
+        }
+
+    // A tick later, still the switch: said once.
+    now.elapsedSeconds = 10.5;
+    now.samplesOverrun = 400;
+    REQUIRE_FALSE (has (w.observe (now), TakeAlert::Kind::AudioDropped));
+
+    // Long after, with the output still set aside, a ring losing sound is
+    // the computer again -- said in the words it always was, as the first.
+    now.elapsedSeconds = 30.0;
+    now.samplesOverrun = 900;
+    alerts = w.observe (now);
+    REQUIRE (has (alerts, TakeAlert::Kind::AudioDropped));
+    for (const auto& a : alerts)
+        if (a.kind == TakeAlert::Kind::AudioDropped)
+            REQUIRE (a.message.find ("could not keep up") != std::string::npos);
+}
+
+TEST_CASE (TakeWatchdog_TheSwitchCoversTheTickAfterItAndNotTheDrive)
+{
+    // The hold is seen on one tick and the rings' loss on the next.
+    TakeWatchdog w;
+    auto start = healthyRig();
+    w.beginTake (start);
+
+    auto now = start;
+    now.elapsedSeconds = 5.0;
+    now.outputClockLost = true;
+    now.outputRateChanged = true;
+    REQUIRE_FALSE (has (w.observe (now), TakeAlert::Kind::AudioDropped));
+
+    now.elapsedSeconds = 5.5;
+    now.samplesOverrun = 200;
+    auto alerts = w.observe (now);
+    REQUIRE (has (alerts, TakeAlert::Kind::AudioDropped));
+    for (const auto& a : alerts)
+        if (a.kind == TakeAlert::Kind::AudioDropped)
+            REQUIRE (a.message.find ("sound output changed rate") != std::string::npos);
+
+    // The drive dropping frames in the same window is the drive's, not the
+    // switch's, even with the rings losing some too, and is said as it
+    // always was.
+    TakeWatchdog d;
+    d.beginTake (start);
+    auto drive = start;
+    drive.elapsedSeconds = 5.0;
+    drive.outputClockLost = true;
+    drive.outputRateChanged = true;
+    drive.framesDropped = 480;
+    drive.samplesOverrun = 100;
+    alerts = d.observe (drive);
+    REQUIRE (has (alerts, TakeAlert::Kind::AudioDropped));
+    for (const auto& a : alerts)
+        if (a.kind == TakeAlert::Kind::AudioDropped)
+            REQUIRE (a.message.find ("could not keep up") != std::string::npos);
+
+    // An output already set aside when the take started switched nothing
+    // during it.
+    TakeWatchdog e;
+    auto asideAtStart = start;
+    asideAtStart.outputClockLost = true;
+    asideAtStart.outputRateChanged = true;
+    e.beginTake (asideAtStart);
+    auto later = asideAtStart;
+    later.elapsedSeconds = 1.0;
+    later.samplesOverrun = 100;
+    alerts = e.observe (later);
+    REQUIRE (has (alerts, TakeAlert::Kind::AudioDropped));
+    for (const auto& a : alerts)
+        if (a.kind == TakeAlert::Kind::AudioDropped)
+            REQUIRE (a.message.find ("could not keep up") != std::string::npos);
+}
+
 TEST_CASE (TakeWatchdog_RingOverrunsCountAsDroppedAudio)
 {
     TakeWatchdog w;

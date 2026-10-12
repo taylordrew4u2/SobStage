@@ -482,6 +482,14 @@ if (MMA_BUILD_APP)
             -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckRateChangeStopAfterBatch.cmake)
 
+    # The headphone output held off the clock on the platform's word of a
+    # rate change: neither lost to the rescan nor the computer's fault to the
+    # take's health and the buffer ladder.
+    add_test(NAME output_rate_hold
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckOutputRateHold.cmake)
+
     # A rig with no microphone open is retried from the status poll; the
     # policy is unit-tested, this pins that the poll runs it.
     add_test(NAME failed_open_retry_poll

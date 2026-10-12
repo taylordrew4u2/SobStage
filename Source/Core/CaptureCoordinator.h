@@ -306,8 +306,15 @@ public:
     /// app's own sounds must go another way until the output returns.
     bool hasOutputStream() const noexcept
     {
-        return outputStreamOpen && ! isOutputClockLost() && ! isOutputAbandoned();
+        return outputStreamOpen && ! isOutputClockLost() && ! isOutputAbandoned() && ! isOutputOffRate();
     }
+
+    /// §5.3: the platform has said the open output's device changed its
+    /// sample rate, and has not yet read it back at the rig's
+    /// (IAudioBackend::isOutputOffRate). Its callback pulls nothing and the
+    /// software clock pulls instead, from that word alone, before the app
+    /// has decided anything; abandonOutputClock() then makes it for good.
+    bool isOutputOffRate() const noexcept { return outputStreamOpen && backend.isOutputOffRate(); }
 
     /// §5.3: stops using the open output as the rig's clock, for good, until
     /// the next startMonitoring(). Its callback fills silence and pulls

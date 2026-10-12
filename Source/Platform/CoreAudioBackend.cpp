@@ -102,6 +102,16 @@ struct CoreAudioStream
     std::atomic<bool> deviceAliveCheckPending { false };
     std::atomic<uint64_t> processorOverloads { 0 };
 
+    // The monitor output only: the backend's IAudioBackend::isOutputOffRate()
+    // flag, raised by the nominal-rate listener the moment the device says its
+    // rate changed and lowered by takeStreamFailures() once it reads the
+    // stream's own rate back. Shared rather than pointing into the backend,
+    // because a stream whose driver will not let go of it outlives the
+    // backend (retainInertStream); its callback gate is closed by then, so
+    // nothing writes through it, but the pointer stays valid regardless.
+    // Null on an input stream.
+    std::shared_ptr<std::atomic<bool>> outputOffRate;
+
     // Message-thread reporting latches. A rate mismatch or dead device is said
     // once until it recovers; overloads are reported whenever the count rises.
     bool sampleRateMismatchReported = false;
@@ -681,7 +691,20 @@ OSStatus streamPropertyChanged (AudioObjectID, UInt32 numAddresses,
         switch (addresses[i].mSelector)
         {
             case kAudioDevicePropertyNominalSampleRate:
-                stream->nominalRateCheckPending.store (true, std::memory_order_relaxed);
+                // Pending before the hold below, both sequentially consistent,
+                // so takeStreamFailures() -- which lowers the hold and then
+                // looks at pending -- can never lower a hold this
+                // notification raised without seeing it pending.
+                stream->nominalRateCheckPending.store (true);
+
+                // §5.3: the headphone output's callback is the clock every
+                // microphone is pulled on, and from this moment it may be
+                // calling back at another rate. Held off the clock now, not
+                // at the app's next poll up to half a second later, by which
+                // time it had pulled every ring at that rate. An atomic
+                // store, which is all this listener may do.
+                if (stream->outputOffRate != nullptr)
+                    stream->outputOffRate->store (true);
                 break;
 
             case kAudioDevicePropertyDeviceIsAlive:
@@ -1968,6 +1991,14 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     stream->expectedSampleRate = sampleRate;
     stream->isOutput = isOutput;
 
+    // A new output starts as the clock. Its listener is installed only after
+    // its rate has been set, so a hold raised from here on is about it.
+    if (isOutput)
+    {
+        outputOffRate->store (false);
+        stream->outputOffRate = outputOffRate;
+    }
+
     struct Attempt
     {
         std::mutex mutex;
@@ -2223,12 +2254,39 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
             }
         }
 
-        if (stream->nominalRateCheckPending.exchange (false, std::memory_order_relaxed))
+        if (stream->nominalRateCheckPending.exchange (false))
         {
-            devicePropertiesChanged = true;
             const double actualRate = getNominalSampleRate (stream->deviceId);
             const bool mismatched = actualRate > 0.0
                                  && std::abs (actualRate - stream->expectedSampleRate) >= 1.0;
+
+            // Handed to re-enumeration unless this is the monitor output
+            // found at its own rate with no change of its reported: nothing
+            // the rig is built from has moved then. That re-enumeration ran
+            // a moment after the hold below was lowered, while the software
+            // clock was still handing the rig back to the output -- the
+            // output looked lost, and the app reopened every stream for it.
+            if (! stream->isOutput || mismatched || stream->sampleRateMismatchReported)
+                devicePropertiesChanged = true;
+
+            if (stream->outputOffRate != nullptr)
+            {
+                if (mismatched)
+                {
+                    stream->outputOffRate->store (true);
+                }
+                else
+                {
+                    // Back at the stream's rate (or it never left): the
+                    // output may clock the rig again. Unless the device has
+                    // said something since the read above -- that is the
+                    // next poll's to read, and the hold stands until then.
+                    stream->outputOffRate->store (false);
+
+                    if (stream->nominalRateCheckPending.load())
+                        stream->outputOffRate->store (true);
+                }
+            }
 
             if (mismatched && ! stream->sampleRateMismatchReported)
             {
@@ -2453,6 +2511,10 @@ bool CoreAudioBackend::openInputStream (const std::string& inputDeviceId, double
 
 void CoreAudioBackend::closeAllStreams()
 {
+    // No output is open to be held off the clock. Every gate below closes
+    // before anything else, so no listener raises it again.
+    outputOffRate->store (false);
+
     if (openStreams.empty())
         return;
 
