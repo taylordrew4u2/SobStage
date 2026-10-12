@@ -108,6 +108,8 @@ std::string combineMovieWithSound (const std::string& videoPath,
 
     // Written through a file held open for the whole copy, as AVFoundation
     // writes its export: a folder renamed meanwhile takes the file with it.
+    // mac_movie_combiner_check renames a folder under the real export on the
+    // Mac; if AVFoundation fails there instead, case 9 is what follows.
     std::ofstream working (folderAtStart / workingName, std::ios::binary | std::ios::trunc);
     if (! working)
         return "macOS couldn't set up the combined file.";
