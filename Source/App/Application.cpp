@@ -5963,7 +5963,19 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         bool reopenStreams = false;
         bool outputRateChanged = false;
 
-        for (const auto& failure : audioBackend->takeStreamFailures())
+        // §2.2: a take stopped for a rate change is stopped once, after the
+        // whole batch has been read. Stopped inside the loop, Stop reopened
+        // the rig there and then, and the rest of the batch was applied to the
+        // streams it had just opened at the right rate: on the combined
+        // device one change is the output's report and each microphone's
+        // together, and each microphone was then called dead, told to set
+        // back an interface that had just been set back, and the rig reopened
+        // a second time straight after the first.
+        const auto failures = audioBackend->takeStreamFailures();
+        const bool microphoneStopsTheTake = microphoneRateChangeStopsTheTake (failures, isRecording());
+        bool stopTakeForRateChange = false;
+
+        for (const auto& failure : failures)
         {
             // §6.6: the Mac slept with the rig open. Every stream stopped
             // together and none of them failed, so no microphone is marked
@@ -6083,7 +6095,8 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                                            && nowMs - outputRateReopenedAtMs < kDeadInputReopenBackoffMs;
 
                 auto action = outputRateChangeAction (isRecording() || capture->isRecording(),
-                                                      carriesTakeAudio, reopenedRecently);
+                                                      carriesTakeAudio, reopenedRecently,
+                                                      microphoneStopsTheTake);
                 const auto changed = subject + " " + juce::String (failure.reason);
                 juce::String said;
 
@@ -6107,6 +6120,17 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                         outputRateReopenedAtMs = nowMs;
                         outputRateReopenedFor = selectedOutputDeviceId;
                         reopenStreams = true;
+                        break;
+
+                    case OutputRateChangeAction::reopenAtStop:
+                        // A microphone's change in this batch stops the take
+                        // (below), and Stop's reopen sets the output back too.
+                        // Setting it aside instead would tell the user the
+                        // take carries on without it, a line before it stops.
+                        said = changed + " SobStage is switching it back.";
+                        outputRateReopenedAtMs = nowMs;
+                        outputRateReopenedFor = selectedOutputDeviceId;
+                        captureRestartDeferred = true;
                         break;
 
                     case OutputRateChangeAction::setAside:
@@ -6246,13 +6270,26 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                 // unchanged and reopened nothing, and the next take ran with
                 // the device still at the other rate and its one report spent.
                 captureRestartDeferred = true;
-                stopReason = "an audio device changed sample rate";
-                toggleRecording();
+                stopTakeForRateChange = true;
             }
         }
 
-        // After the loop, so several streams dying together reopen once.
-        if (reopenStreams)
+        // After the loop, so the rest of the batch was read against the
+        // take's own streams (isRecording() still true: no microphone in it
+        // was called dead, and nothing was reopened for it).
+        bool stoppedTake = false;
+
+        if (stopTakeForRateChange && isRecording())
+        {
+            stopReason = "an audio device changed sample rate";
+            toggleRecording();
+            stoppedTake = true;
+        }
+
+        // After the loop, so several streams dying together reopen once. A
+        // stop above owes its own reopen (captureRestartDeferred), done by
+        // Stop or, with a camera still finishing, once it has.
+        if (reopenStreams && ! stoppedTake)
             restartCapture();
 
         // What the rings lost before this poll heard of an output rate

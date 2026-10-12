@@ -176,6 +176,30 @@ inline bool streamFailureIsOutputRateChange (const StreamFailure& failure) noexc
     return failure.kind == StreamFailureKind::sampleRateChanged && failure.deviceId.empty();
 }
 
+/// Whether one poll's batch of reports stops the take for a microphone's rate
+/// change (§2.2), wherever in the batch that report sits. The owner stops the
+/// take once, after reading the whole batch, and asks this first, so a report
+/// read before it -- the headphone output's own change, say -- already knows
+/// the take is ending.
+///
+/// Stopping in the middle of the batch reopened the whole rig at once, and the
+/// rest of the batch then landed on streams that had just been opened at the
+/// right rate: one rate change on the combined device is the output's report
+/// and each of its microphones' reports together, and those microphones were
+/// called dead and the rig reopened a second time straight after the first.
+inline bool microphoneRateChangeStopsTheTake (const std::vector<StreamFailure>& batch,
+                                              bool recording) noexcept
+{
+    if (! recording)
+        return false;
+
+    for (const auto& failure : batch)
+        if (streamFailureRequiresRecordingStop (failure.kind) && ! streamFailureIsOutputRateChange (failure))
+            return true;
+
+    return false;
+}
+
 /// §5.3: what the owner does when the headphone output changes sample rate.
 ///
 /// The output's callback is the clock the whole rig is pulled on (§3.2). At
@@ -192,6 +216,11 @@ enum class OutputRateChangeAction
     /// the clock and the software clock takes over, so the take carries on
     /// intact with the headphones silent. Stop reopens the output.
     carryOnWithoutIt,
+    /// Mid-take, but the take is stopping anyway -- a microphone's rate change
+    /// came in the same batch (microphoneRateChangeStopsTheTake()). Stop
+    /// reopens the rig at its own rate, which sets the output back; saying the
+    /// take carries on without it would contradict the stop.
+    reopenAtStop,
     /// Nothing recording: reopen the rig at its own rate now, which sets the
     /// output back.
     reopenNow,
@@ -204,11 +233,17 @@ enum class OutputRateChangeAction
 
 constexpr OutputRateChangeAction outputRateChangeAction (bool recording,
                                                          bool outputCarriesTakeAudio,
-                                                         bool reopenedRecently) noexcept
+                                                         bool reopenedRecently,
+                                                         bool takeStoppingAnyway = false) noexcept
 {
     if (recording)
-        return outputCarriesTakeAudio ? OutputRateChangeAction::stopTake
-                                      : OutputRateChangeAction::carryOnWithoutIt;
+    {
+        if (outputCarriesTakeAudio)
+            return OutputRateChangeAction::stopTake;
+
+        return takeStoppingAnyway ? OutputRateChangeAction::reopenAtStop
+                                  : OutputRateChangeAction::carryOnWithoutIt;
+    }
 
     return reopenedRecently ? OutputRateChangeAction::setAside : OutputRateChangeAction::reopenNow;
 }

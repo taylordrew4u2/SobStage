@@ -137,8 +137,13 @@ to the rig's rate, rather than fight over it. Mid-take, stop using it as the
 clock and carry the take on under the software clock with the headphones
 silent; Stop reopens it. Only an output that itself carries take audio -- the
 combined device, whose rate is its microphones', or a duplex mixer -- stops
-the take, as a microphone's rate change does (§2.2). Ring losses from the
-mismatch are not counted toward §5.4's buffer ladder.
+the take, as a microphone's rate change does (§2.2). Reports that arrive
+together (one change on the combined device is its output's and each
+microphone's) are all read before that stop, so the take stops once and the
+rig reopens once; none of them is applied to the streams Stop has just
+reopened, and an output switched with a microphone is put back by that
+reopen rather than set aside. Ring losses from the mismatch are not counted
+toward §5.4's buffer ladder.
 ### 5.4 Latency budget — hard constraint
 Zero latency is not achievable in a software monitor path. The requirement is a budget.
 - **Target: under 6 ms** mic diaphragm to headphone, **measured by loopback at startup, not estimated.**

@@ -98,6 +98,54 @@ TEST_CASE (StreamFailurePolicy_AnOutputRateChangeBetweenTakesIsPutBackOnceThenSe
     REQUIRE (outputRateChangeAction (false, true, true) == OutputRateChangeAction::setAside);
 }
 
+TEST_CASE (StreamFailurePolicy_ABatchStopsTheTakeForAMicrophoneWhereverItsReportSits)
+{
+    // One rate change on the combined device: its output's report and each
+    // of its microphones' reports, read in one poll, in either order.
+    const StreamFailure output { "", "changed to 44.1 kHz while SobStage is using 48 kHz.",
+                                 "Your sound output", StreamFailureKind::sampleRateChanged };
+    const StreamFailure micA { "uid-a", "changed to 44.1 kHz", {}, StreamFailureKind::sampleRateChanged };
+    const StreamFailure micB { "uid-b", "changed to 44.1 kHz", {}, StreamFailureKind::sampleRateChanged };
+
+    REQUIRE (microphoneRateChangeStopsTheTake ({ output, micA, micB }, true));
+    REQUIRE (microphoneRateChangeStopsTheTake ({ micA, output }, true));
+
+    // Known before the output's report is read, whichever comes first, so
+    // the stop is decided once for the whole batch.
+    REQUIRE (microphoneRateChangeStopsTheTake ({ output, micA }, true)
+             == microphoneRateChangeStopsTheTake ({ micA, output }, true));
+
+    // The output's own change alone is not a microphone's.
+    REQUIRE_FALSE (microphoneRateChangeStopsTheTake ({ output }, true));
+
+    // Nothing else stops a take, and nothing stops one that is not running.
+    const StreamFailure gone { "uid-a", "is no longer available", {}, StreamFailureKind::deviceUnavailable };
+    const StreamFailure overload { "uid-a", "missed a deadline", {}, StreamFailureKind::processorOverload };
+    REQUIRE_FALSE (microphoneRateChangeStopsTheTake ({ gone, overload }, true));
+    REQUIRE_FALSE (microphoneRateChangeStopsTheTake ({ micA, micB }, false));
+    REQUIRE_FALSE (microphoneRateChangeStopsTheTake ({}, true));
+}
+
+TEST_CASE (StreamFailurePolicy_AnOutputRateChangeInABatchThatStopsTheTakeIsPutBackAtStop)
+{
+    // Headphones on their own interface, switched in the same moment as a
+    // microphone: the take is stopping for the microphone, so the output is
+    // not set aside with "recording carries on" a line before the stop. Stop
+    // reopens the rig at its own rate, which sets it back.
+    REQUIRE (outputRateChangeAction (true, false, false, true) == OutputRateChangeAction::reopenAtStop);
+    REQUIRE (outputRateChangeAction (true, false, true, true) == OutputRateChangeAction::reopenAtStop);
+
+    // An output that carries take audio stops the take itself, as before.
+    REQUIRE (outputRateChangeAction (true, true, false, true) == OutputRateChangeAction::stopTake);
+
+    // Between takes nothing is stopping: reopen now, or set aside.
+    REQUIRE (outputRateChangeAction (false, false, false, true) == OutputRateChangeAction::reopenNow);
+    REQUIRE (outputRateChangeAction (false, false, true, true) == OutputRateChangeAction::setAside);
+
+    // With no microphone's change in the batch, the take carries on.
+    REQUIRE (outputRateChangeAction (true, false, false, false) == OutputRateChangeAction::carryOnWithoutIt);
+}
+
 TEST_CASE (StreamFailurePolicy_TheMacSleepingIsNeverADeviceFailure)
 {
     // Not a stop, and handled as a warning by anything that does not know it,
