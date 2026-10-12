@@ -182,3 +182,15 @@ TEST_CASE (HeadphoneRouting_EveryReadAndEverySwitchLaysTheGainsForTheCombinedDev
     for (const auto& laid : recorder.laid)
         REQUIRE (laid.deviceId == "combined");
 }
+
+TEST_CASE (HeadphoneRouting_TheCombinedDeviceIsRemadeOnlyWhenOurStreamIsNotOnIt)
+{
+    // Nothing of ours plays through it (the stream is on another output, or
+    // there is none): re-made at once, mid-take or not. Our stream on it
+    // between takes: closed first, then reopened onto the new one. The
+    // take's mix on it: not until Stop.
+    REQUIRE (combinedDeviceRemakeStep (false, false) == CombinedDeviceRemake::Now);
+    REQUIRE (combinedDeviceRemakeStep (false, true) == CombinedDeviceRemake::Now);
+    REQUIRE (combinedDeviceRemakeStep (true, false) == CombinedDeviceRemake::CloseOurStreamFirst);
+    REQUIRE (combinedDeviceRemakeStep (true, true) == CombinedDeviceRemake::AfterTheTake);
+}

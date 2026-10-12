@@ -91,6 +91,31 @@ private:
     std::vector<CombinedDeviceOutputs> layout;
 };
 
+/// What re-making the app's combined device has to wait for. It is destroyed
+/// and made again, so whatever plays through it stops: done under our own
+/// running stream, the stop and teardown fail against a device that no longer
+/// exists, and mid-take everyone's headphones go silent for the rest of the
+/// take.
+enum class CombinedDeviceRemake
+{
+    Now,                 ///< nothing of ours is playing through it
+    CloseOurStreamFirst, ///< our headphone stream is on it between takes: close it, re-make, reopen
+    AfterTheTake         ///< the take's headphone mix is playing through it: wait for Stop
+};
+
+/// Judged by whether our own output stream is open on the combined device
+/// (CaptureCoordinator::isOutputOpenOn), never by the output chosen: mid-take
+/// the choice can move off the combined device -- picked in Settings, or a
+/// layout read that found no jacks while it was being rebuilt -- while the
+/// take's mix goes on playing through it until Stop.
+inline CombinedDeviceRemake combinedDeviceRemakeStep (bool ourStreamIsOnIt, bool takeRecording)
+{
+    if (! ourStreamIsOnIt)
+        return CombinedDeviceRemake::Now;
+
+    return takeRecording ? CombinedDeviceRemake::AfterTheTake : CombinedDeviceRemake::CloseOurStreamFirst;
+}
+
 /// True when at least one microphone in the combined device has a headphone
 /// jack to send the mix to. A rig of microphones with no outputs has nothing
 /// for the combined device to play through.

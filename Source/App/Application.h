@@ -960,6 +960,10 @@ private:
     /// through the combined device; Stop pays it.
     bool aggregateRepublishDeferred = false;
 
+    /// What re-making the combined device has to wait for now, from the
+    /// output stream open on it rather than the output chosen.
+    CombinedDeviceRemake combinedDeviceRemake() const;
+
     bool monitorThroughCombinedDevice = true;
     std::set<std::string> headphonesOffKeys;
 

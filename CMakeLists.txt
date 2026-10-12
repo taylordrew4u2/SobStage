@@ -500,6 +500,14 @@ if (MMA_BUILD_APP)
             -DAPPLICATION_H=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.h
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckHeadphoneJackWiring.cmake)
 
+    # The combined device is never destroyed under the take's headphone mix,
+    # judged by the stream open on it rather than the output chosen. The
+    # decision is unit-tested; this pins that Application goes by it.
+    add_test(NAME combined_device_remake_guard
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckCombinedDeviceRemake.cmake)
+
     # A rig with no microphone open is retried from the status poll; the
     # policy is unit-tested, this pins that the poll runs it.
     add_test(NAME failed_open_retry_poll

@@ -211,7 +211,9 @@ files really are empty and the card says so instead of calling it saved.
   no mix, never a different one. It still plays the start and stop chirps
   and the alarm siren, so switching everyone off cannot silence an alarm.
   Picking another output under **Monitoring and output** in Settings turns
-  this off, and that choice is remembered.
+  this off, and that choice is remembered. Picked during a take, the new
+  output takes over when you press Stop; until then everyone keeps hearing
+  the mix where they were, even if a microphone is plugged in or pulled out.
 
 - **Headphones first; the tracks are lined up afterwards.** Microphones and
   interfaces don't hand their sound over at the same moment: each has its

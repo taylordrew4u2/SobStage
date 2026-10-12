@@ -1243,7 +1243,16 @@ bool Application::publishAggregateDevice()
     // Mid-take, the headphone mix may be playing through this very device.
     // Replacing it would cut everyone's headphones for the rest of the take;
     // the change waits for Stop, like every other rig change during a take.
-    if (capture != nullptr && capture->isRecording() && isMonitoringThroughCombinedDevice())
+    //
+    // Whether it is playing there is asked of the stream that is open, not
+    // the output chosen. Mid-take the choice can move off the combined device
+    // (picked in Settings, or one layout read that found no jacks) while the
+    // stream stays on it until Stop, and a microphone plugged in or pulled
+    // then destroyed the device under the running take: everyone's
+    // headphones went silent for the rest of it.
+    const auto step = combinedDeviceRemake();
+
+    if (step == CombinedDeviceRemake::AfterTheTake)
     {
         aggregateRepublishDeferred = true;
         captureRestartDeferred = true;
@@ -1253,7 +1262,7 @@ bool Application::publishAggregateDevice()
     // Close our own stream on it first. Destroying a device under a running
     // IOProc leaves the stop and the teardown to fail against an object that
     // no longer exists; the rebuild that follows reopens onto the new one.
-    if (capture != nullptr && capture->isMonitoring() && isMonitoringThroughCombinedDevice())
+    if (step == CombinedDeviceRemake::CloseOurStreamFirst)
     {
         capture->stopMonitoring();
         lastStartedRigSignature.clear();
@@ -1294,6 +1303,12 @@ bool Application::publishAggregateDevice()
     publishedMaster = std::move (master);
     publishedNameStd = name;
     return true;
+}
+
+CombinedDeviceRemake Application::combinedDeviceRemake() const
+{
+    return combinedDeviceRemakeStep (capture != nullptr && capture->isOutputOpenOn (kOurAggregateUid),
+                                     capture != nullptr && capture->isRecording());
 }
 
 void Application::setAggregateDeviceName (const juce::String& name)
@@ -1674,9 +1689,8 @@ void Application::rescanDevices()
         publishedNameStd.clear();
 
         // publishAggregateDevice() holds the re-create until Stop when the
-        // take's headphone mix was playing through it.
-        const bool waitsForStop = capture != nullptr && capture->isRecording()
-                               && isMonitoringThroughCombinedDevice();
+        // take's headphone mix was playing through it, by the same test.
+        const bool waitsForStop = combinedDeviceRemake() == CombinedDeviceRemake::AfterTheTake;
 
         noteActivity (ActivityLevel::Warning, "Combined device",
                       waitsForStop
