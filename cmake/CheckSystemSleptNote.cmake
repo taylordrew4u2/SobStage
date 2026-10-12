@@ -14,7 +14,15 @@ endif()
 
 file(READ "${APPLICATION_CPP}" text)
 
-string(FIND "${text}" "for (const auto& failure : audioBackend->takeStreamFailures())" loop)
+# The batch is taken whole and then walked (a rate-change stop waits for the
+# end of it; see CheckRateChangeStopAfterBatch.cmake).
+string(FIND "${text}" "const auto failures = audioBackend->takeStreamFailures();" taken)
+if (taken EQUAL -1)
+    message(FATAL_ERROR "the stream-failure batch was not found")
+endif()
+string(SUBSTRING "${text}" ${taken} -1 text)
+
+string(FIND "${text}" "for (const auto& failure : failures)" loop)
 if (loop EQUAL -1)
     message(FATAL_ERROR "the stream-failure loop was not found")
 endif()

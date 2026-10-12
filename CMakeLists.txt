@@ -475,6 +475,13 @@ if (MMA_BUILD_APP)
             -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckSystemSleptNote.cmake)
 
+    # A rate-change stop waits for the rest of the poll's stream reports, so
+    # none of them is applied to the streams Stop has just reopened.
+    add_test(NAME rate_change_stop_after_batch
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckRateChangeStopAfterBatch.cmake)
+
     # A rig with no microphone open is retried from the status poll; the
     # policy is unit-tested, this pins that the poll runs it.
     add_test(NAME failed_open_retry_poll
