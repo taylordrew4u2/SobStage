@@ -71,8 +71,9 @@ void DeviceInputStream::publishPlaceInTime() noexcept
 
 void DeviceInputStream::recomputeTarget() noexcept
 {
-    baseTargetSamples = std::max (nominalBlockSamples, largestPullSamples.load (std::memory_order_relaxed))
-                      * static_cast<size_t> (kPreRollBlocks);
+    baseTargetSamples = cushionSamples (std::max (nominalBlockSamples,
+                                                  largestPullSamples.load (std::memory_order_relaxed)),
+                                        rate);
 
     // The device's current block, which the de-quantized level already
     // discounts (virtualFillNow): the ring is held at the base target just
@@ -131,11 +132,12 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
     largestPullSamples.store (0, std::memory_order_relaxed);
     rate = sampleRate > 0.0 ? sampleRate : 48000.0;
 
-    // §5.4: this is monitor latency, so it is a fixed small number of blocks
-    // rather than a fraction of the ring. The remaining fourteen blocks of
-    // capacity are headroom the loop never intends to use: room for the
-    // driver's whole ring to land at once after a late wake.
-    targetFillSamples = block * static_cast<size_t> (kPreRollBlocks);
+    // §5.4: this is monitor latency, so it is one pull and a few milliseconds
+    // of late delivery rather than a fraction of the ring. The remaining
+    // twelve or more blocks of capacity are headroom the loop never intends
+    // to use: room for the driver's whole ring to land at once after a late
+    // wake.
+    targetFillSamples = cushionSamples (block, rate);
     baseTargetSamples = targetFillSamples;
 
     compensator = DriftCompensator (sampleRate);
@@ -509,8 +511,8 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     publishPlaceInTime();
 
     // The output's real callback size, which CoreAudio does not promise is
-    // the one asked for either. Two of the pull, not two nominal blocks, is
-    // what has to be buffered when a pull begins: held at 128 samples, an
+    // the one asked for either. The cushion is sized from the pull, not the
+    // nominal block (cushionSamples): held at 128 samples, an
     // output taking 1024 at a time ran the ring dry in every callback.
     if (static_cast<size_t> (numSamples) > largestPullSamples.load (std::memory_order_relaxed))
     {
@@ -584,8 +586,8 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     // audio as lost that had simply not arrived yet.
     //
     // Judged on the de-quantized level the loop steers, not the raw one. Just
-    // after a 1156-frame delivery the raw level is the whole block, far past a
-    // 128-sample target, but the device's next block is a whole period away:
+    // after a 1156-frame delivery the raw level is the whole block, far past
+    // the target at 64, but the device's next block is a whole period away:
     // starting there ran the ring dry a few dozen samples before it landed --
     // a counted dropout at the top of every stream on such a device -- and
     // left the loop starting a full block below its target.

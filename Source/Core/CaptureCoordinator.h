@@ -842,8 +842,9 @@ private:
     /// `roundTripMs` -- an input block at `bufferSizeFrames`, the output
     /// block and what the output device adds after it, as the stream was
     /// worked out -- plus the ring's cushion (DeviceInputStream holds
-    /// kPreRollBlocks pulls, a pull being the output block or the size asked
-    /// for where that is larger, before the output takes a sample), plus
+    /// cushionSamples of a pull -- one pull plus a few milliseconds of late
+    /// delivery -- a pull being the output block or the size asked for where
+    /// that is larger, before the output takes a sample), plus
     /// whatever of the microphone's own input side (`inputFrames`) goes past
     /// the one input block already counted. Zero stays zero: nothing is
     /// monitoring.

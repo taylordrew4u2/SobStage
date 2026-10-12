@@ -38,17 +38,50 @@ public:
     static constexpr int kRingBlocks = 16;
 
     /// How full the ring must be before playout starts, and what the PI loop
-    /// steers back to. This is the latency the drift buffer costs, so it is
-    /// deliberately small: §5.4 allows 10 ms end to end for the whole monitor
-    /// path, and an input block plus this plus an output block has to fit
-    /// inside that. Two blocks (2.7 ms at 64 samples / 48 kHz) absorbs the
-    /// jitter between a device callback and the output callback without
-    /// spending the budget on buffering.
+    /// steers back to. This is the latency the drift buffer costs the
+    /// headphones (§5.4), and the only thing standing between a device that
+    /// hands its audio over late and a gap in what the output takes.
+    ///
+    /// One pull of it the output takes at once. The rest is how late a
+    /// delivery can be before the ring runs dry, and lateness is time, not
+    /// blocks: a CoreAudio IOProc a few milliseconds late on a busy Mac, a
+    /// Windows DPC holding a 3 ms period back by 6 ms. Two pulls -- what
+    /// this used to be, 2.7 ms at 64 -- left one pull of that, 1.3 ms, and
+    /// every delivery later than that wrote silence into the channel: a
+    /// click in the headphones and a gap in the stem. Measured through the
+    /// real coordinator with six simulated microphones on drifting clocks:
+    /// 30 clicks a minute at 64 frames with 0.5% of callbacks up to 2 ms
+    /// late, 216 a minute at 3 ms, and 38 a minute at 144-frame Windows
+    /// periods with 0.2% up to 6 ms late; none in any of them with this.
+    ///
+    /// So the ring holds one pull plus kLateDeliveryMs, but never less than
+    /// kPreRollBlocks pulls (a pull's own jitter is a pull's worth at any
+    /// size) and never more than kMaxPreRollBlocks: at 64 samples four
+    /// pulls is 5.3 ms, which with the input and output blocks still fits
+    /// §5.4's 10 ms, and a cushion of a full 6 ms there would not. At 480 or
+    /// 512, two pulls already ride out more than 6 ms and nothing changes.
+    /// See cushionSamples(), which CaptureCoordinator::monitorPathMs uses
+    /// too, so the headphone delay the app names includes exactly this.
     ///
     /// Sizing this from the ring capacity instead -- half full, say -- ties the
     /// latency to the headroom, so making the ring safer would silently make
     /// the monitor path slower.
     static constexpr int kPreRollBlocks = 2;
+    static constexpr int kMaxPreRollBlocks = 4;
+    static constexpr double kLateDeliveryMs = 6.0;
+
+    /// The target fill, in samples, for a stream the output pulls
+    /// `pullSamples` at a time: one pull plus kLateDeliveryMs, kept between
+    /// kPreRollBlocks and kMaxPreRollBlocks pulls.
+    static size_t cushionSamples (size_t pullSamples, double sampleRate) noexcept
+    {
+        const size_t pull = pullSamples > 0 ? pullSamples : 1;
+        const double rate = sampleRate > 0.0 ? sampleRate : 48000.0;
+        const auto late = static_cast<size_t> (kLateDeliveryMs * rate / 1000.0 + 0.999999);
+        const size_t least = pull * static_cast<size_t> (kPreRollBlocks - 1);
+        const size_t most = pull * static_cast<size_t> (kMaxPreRollBlocks - 1);
+        return pull + (late < least ? least : late > most ? most : late);
+    }
 
     /// The largest single delivery or pull the ring is allocated for.
     /// CoreAudio runs a device at its own IO size whenever it refuses the one
@@ -62,12 +95,12 @@ public:
     ///
     /// Storage is allocated for this many samples a block. What is *used* of
     /// it -- the overflow limit, kRingBlocks of a block -- and the target fill
-    /// -- kPreRollBlocks of the pull -- follow the largest block actually
+    /// -- cushionSamples() of the pull -- follow the largest block actually
     /// seen on each side, so a device running at the size it was asked for
     /// keeps exactly the latency and the bound on staleness it always had.
     static constexpr int kLargestDeviceBlock = 4096;
 
-    static_assert (kSourceBufferBlocks + kPreRollBlocks + 2 <= kRingBlocks,
+    static_assert (kSourceBufferBlocks + kMaxPreRollBlocks + 2 <= kRingBlocks,
                    "the ring must hold a full driver burst above its target fill, with a block "
                    "of delivery jitter and one in flight");
 
@@ -116,7 +149,8 @@ public:
     /// dry for it, that gap is counted as lost audio; when the cushion
     /// covered it, the silence that moves the channel is counted as a shift
     /// (getAlignmentSilenceSamples). Its place in time is therefore always
-    /// two pulls of cushion plus getDeviceBlockSamples() (or the block asked
+    /// the cushion (cushionSamples) plus the block it holds room for
+    /// (getHeldBlockSamples; the block asked
     /// for, before the device has settled on one), which is what the
     /// coordinator tells the writer.
 

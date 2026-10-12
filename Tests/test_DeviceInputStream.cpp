@@ -225,23 +225,44 @@ TEST_CASE (DeviceInputStream_StartsOnceThePreRollTargetIsReached)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    // One block is not enough to start on: it would leave the loop chasing a
-    // fill error that only means "not buffered yet", which reads as drift.
-    std::vector<float> small (64, 0.5f);
-    s.pushBlock (small.data(), 64);
+    // One block short of the target is not enough to start on: it would
+    // leave the loop chasing a fill error that only means "not buffered
+    // yet", which reads as drift -- and the channel a block short of the
+    // late-delivery cushion from its first sample.
+    const auto target = DeviceInputStream::cushionSamples (64, 48000.0);
+    std::vector<float> block (64, 0.5f), out (64, 0.0f);
 
-    std::vector<float> out (64, 0.0f);
+    for (size_t pushed = 0; pushed + 64 < target; pushed += 64)
+        s.pushBlock (block.data(), 64);
+
     s.pull (out.data(), 64);
     REQUIRE_FALSE (s.hasStarted());
 
-    // §5.4: playout starts at kPreRollBlocks, which is the latency this buffer
+    // §5.4: playout starts at the cushion, which is the latency this buffer
     // costs the monitor path -- not some fraction of the ring's headroom.
-    std::vector<float> rest (64, 0.5f);
-    s.pushBlock (rest.data(), 64);
+    s.pushBlock (block.data(), 64);
     s.pull (out.data(), 64);
 
     REQUIRE (s.hasStarted());
     REQUIRE_NEAR (out[0], 0.5f, 1e-4);
+}
+
+TEST_CASE (DeviceInputStream_TheCushionRidesOutSixMillisecondsOfLateDeliveryWithinFourPulls)
+{
+    // One pull the output takes at once, plus 6 ms of late delivery -- a
+    // busy Mac's IOProc, a Windows DPC holding a 3 ms period back -- never
+    // less than one more pull and never more than three. Two pulls, which
+    // this was, left 1.3 ms at 64 samples: every IOProc later than that
+    // wrote silence into the channel, a click in the headphones and a gap
+    // in the stem.
+    REQUIRE (DeviceInputStream::cushionSamples (64, 48000.0) == 256);   // four pulls, 5.3 ms
+    REQUIRE (DeviceInputStream::cushionSamples (128, 48000.0) == 416);  // a pull and 6 ms
+    REQUIRE (DeviceInputStream::cushionSamples (144, 48000.0) == 432);  // Windows' 3 ms period
+    REQUIRE (DeviceInputStream::cushionSamples (256, 48000.0) == 544);
+    REQUIRE (DeviceInputStream::cushionSamples (480, 48000.0) == 960);  // two pulls already ride it out
+    REQUIRE (DeviceInputStream::cushionSamples (512, 48000.0) == 1024);
+    REQUIRE (DeviceInputStream::cushionSamples (64, 44100.0) == 256);
+    REQUIRE (DeviceInputStream::cushionSamples (256, 44100.0) == 256 + 265);
 }
 
 TEST_CASE (DeviceInputStream_UnderrunAfterStartingIsCountedNotFaked)
@@ -249,10 +270,11 @@ TEST_CASE (DeviceInputStream_UnderrunAfterStartingIsCountedNotFaked)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    // Get past pre-roll -- two of the pull, which is what a 256-frame
+    // Get past pre-roll -- the cushion of the pull, which is what a 256-frame
     // output has to have buffered -- then starve it.
-    std::vector<float> in (512, 0.5f);
-    s.pushBlock (in.data(), 512);
+    const auto target = DeviceInputStream::cushionSamples (256, 48000.0);
+    std::vector<float> in (target, 0.5f);
+    s.pushBlock (in.data(), static_cast<int> (target));
 
     std::vector<float> out (256, 0.0f);
     s.pull (out.data(), 256);
@@ -320,6 +342,34 @@ struct ScopedSimulatedClock
 };
 
 } // namespace
+
+TEST_CASE (DeviceInputStream_PlayoutStartsAtTheCushionOfTheOutputsPull)
+{
+    // What the stream really holds before the output takes a sample: a
+    // 144-frame Windows period needs a pull plus 6 ms (432 samples), where
+    // it used to start at two pulls (288) and run dry whenever a delivery
+    // came more than 3 ms late.
+    ScopedSimulatedClock clock;
+    simulatedNs = 1'000'000'000; // zero reads as "nothing delivered yet"
+
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 144);
+
+    std::vector<float> in (144, 0.5f), out (144, 0.0f);
+
+    // Each pull lands the instant a delivery does, so the level it steers by
+    // discounts that whole block: three deliveries are two of cushion.
+    for (int i = 0; i < 3; ++i)
+        s.pushBlock (in.data(), 144);
+
+    s.pull (out.data(), 144);
+    REQUIRE_FALSE (s.hasStarted());
+
+    s.pushBlock (in.data(), 144);
+    s.pull (out.data(), 144);
+    REQUIRE (s.hasStarted());
+    REQUIRE (s.getUnderrunSamples() == 0);
+}
 
 TEST_CASE (DeviceInputStream_SustainedExcessDriftIsFlagged)
 {
@@ -413,13 +463,16 @@ TEST_CASE (DeviceInputStream_CountsALossEventPerBlockNotPerSample)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    // Pre-roll, then pull twice from a ring that has one block: the second
-    // pull runs dry part way through -- one event, not one per sample.
-    std::vector<float> in (128, 0.25f), out (64, 0.0f);
-    s.pushBlock (in.data(), 128);
-    s.pull (out.data(), 64);
-    s.pull (out.data(), 64);
-    s.pull (out.data(), 64);
+    // Pre-roll, then pull the ring down until it has one block left: the
+    // pull after that runs dry part way through -- one event, not one per
+    // sample.
+    const auto target = DeviceInputStream::cushionSamples (64, 48000.0);
+    std::vector<float> in (64, 0.25f), out (64, 0.0f);
+    for (size_t pushed = 0; pushed < target; pushed += 64)
+        s.pushBlock (in.data(), 64);
+
+    for (size_t pulled = 0; pulled <= target; pulled += 64)
+        s.pull (out.data(), 64);
 
     REQUIRE (s.getUnderrunSamples() > 0);
     REQUIRE (s.getLossEvents() >= 1);
@@ -428,7 +481,6 @@ TEST_CASE (DeviceInputStream_CountsALossEventPerBlockNotPerSample)
     // A push that finds the ring full is one event too. Delivered in the
     // device's own blocks: one push of seventeen blocks' worth is a device
     // whose IO size is that, and the ring makes room for sixteen of those.
-    // (The 128 above already gives it room for sixteen of 128.)
     const auto before = s.getLossEvents();
     for (int i = 0; i <= 2 * DeviceInputStream::kRingBlocks && s.getOverrunSamples() == 0; ++i)
         s.pushBlock (in.data(), 64);
@@ -507,9 +559,10 @@ TEST_CASE (DeviceInputStream_UnderrunCountNeverExceedsWhatWasAskedFor)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    // Enough to clear pre-roll (2 blocks) and prime the resampler, and no more.
-    std::vector<float> in (128, 0.5f);
-    s.pushBlock (in.data(), 128);
+    // Enough to clear pre-roll and prime the resampler, and no more.
+    const auto target = DeviceInputStream::cushionSamples (64, 48000.0);
+    std::vector<float> in (target, 0.5f);
+    s.pushBlock (in.data(), static_cast<int> (target));
 
     std::vector<float> out (64, 0.0f);
 
@@ -531,8 +584,9 @@ TEST_CASE (DeviceInputStream_StarvedBlockFallsToSilenceInsteadOfInventingDC)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    std::vector<float> in (128, 0.75f);
-    s.pushBlock (in.data(), 128);
+    const auto target = DeviceInputStream::cushionSamples (64, 48000.0);
+    std::vector<float> in (target, 0.75f);
+    s.pushBlock (in.data(), static_cast<int> (target));
 
     std::vector<float> out (64, -99.0f);
 
@@ -825,17 +879,17 @@ double stepBehind (const RampSource& src, const std::vector<float>& out)
 
 constexpr int64_t kBlockNs64 = 64 * 1000000000LL / 48000;
 
-// Pre-roll so the ring sits at the loop's target from the first pull: two
-// blocks plus the half block a pull lands after a delivery, less the sample
-// the interpolator primes with. The loop itself, at 5 PPM/s, would take a
-// minute to walk it there.
+// Pre-roll so the ring sits at the loop's target from the first pull: the
+// cushion plus the half block a pull lands after a delivery, less the sample
+// the interpolator primes with. The loop itself would take many seconds to
+// walk it there.
 void primeAtTarget (DeviceInputStream& s, RampSource& src, std::vector<float>& out)
 {
     simulatedNs = 1'000'000'000; // zero is what the clock hook reads as "nothing delivered yet"
     // In two deliveries, so the one the pull lands right after is the short
     // one: playout starts on the de-quantized level, which discounts the
     // newest delivery's whole block at the instant it lands.
-    src.push (s, 64 + 64);
+    src.push (s, static_cast<int> (DeviceInputStream::cushionSamples (64, 48000.0)));
     src.push (s, 32 + 1);
     s.pull (out.data(), 64);
 }
@@ -1013,7 +1067,7 @@ TEST_CASE (DeviceInputStream_ARingOneBlockDeepIsNotAStarvationInEveryBlock)
 
     // Pre-roll to the target, then let a stall drain it to one block: the
     // device delivers, the pull consumes, and the ring never gets deeper.
-    src.push (s, 256);
+    src.push (s, static_cast<int> (DeviceInputStream::cushionSamples (128, 48000.0)));
     s.pull (out.data(), 128);
     s.pull (out.data(), 128);
     REQUIRE (s.getUnderrunSamples() == 0);
@@ -1671,8 +1725,8 @@ TEST_CASE (DeviceInputStream_AStreamsPlaceInTimeIsItsOwnDevicesBlock)
     // device at 1156 frames plays 1092 samples later than one at 64 -- and
     // nothing more: no stream is held back for any other device, which is
     // what keeps the headphone mix as early as each microphone allows. The
-    // coordinator tells the writer exactly this (two pulls of cushion plus
-    // getDeviceBlockSamples()), and the writer lines the stems up from it.
+    // coordinator tells the writer exactly this (the cushion plus the block
+    // the stream holds room for), and the writer lines the stems up from it.
     const auto delayFor = [] (int deviceBlock, size_t* settledBlock = nullptr)
     {
         ScopedSimulatedClock clock;

@@ -1595,7 +1595,7 @@ int CaptureCoordinator::channelOwnLatencyFrames (size_t index, size_t blockFloor
         || channelInputLatency[index] < 0)
         return -1;
 
-    // The block the stream sits at (DeviceInputStream: two pulls of cushion
+    // The block the stream sits at (DeviceInputStream: the cushion
     // plus its device's block), or the floor where that is larger -- the
     // size asked for, before the device has settled on one.
     const auto block = std::min (std::max (deviceStreams[index]->getDeviceBlockSamples(), blockFloor),
@@ -1675,12 +1675,16 @@ double CaptureCoordinator::monitorPathMs (double roundTripMs, int bufferSizeFram
     const int size = std::max (1, bufferSizeFrames);
 
     // Every microphone's ring holds this much ahead of the output, so the
-    // loop can absorb the drift between the two clocks (DeviceInputStream's
-    // target fill: kPreRollBlocks of the largest pull, which is the output
-    // block). A sample waits it out before the output takes it. Leaving it
-    // out made the Advanced panel read two blocks quicker than the
-    // buffer-ladder notice that had just announced the same figure.
-    const int cushion = DeviceInputStream::kPreRollBlocks * std::max (size, outputFrames);
+    // loop can absorb the drift between the two clocks and a device can hand
+    // its audio over a few milliseconds late without a gap
+    // (DeviceInputStream's target fill: cushionSamples of the largest pull,
+    // which is the output block). A sample waits it out before the output
+    // takes it. Leaving it out made the Advanced panel read two blocks
+    // quicker than the buffer-ladder notice that had just announced the
+    // same figure. The same function the streams size their target with, so
+    // the figure the app names cannot drift from what the rings hold.
+    const auto cushion = static_cast<int> (DeviceInputStream::cushionSamples (
+        static_cast<size_t> (std::max (size, outputFrames)), sampleRate));
 
     // The round trip counts one input block at the size asked for. A
     // microphone's own path adds its device's input latency, and whatever

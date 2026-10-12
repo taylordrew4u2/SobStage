@@ -230,7 +230,11 @@ files really are empty and the card says so instead of calling it saved.
   in its own channel only, and where there is one its delay is shown beside
   it ("slowest mic"). If that one is past 10 ms while the others are not,
   or 5 ms or more behind them, the app tells you which microphone it is, in
-  the activity list.
+  the activity list. The figure includes a small safety margin, the same
+  for every microphone: about 5 ms at the smallest buffer. It lets a
+  computer that is busy for a moment hand a microphone's sound over a few
+  milliseconds late without a click or a gap in your headphones or the
+  recording.
 
   `session.json` records how each device was lined up: its delay
   (`inputLatencyFrames`), the buffer it really ran at (`ioBlockFrames`), how
