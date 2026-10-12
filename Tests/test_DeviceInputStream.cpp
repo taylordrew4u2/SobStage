@@ -27,6 +27,25 @@ double runClockRatio (DeviceInputStream& s, int pushPerBlock, int pullPerBlock, 
     return s.getDriftPpm();
 }
 
+// A device running ahead of a stream that is already playing: start the
+// stream at its target, then deliver `surplus` more than the output takes.
+// Before the stream starts the same surplus is pre-roll, dropped as playout
+// begins, and leaves the loop nothing to answer.
+void startThenRunAhead (DeviceInputStream& s, int surplus)
+{
+    const auto target = DeviceInputStream::cushionSamples (64, 48000.0);
+    std::vector<float> block (64, 0.25f), out (64, 0.0f);
+
+    for (size_t pushed = 0; pushed < target; pushed += 64)
+        s.pushBlock (block.data(), 64);
+
+    s.pull (out.data(), 64);
+    REQUIRE (s.hasStarted());
+
+    std::vector<float> extra (static_cast<size_t> (surplus), 0.25f);
+    s.pushBlock (extra.data(), surplus);
+}
+
 struct AlignmentResult
 {
     long long spreadSamples = std::numeric_limits<long long>::max();
@@ -161,10 +180,10 @@ TEST_CASE (DeviceInputStream_FastDeviceIsPulledDown)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    // Start the ring well above its target fill, which is what a device running
-    // fast produces. §3.2 must then raise the playout ratio to drain it.
-    std::vector<float> preload (400, 0.25f);
-    s.pushBlock (preload.data(), 400);
+    // Put the ring well above its target fill while it plays, which is what a
+    // device running fast produces. §3.2 must then raise the playout ratio to
+    // drain it.
+    startThenRunAhead (s, 400);
 
     // Thereafter the device supplies exactly what the clock consumes, so the
     // surplus persists and only the loop can remove it.
@@ -623,9 +642,8 @@ TEST_CASE (DeviceInputStream_DriftLoopIsDrivenByItsOwnRingNotByAnyOtherChannel)
     fast.prepare (48000.0, 64);
     alsoFast.prepare (48000.0, 64);
 
-    std::vector<float> preload (400, 0.25f);
-    fast.pushBlock (preload.data(), 400);
-    alsoFast.pushBlock (preload.data(), 400);
+    startThenRunAhead (fast, 400);
+    startThenRunAhead (alsoFast, 400);
 
     runClockRatio (fast, 64, 64, 400);
     runClockRatio (alsoFast, 64, 64, 400);
@@ -650,8 +668,7 @@ TEST_CASE (DeviceInputStream_NamingAChannelTheReferenceDoesNotStopCorrectingIt)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    std::vector<float> preload (400, 0.25f);
-    s.pushBlock (preload.data(), 400);
+    startThenRunAhead (s, 400);
     runClockRatio (s, 64, 64, 400);
 
     const double afterSettling = s.getDriftPpm();
@@ -1620,6 +1637,40 @@ TEST_CASE (DeviceInputStream_ARunOfDryPullsIsOneLossEvent)
         s.pull (out.data(), 64);
 
     REQUIRE (s.getLossEvents() == 2u);
+}
+
+TEST_CASE (DeviceInputStream_PlayoutStartsAtTheTargetHoweverFarTheDeviceDeliveredAhead)
+{
+    // At 480 samples (a Windows 10 ms period) the pull that first finds the
+    // target can find a whole block or more past it: two deliveries landed
+    // since the pull before. Only an overshoot smaller than a pull used to
+    // be dropped; this one was left to the loop, which at its clamp took a
+    // minute and a half to drain it -- that channel up to 19 ms later in the
+    // headphones than its neighbours meanwhile, and its stem out of line by
+    // as much. Nothing has been played or recorded from the stream yet, so
+    // all of it is pre-roll to drop.
+    ScopedSimulatedClock clock;
+    simulatedNs = 1'000'000'000;
+
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 480);
+
+    RampSource src (480);
+    std::vector<float> out (480, -1.0f);
+
+    // Four blocks by the first pull. The level that pull steers by discounts
+    // the block that has just landed: three blocks, 1440, against a target
+    // of two pulls (960) -- a whole pull over.
+    for (int i = 0; i < 4; ++i)
+        src.push (s, 480);
+
+    s.pull (out.data(), 480);
+    REQUIRE (s.hasStarted());
+
+    // The oldest 480 samples are the overshoot: playout starts on sample 480,
+    // the channel exactly at its target.
+    REQUIRE_NEAR (out[0], 480.0f, 1e-3);
+    REQUIRE (s.getUnderrunSamples() == 0u);
 }
 
 TEST_CASE (DeviceInputStream_AfterAGapTheChannelResumesExactlyWhereItStopped)

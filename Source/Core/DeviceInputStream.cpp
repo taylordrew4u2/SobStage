@@ -599,20 +599,27 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
             return;
         }
 
-        // Start exactly at the target, not up to a pull past it. The level at
-        // the first pull is where this channel sits in time against every
-        // other one, and the loop moves it only slowly: starting a pull deep
-        // left a channel up to a block behind its neighbours for a minute,
-        // and its place in time -- which the writer lines the stems up by --
-        // only as accurate as the pull that happened to cross the target. What
-        // is dropped is pre-roll,
-        // before anything has been played or recorded from this stream. Only
-        // the overshoot of that crossing: a surplus bigger than a pull is a
-        // device that delivered ahead, and the loop's to drain.
+        // Start exactly at the target, not past it. The level at the first
+        // pull is where this channel sits in time against every other one,
+        // and the loop moves it only slowly: starting a pull deep left a
+        // channel up to a block behind its neighbours for a minute, and its
+        // place in time -- which the writer lines the stems up by -- only as
+        // accurate as the pull that happened to cross the target. What is
+        // dropped is pre-roll, before anything has been played or recorded
+        // from this stream: audio from before the moment the channel's first
+        // sample stands for, which the take already holds as silence.
+        //
+        // All of the overshoot, however large. Only a surplus smaller than a
+        // pull used to go; a bigger one was left to the loop. At 480 or 512
+        // samples two deliveries landing between two pulls overshoot by a
+        // whole block, and the loop, at its clamp, took a minute and a half
+        // to drain it: that microphone's headphone delay swept 19 ms against
+        // the others meanwhile -- a slow flange wherever their sound bleeds
+        // into each other -- and its ring dipped to 45 samples on the way.
         if (const auto excess = static_cast<size_t> (std::max (
                 0.0, std::floor (virtualFillNow (ring.availableForRead())
                                  - static_cast<double> (targetFillSamples))));
-            excess > 0 && excess < static_cast<size_t> (numSamples))
+            excess > 0)
             ring.discard (excess);
 
         started.store (true, std::memory_order_relaxed);
