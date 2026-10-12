@@ -59,7 +59,14 @@ enum class StreamFailureKind
     /// did -- its channel goes live again -- and says so. With no device id it
     /// is the headphone output, back at the rate it was opened at after a
     /// sampleRateChanged report (see outputRateChangeAction()).
-    resumed
+    resumed,
+
+    /// Not a stream's failure: the computer slept (or turned its audio off to
+    /// sleep) with streams open, so every one of them stopped together and
+    /// none is to blame. Said once per sleep, with no device id. Nothing is
+    /// to be called dead or reopened for it; a take running across it has a
+    /// gap where the computer slept, which its record has to show (§6.6).
+    systemSlept
 };
 
 /// Application policy for typed backend events. A live sample-rate change
@@ -78,7 +85,28 @@ constexpr bool streamFailureRequiresRecordingStop (StreamFailureKind kind) noexc
 constexpr bool streamFailureIsWarning (StreamFailureKind kind) noexcept
 {
     return kind == StreamFailureKind::processorOverload
-        || kind == StreamFailureKind::safetyMonitoringUnavailable;
+        || kind == StreamFailureKind::safetyMonitoringUnavailable
+        || kind == StreamFailureKind::systemSlept;
+}
+
+/// §6.6: what the owner says about a systemSlept report while a take is
+/// recording -- between takes nothing, as nothing failed and nothing was
+/// lost. The take's record (session.json's dropouts) gets kSystemSleptTakeNote
+/// at that moment, and the activity log kSystemSleptActivityLine. No
+/// microphone is marked dead and nothing is reopened.
+///
+/// A closed lid on battery sleeps the Mac mid-take whatever the app asks
+/// (§6.6). Before the callback watchdog learned to tell a sleep from a dead
+/// device, the false "stopped sending audio" reports were the only trace of
+/// that in the take's record; holding them back left the stems joining audio
+/// from before an hour's sleep to audio from after it with nothing saying so.
+constexpr const char* kSystemSleptTakeNote = "The Mac went to sleep: this take has a gap here.";
+constexpr const char* kSystemSleptActivityLine =
+    "The Mac went to sleep during the take, so the recording has a gap where it slept.";
+
+constexpr bool systemSleptMarksTheTake (StreamFailureKind kind, bool recording) noexcept
+{
+    return kind == StreamFailureKind::systemSlept && recording;
 }
 
 /// §0.1: what the owner does about a microphone whose input stream has died

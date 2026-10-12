@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <utility>
 
 namespace mma {
 
@@ -33,6 +34,12 @@ namespace mma {
 /// long the dark wake lasts. The watchdog is likewise held when it is about to
 /// call a device dead and the Mac says its audio is off with no sleep seen yet:
 /// IO stopped because the Mac is on its way to sleep.
+///
+/// Holding the watchdog is not the same as saying nothing. A take running
+/// across the sleep joins the audio from before it to the audio from after it
+/// with nothing in between, and before the guard the false dead reports were
+/// at least a trace of that in the take's record. So each hold also leaves one
+/// notice for the backend to pass on: the Mac slept with the rig open.
 ///
 /// Message thread only; no clock of its own, so it can be tested.
 class CallbackWatchdogSleepGuard
@@ -105,6 +112,13 @@ public:
     /// running out): no stream is to be judged.
     bool isWaitingForAudio() const noexcept { return waitingForAudio; }
 
+    /// True once for each time the watchdog was held: the Mac slept, or
+    /// turned its audio off to, while streams were open, so every one of them
+    /// stopped together and nothing was recorded until audio ran again. One
+    /// hold is one notice, however many times a dark wake goes back to sleep
+    /// before the Mac is properly awake.
+    bool takeSleepNotice() noexcept { return std::exchange (sleepNoticePending, false); }
+
     /// When a stream's silence is counted from, on the awake clock: its last
     /// callback, or its start before the first one, but never earlier than
     /// the moment audio was back after the last sleep. 0 means it is not to be
@@ -129,8 +143,13 @@ private:
     double waitCountsFrom = 0.0; // the wait's minute runs from here, with the Mac's audio on
     double rearmedAt = 0.0;
 
+    bool sleepNoticePending = false;
+
     void hold (double awakeNow) noexcept
     {
+        if (! waitingForAudio)
+            sleepNoticePending = true;
+
         waitingForAudio = true;
         heldAt = awakeNow;
         waitCountsFrom = awakeNow;

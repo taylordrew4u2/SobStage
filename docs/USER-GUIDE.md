@@ -257,12 +257,15 @@ files really are empty and the card says so instead of calling it saved.
   the folder becomes `2026-08-27_1030_<name>`. Leaving it empty is fine.
 - **Spacebar** mutes and unmutes the headphones instantly. Recording is never
   affected by muting.
-- **The Mac sleeping between takes (macOS).** Close the lid with the app open
-  and, when the Mac wakes, the app waits for your microphones and headphones
-  to start again rather than calling them unplugged. The same goes for the
-  Mac waking with the lid shut to back up or sync, for as long as that takes,
-  and for a Mac that is slow to fall asleep. One that still hasn't started, a
-  few seconds after the rest, is reported as usual.
+- **The Mac sleeping (macOS).** Close the lid with the app open and, when the
+  Mac wakes, the app waits for your microphones and headphones to start again
+  rather than calling them unplugged. The same goes for the Mac waking with
+  the lid shut to back up or sync, for as long as that takes, and for a Mac
+  that is slow to fall asleep. One that still hasn't started, a few seconds
+  after the rest, is reported as usual. If the Mac sleeps during a take
+  (closing the lid on battery does that, whatever the app asks), the take
+  carries on when it wakes, with a gap where it slept, and the take's
+  `activity.log` and `session.json` say where.
 - **Something switching your headphones to another sample rate (macOS).**
   Audio MIDI Setup, a music player or another audio app can change the
   sample rate of the output your headphones are on. Between takes the app

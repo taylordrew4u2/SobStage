@@ -964,6 +964,79 @@ int main()
     std::remove ((dir + "/02_Laggy.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
 
+    // ---------------------------------------------------------------------
+    // The Mac sleeping in the middle of a take (§6.6).
+    //
+    // A closed lid on battery sleeps the Mac mid-take whatever the app asks.
+    // The callback watchdog no longer calls every microphone dead for it --
+    // and those false reports had been the only trace of the sleep in the
+    // take's record. The backend says once, against no microphone, that the
+    // Mac slept; with a take recording, that is what puts the gap into
+    // session.json (Application, pinned by the system_slept_take_note test).
+    // The take itself records on after the wake.
+    // ---------------------------------------------------------------------
+    std::printf ("\nThe Mac sleeps in the middle of a take\n");
+    fakeca::reset();
+
+    const auto napMic = fakeca::addDevice (microphone ("Nap Mic", "uid-nap", 1,
+                                                       fakeca::BufferShape::oneChannelPerBuffer));
+    mma::CoreAudioBackend napBackend;
+    mma::CaptureCoordinator nap (napBackend, rate, block);
+    std::vector<mma::CaptureChannel> napChannels = { { "uid-nap", "Nap", "01_Nap", 0.0f } };
+
+    if (! nap.startMonitoring (napChannels, {}) || ! nap.startRecording (dir, 24, "2026-10-12T00:00:00Z"))
+    {
+        std::printf ("  FAIL  the take did not start: %s\n", nap.getMonitorProblem().c_str());
+        return 1;
+    }
+
+    std::vector<float> napOut (static_cast<size_t> (block) * 2, 0.0f);
+    float* napOuts[] = { napOut.data(), napOut.data() + block };
+
+    const auto recordHalfASecond = [&]
+    {
+        for (int i = 0; i < blocks / 2; ++i)
+        {
+            fakeca::pumpInput (napMic, { tone (block, 330.0, rate, 0.5f) });
+            nap.pullOutputBlock (napOuts, 2, block);
+        }
+    };
+
+    recordHalfASecond();
+    check (napBackend.takeStreamFailures().empty(), "a take recording is not news");
+
+    // The lid closes: IO stops, the Mac takes a few seconds to go to sleep,
+    // and sleeps for an hour.
+    fakeca::passTime (3.0);
+    check (napBackend.takeStreamFailures().empty(), "the moments before the Mac sleeps are not a failure");
+
+    fakeca::sleepSystem (3600.0);
+    const auto slept = napBackend.takeStreamFailures();
+    check (slept.size() == 1 && slept.front().kind == mma::StreamFailureKind::systemSlept
+               && slept.front().deviceId.empty(),
+           "on waking, the sleep is reported once, against no microphone");
+    check (! slept.empty() && mma::systemSleptMarksTheTake (slept.front().kind, nap.isRecording()),
+           "and, with the take recording, it goes into the take's record");
+
+    // Awake: the mic sends again and the take carries on.
+    recordHalfASecond();
+    check (napBackend.takeStreamFailures().empty(), "the mic sending again after the wake is not news");
+
+    fakeca::passTime (1.0);
+    check (napBackend.takeStreamFailures().empty(), "nor is the sleep told twice");
+
+    nap.stopRecording();
+    nap.stopMonitoring();
+
+    uint32_t napFrames = 0;
+    const auto napPeak = peakOf24BitWav (dir + "/01_Nap.wav", napFrames);
+    std::printf ("  01_Nap.wav: %u frames, peak %d\n", napFrames, napPeak);
+    check (napFrames >= static_cast<uint32_t> (rate * 0.75) && napPeak > 100000,
+           "the stem holds the audio from before the sleep and after it");
+
+    std::remove ((dir + "/01_Nap.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
+
     std::printf ("\n%s (%d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILURES", failures);
     return failures == 0 ? 0 : 1;
 }

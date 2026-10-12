@@ -5965,6 +5965,22 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
         for (const auto& failure : audioBackend->takeStreamFailures())
         {
+            // §6.6: the Mac slept with the rig open. Every stream stopped
+            // together and none of them failed, so no microphone is marked
+            // dead and nothing is reopened. A take running across it has a
+            // gap there, which used to go unrecorded: its record and the
+            // activity log say where. Between takes nothing was lost.
+            if (failure.kind == StreamFailureKind::systemSlept)
+            {
+                if (systemSleptMarksTheTake (failure.kind, isRecording()))
+                {
+                    midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                                 kSystemSleptTakeNote });
+                    noteActivity (ActivityLevel::Warning, "Recording", kSystemSleptActivityLine);
+                }
+                continue;
+            }
+
             // The backend knows an id; the user knows a name. A backend that
             // has a better subject than either -- a report that is not about
             // one device -- supplies it.

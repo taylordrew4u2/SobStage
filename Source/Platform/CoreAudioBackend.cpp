@@ -2141,13 +2141,18 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
     // wakes, a dark wake with the lid shut -- are not a device failing. The
     // guard notices the sleep and holds the watchdog until audio runs again,
     // for as long as the Mac says its audio is off.
+    bool anyStreamOpen = false;
+
     {
         double latestCallback = 0.0;
 
         for (const auto& stream : openStreams)
             if (stream != nullptr && stream->ioProcId != nullptr)
+            {
+                anyStreamOpen = true;
                 latestCallback = std::max (latestCallback,
                                            stream->lastCallbackSeconds.load (std::memory_order_relaxed));
+            }
 
         watchdogSleepGuard.poll (now, sleepCountingSeconds(), latestCallback, systemAudioIsOff);
     }
@@ -2336,6 +2341,17 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
                                     "it. Try selecting it again."
                                   : "stopped sending audio. Unplug it and plug it back in." });
     }
+
+    // Holding the watchdog is not silence about the sleep: once per sleep with
+    // the rig open, the app hears that every stream stopped together. None of
+    // them failed, but a take running across it has a gap there -- the audio
+    // from before the sleep runs straight into the audio from after it -- and
+    // only the app can put that in the take's record.
+    if (watchdogSleepGuard.takeSleepNotice() && anyStreamOpen)
+        failures.push_back ({ std::string(),
+                              "went to sleep, so every microphone and the headphones stopped until "
+                              "it woke.",
+                              "The Mac", StreamFailureKind::systemSlept });
 
     // Re-enumeration is useful for both a rate change and a device becoming
     // alive/dead, but invoking the app callback from the CoreAudio listener

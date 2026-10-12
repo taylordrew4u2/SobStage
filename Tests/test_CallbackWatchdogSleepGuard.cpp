@@ -361,3 +361,71 @@ TEST_CASE (CallbackWatchdogSleepGuard_ThePowerManagerIsAskedOnlyWhileHeld)
 
     REQUIRE (asked == 1);
 }
+
+TEST_CASE (CallbackWatchdogSleepGuard_EachSleepLeavesOneNotice)
+{
+    // Holding the watchdog back must not make a sleep invisible: a take
+    // running across it has a gap, and the notice is how its record hears.
+    CallbackWatchdogSleepGuard guard;
+    double wall = 0.0;
+
+    guard.poll (100.0, kWallOffset + wall, 100.0, audioOn);
+
+    double t = 100.0;
+    for (int i = 0; i < 20; ++i)
+    {
+        t += 0.5;
+        pollAwake (guard, t, wall, 0.5, t - 0.1);
+    }
+
+    REQUIRE_FALSE (guard.takeSleepNotice()); // awake and running: nothing to say
+
+    wall += 3600.0;
+    t += 0.5;
+    pollAwake (guard, t, wall, 0.5, 109.9, audioOff);
+    REQUIRE (guard.takeSleepNotice());
+    REQUIRE_FALSE (guard.takeSleepNotice()); // once
+
+    // A dark wake that goes back to sleep, twice, before the Mac is properly
+    // awake: still the one sleep as far as the take is concerned.
+    for (int sleeps = 0; sleeps < 2; ++sleeps)
+    {
+        wall += 1800.0;
+        for (int i = 0; i < 20; ++i)
+        {
+            t += 0.5;
+            pollAwake (guard, t, wall, 0.5, 109.9, audioOff);
+            REQUIRE_FALSE (guard.takeSleepNotice());
+        }
+    }
+
+    t += 0.5;
+    pollAwake (guard, t, wall, 0.5, t - 0.1);
+    REQUIRE_FALSE (guard.isWaitingForAudio());
+    REQUIRE_FALSE (guard.takeSleepNotice()); // audio back is not another sleep
+
+    // The next sleep is news again.
+    wall += 600.0;
+    t += 0.5;
+    pollAwake (guard, t, wall, 0.5, t - 0.6);
+    REQUIRE (guard.takeSleepNotice());
+}
+
+TEST_CASE (CallbackWatchdogSleepGuard_TheMacTurningItsAudioOffToSleepLeavesOneNotice)
+{
+    CallbackWatchdogSleepGuard guard;
+    double wall = 0.0;
+
+    guard.poll (10.0, kWallOffset + wall, 10.0, audioOff);
+    REQUIRE_FALSE (guard.takeSleepNotice());
+
+    guard.holdWhileSystemAudioIsOff (16.0);
+    REQUIRE (guard.takeSleepNotice());
+
+    // Asked again before it sleeps, and then the sleep itself: the same gap.
+    guard.holdWhileSystemAudioIsOff (16.5);
+    wall += 3600.0 + 7.0;
+    guard.poll (17.0, kWallOffset + wall, 10.0, audioOn);
+    REQUIRE (guard.isWaitingForAudio());
+    REQUIRE_FALSE (guard.takeSleepNotice());
+}

@@ -97,3 +97,32 @@ TEST_CASE (StreamFailurePolicy_AnOutputRateChangeBetweenTakesIsPutBackOnceThenSe
     REQUIRE (outputRateChangeAction (false, false, true) == OutputRateChangeAction::setAside);
     REQUIRE (outputRateChangeAction (false, true, true) == OutputRateChangeAction::setAside);
 }
+
+TEST_CASE (StreamFailurePolicy_TheMacSleepingIsNeverADeviceFailure)
+{
+    // Not a stop, and handled as a warning by anything that does not know it,
+    // so nothing ever marks a microphone dead or reopens the rig for it.
+    REQUIRE (streamFailureIsWarning (StreamFailureKind::systemSlept));
+    REQUIRE_FALSE (streamFailureRequiresRecordingStop (StreamFailureKind::systemSlept));
+    REQUIRE_FALSE (streamFailureIsOutputRateChange ({ "", "went to sleep", "The Mac",
+                                                      StreamFailureKind::systemSlept }));
+}
+
+TEST_CASE (StreamFailurePolicy_TheMacSleepingMidTakeIsInTheTakesRecord)
+{
+    // During a take: its record says where the gap is.
+    REQUIRE (systemSleptMarksTheTake (StreamFailureKind::systemSlept, true));
+
+    // Between takes nothing was lost, and there is no take to mark.
+    REQUIRE_FALSE (systemSleptMarksTheTake (StreamFailureKind::systemSlept, false));
+
+    // Nothing else is a sleep.
+    REQUIRE_FALSE (systemSleptMarksTheTake (StreamFailureKind::resumed, true));
+    REQUIRE_FALSE (systemSleptMarksTheTake (StreamFailureKind::unknown, true));
+    REQUIRE_FALSE (systemSleptMarksTheTake (StreamFailureKind::deviceUnavailable, true));
+
+    // Plain language, and says what happened to the take.
+    const std::string note = kSystemSleptTakeNote;
+    REQUIRE (note.find ("went to sleep") != std::string::npos);
+    REQUIRE (note.find ("gap") != std::string::npos);
+}
