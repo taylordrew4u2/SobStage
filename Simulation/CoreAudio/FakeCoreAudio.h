@@ -108,6 +108,12 @@ struct DeviceSpec
     /// on either an input or output, cannot hold launch indefinitely.
     int startDelayMilliseconds = 0;
 
+    /// Instead of a fixed delay, AudioDeviceStart waits until releaseStart()
+    /// names this device (or reset() runs; at most ten seconds), so a test
+    /// decides when a slow start finishes instead of racing a timer against
+    /// a busy runner's scheduling.
+    bool startWaitsForRelease = false;
+
     /// Other calls made before and after Start can wedge in third-party HAL
     /// plug-ins too. These delays exercise the same deadline at UID lookup,
     /// IOProc creation, Stop, and Destroy.
@@ -231,6 +237,9 @@ int propertyListenerCount (AudioObjectID device);
 
 /// True once the backend has called AudioDeviceStart on this device.
 bool isRunning (AudioObjectID device);
+
+/// Lets a start held by DeviceSpec::startWaitsForRelease finish.
+void releaseStart (AudioObjectID device);
 
 /// What the device's nominal rate property actually holds now.
 double nominalRate (AudioObjectID device);

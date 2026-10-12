@@ -2125,13 +2125,14 @@ void aSlowMicDoesNotRefuseTheNextHealthyMic()
 
     auto slowSpec = microphone ("Slow Mic A", "uid-slow-mic-a", 1,
                                 fakeca::BufferShape::oneChannelPerBuffer);
-    // Past the simulated 250 ms input deadline, but it does finish: its worker
-    // releases the transaction about 125 ms after the caller gives up, inside
-    // the next mic's 250 ms wait. That leaves ~125 ms of slack on both sides:
-    // 400 ms left only ~100 ms for the healthy mic (a loaded runner waited
-    // 261 ms and was refused), and 300 ms left only 50 ms for the slow mic's
-    // own deadline (a loaded runner woke late and saw it open).
-    slowSpec.startDelayMilliseconds = 375;
+    // Past the simulated 250 ms input deadline, but it does finish, inside the
+    // next mic's 250 ms wait. A fixed delay raced the runner's scheduling on
+    // both sides -- 400 ms left a loaded runner's healthy mic refused after a
+    // 261 ms wait, and 375 ms let one wake late enough to see the slow mic
+    // open -- so the test holds the start itself: it cannot finish before the
+    // slow mic's caller has given up, and it is let go 30 ms into the healthy
+    // mic's wait, leaving 220 ms of slack.
+    slowSpec.startWaitsForRelease = true;
     const auto slowId = fakeca::addDevice (slowSpec);
     const auto healthyId = fakeca::addDevice (microphone (
         "Healthy Mic B", "uid-healthy-mic-b", 1, fakeca::BufferShape::oneChannelPerBuffer));
@@ -2141,9 +2142,16 @@ void aSlowMicDoesNotRefuseTheNextHealthyMic()
     check (! backend.openInputStream (slowSpec.uid, 48000.0, 256, slowCapture.callback()),
            "the slow mic still observes its bounded open deadline");
 
+    std::thread release ([slowId]
+    {
+        std::this_thread::sleep_for (std::chrono::milliseconds (30));
+        fakeca::releaseStart (slowId);
+    });
+
     const auto began = std::chrono::steady_clock::now();
     const bool healthyOpened = backend.openInputStream ("uid-healthy-mic-b", 48000.0, 256,
                                                         healthyCapture.callback());
+    release.join();
     const auto took = std::chrono::duration_cast<std::chrono::milliseconds> (
         std::chrono::steady_clock::now() - began);
     std::printf ("  [measured] the healthy mic open took %lld ms\n", (long long) took.count());

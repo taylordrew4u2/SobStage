@@ -8,8 +8,11 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <map>
+#include <mutex>
+#include <set>
 #include <memory>
 #include <string>
 #include <thread>
@@ -185,6 +188,21 @@ constexpr AudioObjectID kStreamIdBase = 900000;
 AudioObjectID streamIdFor (AudioObjectID device) { return kStreamIdBase + device; }
 bool isStreamId (AudioObjectID object) { return object >= kStreamIdBase; }
 AudioObjectID deviceForStream (AudioObjectID stream) { return stream - kStreamIdBase; }
+
+/// Starts held by DeviceSpec::startWaitsForRelease, and the devices let go.
+struct StartGate
+{
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::set<AudioObjectID> released;
+    int generation = 0;
+};
+
+StartGate& startGate()
+{
+    static StartGate gate;
+    return gate;
+}
 
 Device* find (AudioObjectID id)
 {
@@ -959,6 +977,17 @@ OSStatus AudioDeviceStart (AudioObjectID device, AudioDeviceIOProcID procId)
         std::this_thread::sleep_for (
             std::chrono::milliseconds (d->spec.startDelayMilliseconds));
 
+    if (d->spec.startWaitsForRelease)
+    {
+        auto& gate = startGate();
+        std::unique_lock<std::mutex> lock (gate.mutex);
+        const auto generation = gate.generation;
+        gate.changed.wait_for (lock, std::chrono::seconds (10), [&]
+        {
+            return gate.released.count (device) > 0 || gate.generation != generation;
+        });
+    }
+
     for (auto& r : d->procs)
         if (r.proc == procId)
         {
@@ -1060,6 +1089,14 @@ namespace fakeca {
 
 void reset()
 {
+    {
+        auto& gate = startGate();
+        const std::lock_guard<std::mutex> lock (gate.mutex);
+        gate.released.clear();
+        ++gate.generation;
+    }
+    startGate().changed.notify_all();
+
     state().devices.clear();
     state().order.clear();
     state().listeners.clear();
@@ -1070,6 +1107,16 @@ void reset()
     state().aggregatesCreated = 0;
     systemCapabilities.store (kFullWakeCapabilities, std::memory_order_relaxed);
     systemCapabilityQueries.store (0, std::memory_order_relaxed);
+}
+
+void releaseStart (AudioObjectID device)
+{
+    {
+        auto& gate = startGate();
+        const std::lock_guard<std::mutex> lock (gate.mutex);
+        gate.released.insert (device);
+    }
+    startGate().changed.notify_all();
 }
 
 void passTime (double seconds)

@@ -3235,11 +3235,16 @@ TEST_CASE (CaptureCoordinator_KeepsRecordingWhenTheOutputClockStops)
         // short on a correct build, while the bug leaves it 117 ms short.
         constexpr int64_t kTolerance = 48000 * 60 / 1000;
 
-        if (std::llabs (accepted - wallFrames) > kTolerance)
-            std::printf ("  across the output loss: accepted %lld frames in %lld frames of wall time\n",
-                         (long long) accepted, (long long) wallFrames);
+        // Nor can it take more than the microphones gave. Each block's sleep
+        // can overshoot on a busy runner, so the inputs can fall behind the
+        // wall clock; the take is then owed what they delivered, not more.
+        const auto owed = std::min (wallFrames, static_cast<int64_t> (190 * 64));
 
-        REQUIRE (accepted >= wallFrames - kTolerance);
+        if (std::llabs (accepted - wallFrames) > kTolerance)
+            std::printf ("  across the output loss: accepted %lld frames in %lld frames of wall time, %lld delivered\n",
+                         (long long) accepted, (long long) wallFrames, (long long) (190 * 64));
+
+        REQUIRE (accepted >= owed - kTolerance);
         REQUIRE (accepted <= wallFrames + 64);
     }
 
@@ -3398,11 +3403,15 @@ TEST_CASE (CaptureCoordinator_AnOutputSwitchedToAnotherRateStopsClockingTheTake)
         // The same scheduling slack as the clock-loss test above.
         constexpr int64_t kTolerance = 48000 * 60 / 1000;
 
-        if (std::llabs (accepted - wallFrames) > kTolerance)
-            std::printf ("  with the output set aside: accepted %lld frames in %lld frames of wall time\n",
-                         (long long) accepted, (long long) wallFrames);
+        // What the microphones delivered bounds what the take can hold: a
+        // busy runner's sleeps overshoot, and the inputs fall behind the wall.
+        const auto owed = std::min (wallFrames, static_cast<int64_t> ((40 + 150) * 64));
 
-        REQUIRE (accepted >= wallFrames - kTolerance);
+        if (std::llabs (accepted - wallFrames) > kTolerance)
+            std::printf ("  with the output set aside: accepted %lld frames in %lld frames of wall time, %lld delivered\n",
+                         (long long) accepted, (long long) wallFrames, (long long) ((40 + 150) * 64));
+
+        REQUIRE (accepted >= owed - kTolerance);
         REQUIRE (accepted <= wallFrames + kTolerance);
     }
 
@@ -3442,9 +3451,11 @@ TEST_CASE (CaptureCoordinator_AnOutputStopsClockingTheTakeOnThePlatformsWordOfAR
     const float* ins[] = { a.data() };
     float* outs[] = { outL.data() };
 
+    int64_t blocksDriven = 0;
+
     const auto driveWithTheOutput = [&] (int blocks, int outputFrames)
     {
-        for (int i = 0; i < blocks; ++i)
+        for (int i = 0; i < blocks; ++i, ++blocksDriven)
         {
             backend.inputCallbacks[0] (ins, 1, nullptr, 0, 64);
             backend.inputCallbacks[1] (ins, 1, nullptr, 0, 64);
@@ -3485,6 +3496,7 @@ TEST_CASE (CaptureCoordinator_AnOutputStopsClockingTheTakeOnThePlatformsWordOfAR
 
     const auto before = c.getFramesAccepted();
     const auto started = std::chrono::steady_clock::now();
+    const auto blocksBefore = blocksDriven;
     const uint64_t overrunBefore[2] = { c.getChannelOverrunSamples (0), c.getChannelOverrunSamples (1) };
 
     // The listener's word. Nothing has read the new rate yet, and the app
@@ -3538,11 +3550,16 @@ TEST_CASE (CaptureCoordinator_AnOutputStopsClockingTheTakeOnThePlatformsWordOfAR
         // The same scheduling slack as the clock-loss test above.
         constexpr int64_t kTolerance = 48000 * 60 / 1000;
 
-        if (std::llabs (accepted - wallFrames) > kTolerance)
-            std::printf ("  across the switch: accepted %lld frames in %lld frames of wall time\n",
-                         (long long) accepted, (long long) wallFrames);
+        // What the microphones delivered bounds what the take can hold: a
+        // busy runner's sleeps overshoot, and the inputs fall behind the wall.
+        const auto delivered = (blocksDriven - blocksBefore) * 64;
+        const auto owed = std::min (wallFrames, delivered);
 
-        REQUIRE (accepted >= wallFrames - kTolerance);
+        if (std::llabs (accepted - wallFrames) > kTolerance)
+            std::printf ("  across the switch: accepted %lld frames in %lld frames of wall time, %lld delivered\n",
+                         (long long) accepted, (long long) wallFrames, (long long) delivered);
+
+        REQUIRE (accepted >= owed - kTolerance);
         REQUIRE (accepted <= wallFrames + kTolerance);
     }
 
