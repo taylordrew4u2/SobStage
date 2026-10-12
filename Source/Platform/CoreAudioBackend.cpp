@@ -10,7 +10,8 @@
 
 #include <CoreAudio/CoreAudio.h>
 #include <CoreAudio/HostTime.h>            // AudioGetCurrentHostTime(): the callback watchdog's clock
-#include <CoreFoundation/CoreFoundation.h> // CFAbsoluteTimeGetCurrent()
+#include <CoreFoundation/CoreFoundation.h>
+#include <time.h>                          // clock_gettime_nsec_np(): what counts through sleep
 #include <AudioToolbox/AudioToolbox.h>
 #include <unistd.h> // getpid() for hog-mode ownership
 #include <algorithm>
@@ -229,12 +230,15 @@ double hostClockSeconds() noexcept
 }
 
 /// A clock that keeps counting while the Mac sleeps, set against
-/// hostClockSeconds() only to notice that it slept. The wall clock: a time
-/// sync or someone changing the time can step it, and the worst that does is
-/// look like a short sleep, which only gives the watchdog its grace again.
+/// hostClockSeconds() only to notice that it slept. CLOCK_MONOTONIC_RAW
+/// (mach_continuous_time) counts through sleep and, unlike the time of day,
+/// is never stepped. It used to be the wall clock, which timed or someone
+/// changing the time can step by seconds at once; since a sleep mid-take is
+/// written into the take's record, a step read as a sleep left a gap in
+/// session.json the audio never had.
 double sleepCountingSeconds() noexcept
 {
-    return CFAbsoluteTimeGetCurrent();
+    return static_cast<double> (clock_gettime_nsec_np (CLOCK_MONOTONIC_RAW)) * 1.0e-9;
 }
 
 /// True when the Mac says its audio is off right now: a dark wake, where the
@@ -691,20 +695,25 @@ OSStatus streamPropertyChanged (AudioObjectID, UInt32 numAddresses,
         switch (addresses[i].mSelector)
         {
             case kAudioDevicePropertyNominalSampleRate:
-                // Pending before the hold below, both sequentially consistent,
-                // so takeStreamFailures() -- which lowers the hold and then
-                // looks at pending -- can never lower a hold this
-                // notification raised without seeing it pending.
-                stream->nominalRateCheckPending.store (true);
-
                 // §5.3: the headphone output's callback is the clock every
                 // microphone is pulled on, and from this moment it may be
                 // calling back at another rate. Held off the clock now, not
                 // at the app's next poll up to half a second later, by which
                 // time it had pulled every ring at that rate. An atomic
                 // store, which is all this listener may do.
+                //
+                // The hold goes up before the pending mark, both sequentially
+                // consistent. The other way round, a poll could take the
+                // pending mark, read the rate unchanged and lower the hold all
+                // between the two stores; the hold then went up after it with
+                // nothing pending to lower it again, and the headphones stayed
+                // off the clock for good. This way a poll that takes the mark
+                // reads the rate after the hold went up, and a poll that comes
+                // between the stores leaves the mark for the next one.
                 if (stream->outputOffRate != nullptr)
                     stream->outputOffRate->store (true);
+
+                stream->nominalRateCheckPending.store (true);
                 break;
 
             case kAudioDevicePropertyDeviceIsAlive:

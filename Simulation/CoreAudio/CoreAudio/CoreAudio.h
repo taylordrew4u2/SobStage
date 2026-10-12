@@ -109,6 +109,12 @@ CFAbsoluteTime CFAbsoluteTimeGetCurrent();
 UInt64 AudioGetCurrentHostTime();
 UInt64 AudioConvertHostTimeToNanos (UInt64 hostTime);
 
+// <time.h> on macOS; glibc has no such call, so the fake supplies it. Only
+// CLOCK_MONOTONIC_RAW is modelled: it counts through sleep, like
+// mach_continuous_time, and a step of the time of day does not move it.
+#include <time.h>
+uint64_t clock_gettime_nsec_np (clockid_t clockId);
+
 // --- Objects and properties -------------------------------------------------
 using AudioObjectID = UInt32;
 using AudioObjectPropertySelector = UInt32;

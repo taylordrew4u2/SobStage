@@ -156,6 +156,11 @@ void passTime (double seconds);
 /// day. No IOProc runs across it.
 void sleepSystem (double seconds);
 
+/// The time of day stepped by `seconds` (timed syncing, or someone changing
+/// the clock): CFAbsoluteTimeGetCurrent jumps, and neither the host clock nor
+/// CLOCK_MONOTONIC_RAW moves. Not a sleep.
+void stepWallClock (double seconds);
+
 /// What the power manager says about the Mac's audio
 /// (IOPMConnectionGetSystemCapabilities()): on, as when fully awake (the reset
 /// state), or off, as in a dark wake -- awake with the lid shut, display and

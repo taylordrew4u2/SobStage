@@ -160,6 +160,7 @@ State& state()
 // whichever thread pumps it.
 std::atomic<int64_t> skippedAwakeNanos { 0 };
 std::atomic<int64_t> sleptNanos { 0 };
+std::atomic<int64_t> wallStepNanos { 0 };
 
 // What the power manager says the Mac can do right now (IOPMLibPrivate.h's
 // IOPMCapabilityBits), and how often it has been asked.
@@ -418,7 +419,14 @@ CFAbsoluteTime CFAbsoluteTimeGetCurrent()
 
     return kSecondsSince2001
          + static_cast<double> (realNanos() + skippedAwakeNanos.load (std::memory_order_relaxed)
-                                + sleptNanos.load (std::memory_order_relaxed)) * 1.0e-9;
+                                + sleptNanos.load (std::memory_order_relaxed)
+                                + wallStepNanos.load (std::memory_order_relaxed)) * 1.0e-9;
+}
+
+uint64_t clock_gettime_nsec_np (clockid_t)
+{
+    return static_cast<uint64_t> (realNanos() + skippedAwakeNanos.load (std::memory_order_relaxed)
+                                  + sleptNanos.load (std::memory_order_relaxed));
 }
 
 UInt64 AudioGetCurrentHostTime()
@@ -1117,6 +1125,11 @@ void releaseStart (AudioObjectID device)
         gate.released.insert (device);
     }
     startGate().changed.notify_all();
+}
+
+void stepWallClock (double seconds)
+{
+    wallStepNanos.fetch_add (toNanos (seconds), std::memory_order_relaxed);
 }
 
 void passTime (double seconds)

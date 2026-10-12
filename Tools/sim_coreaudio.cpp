@@ -1558,6 +1558,41 @@ void aMacThatSleepsAndWakesDoesNotAccuseItsDevices()
     backend.closeAllStreams();
 }
 
+/// A time sync mid-take -- the Mac joins the venue's Wi-Fi after days off the
+/// network and timed steps its clock by seconds -- or someone changing the
+/// time. The sleep check measured against the time of day, so a step read as
+/// a sleep and the take's record said it had a gap the audio never had.
+void aClockStepIsNotASleep()
+{
+    std::printf ("\nThe time of day is stepped with the rig open\n");
+    fakeca::reset();
+
+    mma::CoreAudioBackend backend;
+    SleepWatch watch { backend };
+    SleepRig rig;
+    rig.open (backend, "stepped");
+
+    rig.runMic();
+    rig.runPhones();
+    check (watch.poll().empty(), "a running rig is not accused");
+
+    fakeca::stepWallClock (5.0);
+    rig.runMic();
+    rig.runPhones();
+    check (watch.poll().empty(), "a clock stepped forward accuses no device");
+    check (watch.sleeps == 0, "and is not taken for a sleep");
+
+    fakeca::stepWallClock (-30.0);
+    fakeca::sleepSystem (2.0);
+    check (watch.poll().empty(), "a short sleep after the clock went back accuses no device");
+    check (watch.sleeps == 1, "and is still noticed as a sleep");
+
+    rig.runMic();
+    rig.runPhones();
+    check (watch.poll().empty(), "audio coming back is not news");
+    backend.closeAllStreams();
+}
+
 /// A dark wake: the Mac wakes with the lid shut for maintenance -- Power Nap, a
 /// Time Machine backup, iCloud -- the app runs and polls, and the Mac's audio
 /// stays off, for minutes at a time. That is not every device failing. The
@@ -3126,6 +3161,7 @@ int main()
     aMicrophoneThatGoesQuietAfterOpeningIsReported();
     aMicrophoneWhoseFirstCallbackNeverArrivesIsReported();
     aMacThatSleepsAndWakesDoesNotAccuseItsDevices();
+    aClockStepIsNotASleep();
     aDarkWakeIsNotAFailureButAMicThatNeverReturnsIs();
     aLongDarkWakeThenNothingStartingIsReportedAMinuteAfterTheAudioIsBack();
     aMacSlowToFallAsleepDoesNotAccuseItsDevices();
