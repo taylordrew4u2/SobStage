@@ -1118,6 +1118,8 @@ jobs:
 
       # On a dispatch, the action creates the already-validated version tag at
       # the exact commit whose already-packaged artifacts passed every check.
+      # The notes become the release body only here, once. A later fix to the
+      # notes file reaches the published page through Tools/release_body.py.
       - name: Create a draft release and upload every asset
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:

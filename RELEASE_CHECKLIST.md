@@ -217,6 +217,11 @@ passed the physical camera matrix.
   notes name for rolling back) and their assets immutable and available until
   v1.13.25 is proven in production.
 - [ ] Publish v1.13.25 from the exact tested commit; never move or reuse the tag.
+- [ ] After publishing, `python3 Tools/release_body.py --all` reports that every
+  release page matches its notes file. The workflow never edits a release that
+  already exists, so a later fix to `docs/release-notes/<tag>.md` reaches its
+  page only when that command is run again with `--apply`. It keeps the list of
+  changes GitHub added and does not change which release is the latest.
 - [ ] Smoke-test each URL, checksum, install, launch, short recording, playback,
   diagnostics export and uninstall from the public release page.
 - [ ] If a serious regression appears, mark v1.13.25 as pre-release/not latest,
@@ -226,6 +231,19 @@ passed the physical camera matrix.
 - [ ] Before advising a downgrade, back up `settings.json` and confirm the older
   version can read it; otherwise remove or restore settings explicitly. Never
   delete recordings or session folders as part of rollback.
+
+## Open items
+
+- [ ] **The release pages from v1.13.19 on still show their old notes.** The
+  notes files were corrected, but the pages on GitHub were not. The page of the
+  latest release is what Mac users read before checking and opening the
+  unsigned disk image, and it still links the checksum steps to a README
+  section that no longer exists, says SobStage "sends nothing anywhere" though
+  **Check for updates** and **Check now** contact GitHub, and names an old
+  release for rolling back. With the maintainer's approval, run
+  `python3 Tools/release_body.py --all`, check the changes it shows (v1.13.15
+  is listed too: its notes were corrected after it shipped), then run it again
+  with `--apply`. Tick this when `--all` reports that every page matches.
 
 ## Sign-off
 

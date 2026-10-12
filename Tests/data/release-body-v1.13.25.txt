@@ -1,0 +1,123 @@
+# SobStage v1.13.25 — release candidate
+
+SobStage records up to eight external microphones at once, each to its own
+file plus a summed mix, and sends one low-latency monitor mix to everyone in
+the room. This release puts the headphones first: the monitor mix is never held back to line up microphones. Plus Mac buffer-size fixes, feedback detection switched on, and better crash recovery.
+
+> **This is a release candidate, not a general release.** Physical-hardware
+> validation is still open. See **Known limitations** below and
+> [`RELEASE_CHECKLIST.md`](https://github.com/taylordrew4u2/usbmic/blob/v1.13.25/RELEASE_CHECKLIST.md) before you trust it with
+> a recording you can't repeat.
+
+## Downloads
+
+| File | For |
+|---|---|
+| `SobStage-macOS.dmg` | macOS 13 or later, Apple silicon and Intel. Open it and drag SobStage onto Applications. |
+| `SobStage-macOS.zip` | The same app, without the disk image. |
+| `SobStage-Windows.zip` | Windows. Portable: unzip and run `bin\SobStage.exe`. No installer. |
+| `SobStage-Linux.zip` | Linux (early use; not a v1 production target). |
+| `SobStage-1.13.25-source.zip` | The exact SobStage and JUCE source this release was built from (GPLv3). |
+| `SHA256SUMS` | Checksums for every file above. |
+
+This release is not code-signed with a Developer ID or Authenticode
+certificate, the same as every release before it. On macOS, after dragging the
+app to Applications, run this once in Terminal before the first launch,
+otherwise Gatekeeper says the app "is damaged":
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/SobStage.app"
+```
+
+On Windows, SmartScreen shows "unknown publisher" on first run. Choose
+**More info → Run anyway**. Verify the download against `SHA256SUMS` first.
+
+To check a download, see [Download in the README](https://github.com/taylordrew4u2/usbmic/blob/v1.13.25/README.md#download).
+
+## What's new
+
+- **Headphones come first.** The headphone mix is never held back to line
+  the microphones up. Each mic reaches the headphones as soon as its own
+  interface allows; the recorded files are lined up separately, after the
+  sound has gone to the headphones. session.json records each interface's
+  offset either way.
+- **Mac: an interface that changes its buffer size mid-take** (another app,
+  or macOS itself) no longer drops audio; going back and forth costs nothing.
+- **Feedback detection is switched on.** The headphone mix is now watched
+  for feedback while you record, as the guide always said; a howl cuts the
+  headphones with the same message and Unmute button as before.
+- **The headphone delay shown is accurate.** It now includes the small
+  safety cushion it used to leave out, so the figure reads a little higher;
+  the headphones are no slower. The buffer-change notice and the Settings
+  figure now always agree.
+- **The "slow microphone" warning** only names a mic that is really behind
+  the others, not every mic once the buffer has been raised.
+- **Meters, peak hold and tap-to-name keep real time** even when macOS slows
+  the app down in the background.
+- **Mute clears the runaway evidence,** so unmuting can't cut the headphones
+  for a burst that happened before the mute.
+- **Crash or power cut mid-take:** session.json is now kept up to date during
+  the take, so the record a crash leaves is accurate; a card that mounts late
+  after a crash is still checked; leftover half-written files are cleaned up;
+  if the card copy can't be repaired, the backup copy is offered instead;
+  "nothing playable survived" no longer repeats every launch; the recovered
+  list mentions camera movies (including Windows .wmv).
+- **Combined video:** a half-finished export is never left under the finished
+  name; a repeat failure is reported every take; a combine is skipped (with a
+  warning) when the card stopped answering; you're told when it's ready; on
+  Mac it now ends where the sound ends.
+
+**Before a show:** set your microphones and headphones to the same sample rate
+as SobStage in **Audio MIDI Setup** (48 kHz is safest), allow the microphone
+prompt, and make a short test take.
+
+Everything in [v1.13.24](https://github.com/taylordrew4u2/usbmic/releases/tag/v1.13.24) is included.
+Full list: [`CHANGELOG.md`](https://github.com/taylordrew4u2/usbmic/blob/v1.13.25/CHANGELOG.md).
+
+## Known limitations
+
+- **No completed take from physical microphones has passed the release
+  hardware matrix yet**, on any platform. The engine is covered by 878 unit
+  tests and by simulated CoreAudio and WASAPI device layers, but simulation is
+  not hardware certification.
+- **Pulling the card mid-take** is handled in code, and an automated test
+  makes the recording folder stop answering inside the real app at Record and
+  at Stop. It has not yet been tested by pulling a real card on macOS or
+  Windows.
+- **HDMI capture cards:** v1.13.13 and v1.13.14 added an all-black-picture
+  warning, a wait for the camera prompt and 30 fps mode selection on the Mac,
+  but a visible preview and a completed camera recording are still unverified
+  on real hardware.
+- **Headphones on each microphone (Mac):** the shared mix through the combined
+  SobStage device has not been latency-measured on hardware, and a mic with
+  built-in direct monitoring (such as a Blue Yeti) plays its owner's voice
+  twice.
+- **Phones and wireless receivers that present as ordinary USB audio** can't be
+  told apart from an interface, so they may appear as inputs.
+- **Monitor latency** has not been measured by loopback on real hardware.
+- **Linux** is for early use and testing only.
+
+## Updating and rolling back
+
+There is no automatic update. Download the new version and replace the old
+one. Your settings, microphone names and recordings are kept.
+
+If this version causes you a problem, v1.13.19 remains available. Back up
+`settings.json` before you downgrade. Rolling back never deletes recordings.
+
+## Support and privacy
+
+- Report a problem: [open an issue](https://github.com/taylordrew4u2/usbmic/issues/new).
+  **Settings → Export diagnostics** creates a zip of logs, recent session
+  details and device names. It never contains audio or video. Read it before
+  posting it publicly.
+- SobStage sends nothing anywhere. There is no crash upload, analytics or
+  automatic update. See [`PRIVACY.md`](https://github.com/taylordrew4u2/usbmic/blob/v1.13.25/PRIVACY.md).
+- Licence: GPLv3. See [`LICENSING.md`](https://github.com/taylordrew4u2/usbmic/blob/v1.13.25/LICENSING.md).
+
+
+## What's Changed
+* v1.13.25: headphones-first monitoring, Mac buffer-size fixes, feedback detection on, crash recovery by @taylordrew4u2 in https://github.com/taylordrew4u2/usbmic/pull/182
+
+
+**Full Changelog**: https://github.com/taylordrew4u2/usbmic/compare/v1.13.24...v1.13.25
