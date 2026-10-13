@@ -79,8 +79,12 @@ the §3.2 loop limit-cycled — a device 60 PPM slow never converged, a device
 150 PPM slow dropped a block of audio every few seconds, and every microphone
 in the rig was reported at +200 PPM. `Tools/sim_drift_loop` models delivery
 the real way, deterministically, and is now the test: five clocks at ±150,
-±60 and 0 PPM lock within 1 PPM with no loss, at every rung of the buffer
-ladder with the jitter that rung is meant to absorb. `Tools/e2e_realtime_mics.sh`
+±60 and 0 PPM lock with no loss, at every rung of the buffer ladder with the
+jitter that rung is meant to absorb. Without jitter the loop sits within
+1 PPM RMS of each clock over the last minute; with it, it is held to 20 PPM
+RMS over the last minute rather than at the last instant, since under a
+rung's stalls its figure moves with each one and a single reading of it is
+luck. `Tools/e2e_realtime_mics.sh`
 then does the same through the real app, with the virtual microphones paced
 to real, independent clocks: the take is checked, the ladder is checked, and
 the drift the app reports is checked against the clocks it was given.

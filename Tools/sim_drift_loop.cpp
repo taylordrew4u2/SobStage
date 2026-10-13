@@ -7,8 +7,15 @@
 //
 // Defaults: 300 s, 64, "150,-150,60,-60,0", the compensator's own gains, no
 // jitter, virtual fill on. Exits 1 if any device loses audio after its first
-// minute, ends more than 20 PPM from its clock, or is measured more than
-// 10 PPM wrong -- the three things §3.2/§3.3 promise.
+// minute, its loop sits more than 20 PPM from its clock over the last minute
+// (RMS), or it is measured more than 10 PPM wrong -- the three things
+// §3.2/§3.3 promise.
+//
+// Over the last minute, not at the last instant: under jitter and stalls the
+// loop's figure moves with every stall the level shows it, and one sample of
+// it is luck. At 512 samples with 2 ms of jitter and 8 ms stalls the loop is
+// beyond 20 PPM for 10-16% of the time whatever its slew -- 5 PPM/s or 20 --
+// and which side of that the run's last tick fell on decided the test.
 //
 // Why Tools/soak_drift.cpp did not find what this finds: it feeds drift as
 // one extra or missing sample folded into a block that is pushed and pulled
@@ -71,6 +78,11 @@ struct Device
     int64_t pushed = 0;
     float lastOut = -1.0f;
     uint64_t seams = 0, seamsAfterMinute = 0;
+
+    // The loop's figure against the device's clock over the run's last
+    // minute: the sum of squares and the count of reporting ticks.
+    double lastMinuteSquares = 0.0;
+    int lastMinuteTicks = 0;
 };
 
 std::vector<double> parsePpm (const char* text)
@@ -217,6 +229,13 @@ int main (int argc, char** argv)
                 if (std::abs (d.stream.getDriftPpm() - d.ppm) > 10.0)
                     d.lastOutsideS = simS;
 
+                if (simS >= seconds - 60.0)
+                {
+                    const double error = d.stream.getDriftPpm() - d.ppm;
+                    d.lastMinuteSquares += error * error;
+                    ++d.lastMinuteTicks;
+                }
+
                 if (simS >= 60.0)
                 {
                     d.minFillAfterMinute = std::min (d.minFillAfterMinute, d.stream.getFillFraction());
@@ -238,8 +257,8 @@ int main (int argc, char** argv)
     std::printf ("block %d, %.0f s, kp %.2f ppm/sample, ki %.1e, slew %.0f ppm/s, jitter %.1f ms, stalls %.1f ms x %.2f/s, %s fill\n\n",
                  block, seconds, kpPpm, ki, slew, jitter.jitterS * 1000.0, jitter.stallS * 1000.0,
                  jitter.stallsPerSecond, virtualFill ? "virtual" : "raw");
-    std::printf ("%8s %9s %9s %9s %10s %10s %10s %10s %12s %12s %8s %8s\n",
-                 "clock", "loop@end", "meas@1min", "meas@end", "settle_s", "under<1m", "over<1m", "loss>1m", "fill_min>1m", "fill_max>1m", "seams", "seams>1m");
+    std::printf ("%8s %9s %9s %9s %9s %10s %10s %10s %10s %12s %12s %8s %8s\n",
+                 "clock", "loop@end", "loop_rms", "meas@1min", "meas@end", "settle_s", "under<1m", "over<1m", "loss>1m", "fill_min>1m", "fill_max>1m", "seams", "seams>1m");
 
     int failures = 0;
 
@@ -248,11 +267,11 @@ int main (int argc, char** argv)
         const auto under = d.stream.getUnderrunSamples();
         const auto over = d.stream.getOverrunSamples();
         const auto lossAfterMinute = (under - d.underAtMinute) + (over - d.overAtMinute);
-        const double loopErr = std::abs (d.stream.getDriftPpm() - d.ppm);
+        const double loopErr = d.lastMinuteTicks > 0 ? std::sqrt (d.lastMinuteSquares / d.lastMinuteTicks) : 1.0e9;
         const double measErr = d.stream.hasDriftMeasurement() ? std::abs (d.stream.getMeasuredDriftPpm() - d.ppm) : 1.0e9;
 
-        std::printf ("%+8.0f %+9.1f %+9.1f %+9.1f %10.1f %10llu %10llu %10llu %12.3f %12.3f %8llu %8llu\n",
-                     d.ppm, d.stream.getDriftPpm(),
+        std::printf ("%+8.0f %+9.1f %9.1f %+9.1f %+9.1f %10.1f %10llu %10llu %10llu %12.3f %12.3f %8llu %8llu\n",
+                     d.ppm, d.stream.getDriftPpm(), loopErr,
                      d.measuredAtMinuteValid ? d.measuredAtMinute : 0.0,
                      d.stream.hasDriftMeasurement() ? d.stream.getMeasuredDriftPpm() : 0.0,
                      d.lastOutsideS,
@@ -269,7 +288,7 @@ int main (int argc, char** argv)
         if (measErr > 10.0) ++failures;
     }
 
-    std::printf ("\n%s\n", failures == 0 ? "PASS: no loss or seam after the first minute, loop within 20 PPM, measurement within 10 PPM"
+    std::printf ("\n%s\n", failures == 0 ? "PASS: no loss or seam after the first minute, loop within 20 PPM over the last minute, measurement within 10 PPM"
                                           : "FAIL: see the rows above");
     return failures == 0 ? 0 : 1;
 }
