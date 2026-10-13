@@ -47,6 +47,7 @@ Collapse to mono when **either** condition holds:
 - Inter-channel correlation exceeds 0.99 **and** RMS difference is under 0.5 dB.
 Otherwise record true stereo.
 If the 3-second signal window is not reached within 60 seconds of connection, default to mono and re-evaluate if signal later appears. Never block on this and never ask a novice "mono or stereo?"
+**In the headphones, while it is being decided.** Until there is a verdict, both inputs are kept as separate channels, and for a whole take if Record comes first (the layout is only rebuilt while idle). Summed at unity, a duplicated mono microphone put its one voice into the headphone mix twice: +6 dB, enough on its own to run ordinary speech into §5.5's limiter. So the headphone mix (never the files) plays each side of a pair still being analysed at half level, which is exactly the one voice for a duplicated microphone and only 6 dB low for a real two-input interface for those few seconds. The moment a verdict backed by the 3-second window is reached the headphones follow it, mid-take included and without waiting for the rebuild: Mono plays the chosen side alone, Stereo both sides at full level, the change made over 10 ms so it does not click. The provisional 60-second Mono keeps half each, since it is no evidence either way. Both sides are still written at unity, each to its own file, until the idle rebuild.
 ### 2.2 Sample rate negotiation
 Query supported and current rates for every device. Automatic mode prefers the
 rate the rig already shares, capped at 48 kHz, and resamples independent clocks
@@ -103,7 +104,7 @@ The master's own crystal is part of what this measures. A gate that gives the ma
 - One mix. Identical for every listener. Contains every microphone, including each listener's own.
 - No mix-minus, no per-listener variation, no solo, no cue routing, no exceptions.
 - Live from launch, independent of record state. No arm step, no enable toggle. Hearing the room is the app's proof of life.
-- Summing is unity, no per-channel attenuation with channel count. Level is managed by trim and the master control, not by automatic gain.
+- Summing is unity, no per-channel attenuation with channel count. Level is managed by trim and the master control, not by automatic gain. (The one exception is §2.1's pair still being analysed, heard at half each so one voice is not heard twice.)
 - Master monitor volume: 0–100, default 70, mapped logarithmically. Recorded files are unaffected by it. It is applied **before** §5.5's safety limiter, so the limiter judges what actually reaches the ears and turning the headphones down takes the mix out of it. Applied after the limiter, as it was, the −3 dBFS ceiling acted on the full-level bus: measured with four microphones in one room peaking at −6 dBFS, the same peaks were squared off at every volume (the worst 50 ms of a minute's conversation 23.5 dB above its distortion at volume 100, 70 and 40 alike), and the volume control only made the distortion quieter.
 ### 5.2 Physical topology
 ```

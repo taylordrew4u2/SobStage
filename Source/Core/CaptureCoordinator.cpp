@@ -156,6 +156,44 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     for (const auto& ch : channels)
         trimGains.push_back (MonitorBus::trimDbToLinearGain (ch.trimDb));
 
+    // §2.1 meets §5.1. Most USB microphones present two inputs carrying the
+    // same voice, and a fresh one keeps both as separate channels until the
+    // analyzer has heard three seconds of it -- for the whole take, if Record
+    // comes first, because the layout is only rebuilt while idle. Summed at
+    // unity, that one voice reached the headphones twice: +6 dB, enough on
+    // its own to push ordinary speech into the safety limiter. So in the
+    // headphones (never in the stems) each side of a pair still being
+    // analysed is heard at half, which is exactly the one voice for a
+    // duplicated microphone and only 6 dB low for a real two-input interface
+    // for those few seconds. Once the verdict is in, the callback follows it
+    // straight away, mid-take included: Mono plays the chosen side alone,
+    // Stereo both at unity. Found here, while nothing is running, so the
+    // callback only reads these.
+    monitorPairAnalyzer.assign (channels.size(), -1);
+    monitorPairSide.assign (channels.size(), 0);
+    for (size_t i = 0; i < channels.size(); ++i)
+    {
+        if (! channels[i].analyzeStereoPair || channels[i].deviceChannel != 0)
+            continue;
+
+        for (size_t j = 0; j < channels.size(); ++j)
+        {
+            if (j == i || channels[j].deviceId != channels[i].deviceId || channels[j].deviceChannel != 1)
+                continue;
+
+            monitorPairAnalyzer[i] = static_cast<int> (i);
+            monitorPairAnalyzer[j] = static_cast<int> (i);
+            monitorPairSide[j] = 1;
+            break;
+        }
+    }
+
+    monitorPairWeight.assign (channels.size(), 1.0f);
+    monitorPairTarget.assign (channels.size(), 1.0f);
+    for (size_t i = 0; i < channels.size(); ++i)
+        if (monitorPairAnalyzer[i] >= 0)
+            monitorPairWeight[i] = monitorPairTarget[i] = kUnsettledPairMonitorGain;
+
     // A headphone/capture-card output is never allowed to make the recording
     // inputs unavailable. Enumeration can say an output supports a rate and
     // the driver can still refuse the real exclusive open. Re-enter once with
@@ -1475,6 +1513,51 @@ void CaptureCoordinator::analyzeStereoPair (int channelIndex, const float* left,
     }
 }
 
+float CaptureCoordinator::pairMonitorTarget (size_t channel) const noexcept
+{
+    if (channel >= monitorPairAnalyzer.size() || monitorPairAnalyzer[channel] < 0)
+        return 1.0f;
+
+    const auto analyzer = static_cast<size_t> (monitorPairAnalyzer[channel]);
+
+    if (analyzer >= channelLayouts.size())
+        return 1.0f;
+
+    const auto& layout = *channelLayouts[analyzer];
+
+    // Only a verdict from three seconds of signal. The sixty-second
+    // no-signal Mono is provisional (both sides are quiet, and a quiet
+    // two-input interface must still be able to prove Stereo), so the pair
+    // stays at half each until a real answer. The acquire pairs with the
+    // release that published the decision and its side.
+    if (! layout.decisionPersistable.load (std::memory_order_acquire))
+        return kUnsettledPairMonitorGain;
+
+    switch (static_cast<ChannelLayoutDecision> (layout.decision.load (std::memory_order_acquire)))
+    {
+        case ChannelLayoutDecision::Stereo:
+            return 1.0f;
+
+        case ChannelLayoutDecision::Mono:
+        {
+            const int source = layout.source.load (std::memory_order_relaxed) == 1 ? 1 : 0;
+            return monitorPairSide[channel] == source ? 1.0f : 0.0f;
+        }
+
+        case ChannelLayoutDecision::Pending:
+        default:
+            return kUnsettledPairMonitorGain;
+    }
+}
+
+float CaptureCoordinator::getChannelMonitorWeight (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (monitorPairWeight.size()))
+        return 1.0f;
+
+    return monitorPairWeight[static_cast<size_t> (index)];
+}
+
 int CaptureCoordinator::getChannelLayoutSource (int index) const noexcept
 {
     if (index < 0 || index >= static_cast<int> (channelLayouts.size()))
@@ -2084,7 +2167,9 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
         || busScratch.size() < static_cast<size_t> (numSamples)
         || alarmScratch.size() < static_cast<size_t> (numSamples)
         || static_cast<int> (trimFrame.size()) < channelCount
-        || static_cast<int> (trimGains.size()) < channelCount)
+        || static_cast<int> (trimGains.size()) < channelCount
+        || static_cast<int> (monitorPairWeight.size()) < channelCount
+        || static_cast<int> (monitorPairTarget.size()) < channelCount)
     {
         for (int ch = 0; ch < numOutputs; ++ch)
             if (outputs[ch] != nullptr)
@@ -2104,14 +2189,44 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     for (size_t ch = static_cast<size_t> (channelCount); ch < trimFrame.size(); ++ch)
         trimFrame[ch] = 0.0f;
 
+    // Where each analysed pair's headphone weight is headed this block (see
+    // startMonitoring). Read once per block: a few atomic loads per pair.
+    bool pairWeightsMoving = false;
+    for (int ch = 0; ch < channelCount; ++ch)
+    {
+        const auto i = static_cast<size_t> (ch);
+        monitorPairTarget[i] = pairMonitorTarget (i);
+        pairWeightsMoving = pairWeightsMoving || monitorPairWeight[i] != monitorPairTarget[i];
+    }
+
+    // A verdict moves the weights over 10 ms rather than in one step: a pair
+    // going from half each to both at unity is a 6 dB jump, a click if it
+    // lands mid-waveform. A duplicated pair crossfading to one side stays the
+    // same level throughout.
+    const float pairWeightStep = sampleRate > 0.0
+                                   ? static_cast<float> (1.0 / (kPairWeightRampSeconds * sampleRate))
+                                   : 1.0f;
+
     for (int s = 0; s < numSamples; ++s)
     {
         // §4: trim is applied to the mix only. The stems the pipeline already
         // received above stay at unity, which is what makes trim a monitoring
-        // decision the recording cannot be damaged by.
+        // decision the recording cannot be damaged by. So is the pair weight.
         for (int ch = 0; ch < channelCount; ++ch)
-            trimFrame[static_cast<size_t> (ch)] =
-                (inputs[ch] != nullptr) ? inputs[ch][s] * trimGains[static_cast<size_t> (ch)] : 0.0f;
+        {
+            const auto i = static_cast<size_t> (ch);
+            float weight = monitorPairWeight[i];
+
+            if (pairWeightsMoving && weight != monitorPairTarget[i])
+            {
+                const float target = monitorPairTarget[i];
+                weight = weight < target ? std::min (target, weight + pairWeightStep)
+                                         : std::max (target, weight - pairWeightStep);
+                monitorPairWeight[i] = weight;
+            }
+
+            trimFrame[i] = (inputs[ch] != nullptr) ? inputs[ch][s] * trimGains[i] * weight : 0.0f;
+        }
 
         // §5.1/§5.5: the bus, then the listener's volume, then the safety
         // limiter on what reaches the ears -- all inside processSample. The

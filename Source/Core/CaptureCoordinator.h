@@ -404,6 +404,13 @@ public:
     Metering* getChannelMetering (int index) noexcept;
     Metering& getMixMetering() noexcept { return mixMeter; }
 
+    /// The weight a channel is heard at in the headphones on top of its trim:
+    /// 1, except for a fresh two-input device whose stereo/mono layout §2.1 is
+    /// still deciding (each side at 0.5) or has decided Mono (the chosen side
+    /// at 1, the other at 0). Never applied to the stems. As of the last
+    /// block mixed; for tests and diagnostics.
+    float getChannelMonitorWeight (int index) const noexcept;
+
     /// §6.6: the fraction of each callback's available time actually spent in
     /// it. This is the load that matters for dropouts -- overall machine CPU
     /// can look calm while the audio thread is already missing its deadline.
@@ -935,6 +942,19 @@ private:
     std::vector<float> alarmScratch;
     std::vector<float> trimFrame;
     std::vector<float> trimGains;
+
+    // §2.1 in the headphones: for each channel of a fresh two-input device
+    // whose layout is still being analysed, the channel that analyses the pair
+    // (its input 0), else -1; which side of the pair it is; the weight it is
+    // monitored at now and the weight it is heading for. Sized at
+    // startMonitoring(), read and moved only by the callback.
+    std::vector<int> monitorPairAnalyzer;
+    std::vector<int> monitorPairSide;
+    std::vector<float> monitorPairWeight;
+    std::vector<float> monitorPairTarget;
+    static constexpr float kUnsettledPairMonitorGain = 0.5f;
+    static constexpr double kPairWeightRampSeconds = 0.010;
+    float pairMonitorTarget (size_t channel) const noexcept;
 
     // Per-device pulled audio and the pointer table the writer wants, both
     // sized at startMonitoring(). The output callback fills these every block

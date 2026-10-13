@@ -2998,6 +2998,207 @@ TEST_CASE (CaptureCoordinator_OneDuplicatedFinalBlockCannotCollapseMostlyStereoA
     REQUIRE (c.getChannels().size() == 2);
 }
 
+namespace {
+
+/// The largest |sample| in a 16-bit mono stem.
+int loudestMagnitudeIn (const std::string& path)
+{
+    std::ifstream f (path, std::ios::binary);
+    REQUIRE (f.is_open());
+    const auto bytes = readU32LE (f, kDataSizeOffset);
+    f.seekg (kAudioDataOffset);
+
+    int loudest = 0;
+
+    for (uint32_t i = 0; i < bytes / 2; ++i)
+    {
+        unsigned char lo = 0, hi = 0;
+        f.read (reinterpret_cast<char*> (&lo), 1);
+        f.read (reinterpret_cast<char*> (&hi), 1);
+        const auto v = static_cast<int16_t> (static_cast<uint16_t> (lo) | (static_cast<uint16_t> (hi) << 8));
+        loudest = std::max (loudest, std::abs (static_cast<int> (v)));
+    }
+
+    return loudest;
+}
+
+/// A fresh two-input USB device, both inputs selected, its layout unknown:
+/// what ChannelPlan hands over before §2.1 has heard it.
+std::vector<CaptureChannel> freshStereoPair()
+{
+    CaptureChannel left { "device", "Fresh USB 1", "01_Fresh-USB-1", 0.0f };
+    left.deviceChannel = 0;
+    left.analyzeStereoPair = true;
+    CaptureChannel right { "device", "Fresh USB 2", "02_Fresh-USB-2", 0.0f };
+    right.deviceChannel = 1;
+    return { left, right };
+}
+
+} // namespace
+
+TEST_CASE (CaptureCoordinator_AFreshDuplicatedPairIsHeardOnceNotTwice)
+{
+    // Most USB microphones present two inputs carrying the same voice. Until
+    // §2.1 has heard three seconds of it, both are kept as separate channels
+    // -- and both were summed into the headphones at unity: the one voice
+    // twice, +6 dB, into the safety limiter. Each side of an unsettled pair
+    // is now heard at half, which is the voice once.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (freshStereoPair(), "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
+
+    const std::vector<float> voice (64, 0.2f);
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+
+    for (int block = 0; block < 100; ++block) // 0.13 s: long before any verdict
+    {
+        pushStereo (backend, 0, voice, voice);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Pending);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (0), 0.5f, 1e-6);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (1), 0.5f, 1e-6);
+    REQUIRE_NEAR (out.back(), 0.2f, 1e-5);
+
+    // Past three seconds §2.1 calls it Mono (the sides are identical) and the
+    // headphones take the chosen side alone, straight away -- the capture
+    // still has both channels until the idle rebuild.
+    for (int block = 0; block < 2300; ++block)
+    {
+        pushStereo (backend, 0, voice, voice);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Mono);
+    REQUIRE (c.getChannels().size() == 2);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (0), 1.0f, 1e-6);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (1), 0.0f, 1e-6);
+    REQUIRE_NEAR (out.back(), 0.2f, 1e-5);
+    c.stopMonitoring();
+}
+
+TEST_CASE (CaptureCoordinator_AVerdictReachedMidTakeReachesTheHeadphonesButNotTheStems)
+{
+    // Record pressed before the verdict: the layout is only rebuilt while
+    // idle, so the doubled voice used to last the whole take. The verdict now
+    // reaches the headphones the moment it is reached, and the stems -- both
+    // of them, each at unity -- are exactly what they were.
+    const auto dir = tempDir() + "/fresh_pair_mid_take";
+    std::filesystem::create_directories (dir);
+    std::remove ((dir + "/01_Fresh-USB-1.wav").c_str());
+    std::remove ((dir + "/02_Fresh-USB-2.wav").c_str());
+
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (freshStereoPair(), "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
+    REQUIRE (c.startRecording (dir, 16, "2026-10-13T00:00:00Z"));
+
+    // The capsule is wired to the right input; the left is silent.
+    const std::vector<float> silent (64, 0.0f);
+    const std::vector<float> voice (64, 0.4f);
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+
+    for (int block = 0; block < 100; ++block)
+    {
+        pushStereo (backend, 0, silent, voice);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    REQUIRE_NEAR (out.back(), 0.2f, 1e-5); // half, while it is being worked out
+
+    for (int block = 0; block < 2300; ++block)
+    {
+        pushStereo (backend, 0, silent, voice);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Mono);
+    REQUIRE (c.getChannelLayoutSource (0) == 1);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (0), 0.0f, 1e-6);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (1), 1.0f, 1e-6);
+    REQUIRE_NEAR (out.back(), 0.4f, 1e-5); // the live side, alone, at unity
+
+    c.stopRecording();
+    c.stopMonitoring();
+
+    REQUIRE (loudestMagnitudeIn (dir + "/01_Fresh-USB-1.wav") == 0);
+    REQUIRE (std::abs (loudestMagnitudeIn (dir + "/02_Fresh-USB-2.wav") - static_cast<int> (std::lround (0.4 * 32767.0))) <= 1);
+
+    std::remove ((dir + "/01_Fresh-USB-1.wav").c_str());
+    std::remove ((dir + "/02_Fresh-USB-2.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
+}
+
+TEST_CASE (CaptureCoordinator_AStereoVerdictBringsBothSidesBackToUnity)
+{
+    // A real two-input interface, two different people: half each for the
+    // three seconds it takes to tell, then both at unity -- moved over 10 ms,
+    // not in one 6 dB step.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (freshStereoPair(), "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
+
+    std::vector<float> left (64), right (64), out (64, 0.0f);
+    float* outs[] = { out.data() };
+    float biggestStep = 0.0f, previous = 0.0f;
+    bool sawVerdict = false;
+
+    for (int block = 0; block < 2400; ++block)
+    {
+        for (int i = 0; i < 64; ++i)
+        {
+            const double t = static_cast<double> (block * 64 + i) / 48000.0;
+            left[static_cast<size_t> (i)] = static_cast<float> (0.2 * std::sin (6.283185307179586 * 3.0 * t));
+            right[static_cast<size_t> (i)] = 0.1f;
+        }
+
+        pushStereo (backend, 0, left, right);
+        c.pullOutputBlock (outs, 1, 64);
+
+        if (! sawVerdict && c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Stereo)
+            sawVerdict = true;
+
+        for (const auto sample : out)
+        {
+            if (block >= 200) // once the ring is playing out
+                biggestStep = std::max (biggestStep, std::abs (sample - previous));
+            previous = sample;
+        }
+    }
+
+    REQUIRE (sawVerdict);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (0), 1.0f, 1e-6);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (1), 1.0f, 1e-6);
+    // A 3 Hz tone moves 0.0008 a sample at most; the 6 dB jump of the right
+    // side's 0.1 would have been a 0.05 step in one sample.
+    REQUIRE (biggestStep < 0.002f);
+    c.stopMonitoring();
+}
+
+TEST_CASE (CaptureCoordinator_APairWithOneSideLeftOutIsNotTurnedDown)
+{
+    // Half each is only for a pair the analyzer is actually hearing. With one
+    // of the two inputs not in the take there is nothing to analyse and no
+    // verdict to wait for, so the input that is there plays at unity.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    auto pair = freshStereoPair();
+    pair.pop_back();
+    REQUIRE (c.startMonitoring (pair, "out-device"));
+    REQUIRE_NEAR (c.getChannelMonitorWeight (0), 1.0f, 1e-6);
+    c.stopMonitoring();
+}
+
 TEST_CASE (CaptureCoordinator_ExplicitStereoMicVerdictStillUsesItsLiveSide)
 {
     // A persisted analyzer verdict distinguishes this known stereo-presenting
