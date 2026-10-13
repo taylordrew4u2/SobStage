@@ -30,6 +30,19 @@ public:
     /// into atomics only -- no allocation, locking, logging, or file I/O.
     void processAudioBlock (const float* samples, int numSamples) noexcept;
 
+    /// Audio-thread call for a meter whose CLIP is not about its own samples:
+    /// the level and peak exactly as processAudioBlock, without the -0.1 dBFS
+    /// latch. The mix bar shows the summed bus before the headphone volume,
+    /// which can sit above full scale without anything clipping -- the volume
+    /// and the safety limiter come after it -- so its CLIP comes from the
+    /// limiter instead (noteClipEvents). No allocation, locking or logging.
+    void processLevelOnly (const float* samples, int numSamples) noexcept;
+
+    /// Latches CLIP and adds `events` to its count, from a clip the caller
+    /// detected itself (the headphone limiter turning the mix down). Any
+    /// thread; atomics only.
+    void noteClipEvents (int events) noexcept;
+
     /// Convenience overload when the caller has already reduced the block to a
     /// single max-abs value (e.g. a synthetic test, or a caller who doesn't need
     /// the sample-accurate clip latch).

@@ -3199,6 +3199,54 @@ TEST_CASE (CaptureCoordinator_APairWithOneSideLeftOutIsNotTurnedDown)
     c.stopMonitoring();
 }
 
+TEST_CASE (CaptureCoordinator_TheMixBarShowsTheBusAndItsClipIsTheLimiter)
+{
+    // The mix bar read the headphone signal after the volume, so at the
+    // default volume a bus squared off at -3 dBFS showed as about -21 dBFS,
+    // and its CLIP (three samples at -0.1 dBFS) could never be reached under
+    // a -3 dBFS ceiling: the crackle had no visible cause. It now shows the
+    // bus before the volume, and CLIP whenever the safety limiter has had to
+    // turn the headphones down.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    std::vector<float> a (64, 0.3f), b (64, 0.3f), out (64, 0.0f);
+    const float* ins[] = { a.data(), b.data() };
+    float* outs[] = { out.data() };
+
+    // Default volume: a 0.6 bus (-4.4 dBFS) reaches the ears at -22.4 dBFS.
+    c.processAudioBlock (ins, 2, outs, 1, 64);
+    for (int i = 0; i < 30; ++i)
+        c.getMixMetering().tick (1.0 / 60.0);
+
+    REQUIRE_NEAR (c.getMixMetering().getDisplayedLevelDb(), 20.0f * std::log10 (0.6f), 0.1f);
+    REQUIRE_FALSE (c.getMixMetering().isClipped());
+
+    // Full volume: the same bus doubled reaches the ceiling, and the bar says so.
+    c.getMonitorBus().setMasterVolume (100.0);
+    std::fill (a.begin(), a.end(), 0.6f);
+    std::fill (b.begin(), b.end(), 0.6f);
+    c.processAudioBlock (ins, 2, outs, 1, 64);
+
+    REQUIRE (c.getMixMetering().isClipped());
+    REQUIRE (c.getMixMetering().getClipCount() >= 1);
+    REQUIRE (std::abs (out[63]) <= std::pow (10.0f, MonitorBus::kLimiterCeilingDb / 20.0f) + 1e-6f);
+
+    // Tapped, it clears, and a bus that is merely hot at a sane volume does
+    // not bring it back: a bus over full scale at the default volume is
+    // turned down by the volume, not clipped.
+    c.getMixMetering().acknowledgeClip();
+    for (int i = 0; i < 48000 / 64; ++i) // let the limiter come back to unity
+        c.processAudioBlock (ins, 2, outs, 1, 64);
+    c.getMixMetering().acknowledgeClip();
+    c.getMonitorBus().setMasterVolume (MonitorBus::kDefaultMonitorVolume);
+    c.processAudioBlock (ins, 2, outs, 1, 64);
+    REQUIRE_FALSE (c.getMixMetering().isClipped());
+    c.stopMonitoring();
+}
+
 TEST_CASE (CaptureCoordinator_ExplicitStereoMicVerdictStillUsesItsLiveSide)
 {
     // A persisted analyzer verdict distinguishes this known stereo-presenting

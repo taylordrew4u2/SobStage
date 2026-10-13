@@ -2245,7 +2245,22 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     // preallocated ring; the analysis runs on the guard's own thread (§11).
     feedbackGuard.push (busScratch.data(), numSamples);
 
-    mixMeter.processAudioBlock (mixScratch.data(), numSamples);
+    // §8.1: the mix bar shows that same bus, before the volume. It used to
+    // read the signal after it, so at the default volume a bus being
+    // squared off at -3 dBFS read about -21 dBFS -- plenty of headroom, to
+    // look at -- and its CLIP, at -0.1 dBFS, could never be reached under a
+    // -3 dBFS ceiling. Its CLIP now latches from the safety limiter: each
+    // time it starts turning the headphones down, the bar says so, and the
+    // user can see why the mix sounds squashed and turn the trims down.
+    mixMeter.processLevelOnly (busScratch.data(), numSamples);
+
+    if (const auto engagements = monitorBus.getLimiterEngagementCount();
+        engagements != meteredLimiterEngagements)
+    {
+        const auto fresh = engagements - meteredLimiterEngagements;
+        mixMeter.noteClipEvents (static_cast<int> (std::min<uint64_t> (fresh, 1000000)));
+        meteredLimiterEngagements = engagements;
+    }
 
     // The app's own sounds go in after the meter, so the mix bar shows the
     // room and not the siren, and after the mute: a fault alarm has to reach

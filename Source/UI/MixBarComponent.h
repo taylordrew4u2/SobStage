@@ -20,7 +20,12 @@ public:
 
     void paint (juce::Graphics& g) override;
 
+    /// §9.1: tap to acknowledge and clear the clip latch, as on a strip.
+    void mouseUp (const juce::MouseEvent& event) override;
+    std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override;
+
 private:
+    void clearClip();
     mma::ElapsedClock meterClock { 1.0 / 60.0 };
     void timerCallback() override;
     void updateAccessibilityText();
@@ -31,6 +36,7 @@ private:
     float currentLevelDb = Metering::kMinDb;
     float currentPeakDb = Metering::kMinDb;
     bool currentClip = false;
+    int currentClipCount = 0;
 
     static const juce::Colour kPanel;
     static const juce::Colour kEmptyInterior;

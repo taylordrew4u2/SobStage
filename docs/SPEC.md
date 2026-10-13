@@ -309,7 +309,7 @@ Keep future app-facing outputs behind a swappable interface:
 ---
 ## 8. Metering
 ### 8.1 Behavior
-- One meter per microphone, plus one for the shared mix.
+- One meter per microphone, plus one for the shared mix. The mix meter shows the summed headphone bus **before** the master volume, so it reads the same at any listening level; its clip latch counts each time §5.5's safety limiter starts turning the headphones down, not the −0.1 dBFS rule below (the bus can run past full scale harmlessly when the volume is below 100). Reading the signal after the volume, as it did, a bus being squared off at −3 dBFS showed as about −21 dBFS at the default volume, and its CLIP could never light.
 - **Meters run from launch, not from record.** No visual mode change when recording starts.
 - Each shows instantaneous level, peak hold, clip state, and an always-visible numeric dBFS readout.
 - Scale −60 to 0 dBFS, logarithmic.

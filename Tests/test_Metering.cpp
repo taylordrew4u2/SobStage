@@ -181,3 +181,38 @@ TEST_CASE (Metering_ALongStepOnlyDecaysThePartPastTheHold)
     m.tick (2.5);
     REQUIRE_NEAR (m.getPeakHoldDb(), -10.0, 0.5);
 }
+
+TEST_CASE (Metering_ALevelOnlyMeterShowsTheLevelButNeverLatchesItsOwnClip)
+{
+    // The mix bar: the bus before the headphone volume, which can run past
+    // full scale with nothing clipping anywhere. Its level is shown as ever;
+    // its CLIP is not the -0.1 dBFS rule.
+    Metering m (48000.0);
+    const std::vector<float> hot (64, 1.5f);
+    m.processLevelOnly (hot.data(), static_cast<int> (hot.size()));
+    for (int i = 0; i < 30; ++i)
+        m.tick (1.0 / 60.0);
+
+    REQUIRE_NEAR (m.getDisplayedLevelDb(), Metering::kMaxDb, 0.01);
+    REQUIRE_FALSE (m.isClipped());
+    REQUIRE (m.getClipCount() == 0);
+}
+
+TEST_CASE (Metering_AClipNotedFromOutsideLatchesAndCounts)
+{
+    // The headphone limiter's engagements, handed to the mix bar.
+    Metering m (48000.0);
+    m.noteClipEvents (0);
+    REQUIRE_FALSE (m.isClipped());
+
+    m.noteClipEvents (2);
+    REQUIRE (m.isClipped());
+    REQUIRE (m.getClipCount() == 2);
+
+    m.acknowledgeClip();
+    REQUIRE_FALSE (m.isClipped());
+
+    m.noteClipEvents (1);
+    REQUIRE (m.isClipped());
+    REQUIRE (m.getClipCount() == 3);
+}

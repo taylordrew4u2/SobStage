@@ -54,9 +54,14 @@ One strip per microphone: a little crying face that fills with the level (it
 sheds a tear when you get loud, two when you clip), the name, a level track with
 a peak tick, and the number. The summed **MIX** sits on the same row in its own
 lighter cell, because §9.1 requires the bus to be distinguishable from a channel
-at a glance rather than by reading the label. Under them the take name and the
-one button worth pressing; everything else — how much room is left, where the
-files are going, the monitor level — sits quietly in the footer.
+at a glance rather than by reading the label. MIX shows the headphone mix before
+your monitor volume, so it reads the same however loud you listen. If it says
+**CLIP**, the headphones' safety limit has had to turn the mix down: everyone
+together is too loud for it. Turn the trims or the microphones down (the knob
+on the mic, if it has one), or the monitor volume; click MIX to clear it.
+Under them the take name and the one button worth pressing; everything else —
+how much room is left, where the files are going, the monitor level — sits
+quietly in the footer.
 
 <p align="center">
   <img src="images/settings.png" alt="The Settings drawer open down the right-hand side of the window, with the live main screen -- strips, mix bar, record button and footer -- still on the left" width="660">
@@ -272,8 +277,8 @@ files really are empty and the card says so instead of calling it saved.
   volume down. The headphones have a safety limit at −3 dBFS, and it works on
   what you actually hear, after the volume: at the usual volume even a lively
   room stays well under it. When the mix does reach it, the limit turns the
-  mix down for a moment rather than squashing the loud bits. It never
-  touches the recording.
+  mix down for a moment rather than squashing the loud bits, and MIX says
+  CLIP. It never touches the recording.
 - **A new two-channel USB microphone.** Many USB microphones send the same
   voice on two channels, and the app listens for about three seconds of
   sound to tell that from two separate inputs. Until it knows, the

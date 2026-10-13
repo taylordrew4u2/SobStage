@@ -932,8 +932,8 @@ private:
     // per-block vector here would do exactly that.
     std::vector<float> mixScratch;
 
-    // The bus before master volume, per sample of the block, for the
-    // feedback guard. Sized with mixScratch.
+    // The summed bus before master volume and the limiter, per sample of the
+    // block, for the feedback guard and the mix meter. Sized with mixScratch.
     std::vector<float> busScratch;
 
     // The app's own sounds alone (AlarmTone), for an output channel switched
@@ -955,6 +955,10 @@ private:
     static constexpr float kUnsettledPairMonitorGain = 0.5f;
     static constexpr double kPairWeightRampSeconds = 0.010;
     float pairMonitorTarget (size_t channel) const noexcept;
+
+    // The headphone limiter's engagement count the mix meter's CLIP has
+    // caught up with. Audio-thread-owned (whichever thread is mixing).
+    uint64_t meteredLimiterEngagements = 0;
 
     // Per-device pulled audio and the pointer table the writer wants, both
     // sized at startMonitoring(). The output callback fills these every block
