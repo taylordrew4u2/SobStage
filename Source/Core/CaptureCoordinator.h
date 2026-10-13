@@ -690,6 +690,18 @@ public:
         return { s.getPrimeCount(), s.getHoldCount(), s.getSkipCount() };
     }
 
+    /// Harness diagnostics: the device block one channel's ring holds room
+    /// for, and the room it has given back for blocks its device left
+    /// (DeviceInputStream::getReleasedHeldSamples).
+    struct ChannelHeldRoom { size_t heldBlock = 0; uint64_t releases = 0, releasedSamples = 0; };
+    ChannelHeldRoom getChannelHeldRoom (int index) const noexcept
+    {
+        if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+            return {};
+        const auto& s = *deviceStreams[static_cast<size_t> (index)];
+        return { s.getHeldBlockSamples(), s.getHeldReleases(), s.getReleasedHeldSamples() };
+    }
+
 private:
     IAudioBackend& backend;
     double sampleRate;
@@ -825,6 +837,12 @@ private:
     // seen: a held block only ever falls when a provisional one is refused.
     std::vector<StemOffsetKind> recordingOffsetKinds;
     std::vector<size_t> heldBlockSeen;
+
+    // Consumer-owned, reset with the vectors above: the largest reference the
+    // stems have been lined up to during the take being written. It does not
+    // fall when the slowest device gives back held room, and is let go
+    // between takes (updateRecordingOffsets).
+    int stemReferenceFloor = 0;
     void updateRecordingOffsets() noexcept;
 
     /// A channel's own place in time beyond the cushion every stream shares:

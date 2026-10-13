@@ -88,6 +88,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     recordingOffsets.assign (chans.size(), 0);
     recordingOffsetKinds.assign (chans.size(), StemOffsetKind::settled);
     heldBlockSeen.assign (chans.size(), 0);
+    stemReferenceFloor = 0;
     recordingOffsetView = std::make_unique<std::atomic<int>[]> (std::max<size_t> (1, chans.size()));
     for (size_t i = 0; i < std::max<size_t> (1, chans.size()); ++i)
         recordingOffsetView[i].store (0, std::memory_order_relaxed);
@@ -1596,9 +1597,12 @@ int CaptureCoordinator::channelOwnLatencyFrames (size_t index, size_t blockFloor
         return -1;
 
     // The block the stream sits at (DeviceInputStream: the cushion
-    // plus its device's block), or the floor where that is larger -- the
-    // size asked for, before the device has settled on one.
-    const auto block = std::min (std::max (deviceStreams[index]->getDeviceBlockSamples(), blockFloor),
+    // plus the block it holds room for), or the floor where that is larger
+    // -- the size asked for, before the device has settled on one. The held
+    // block rather than the largest the device has ever run at: room held
+    // for a size the device has left is given back (at a quiet moment), and
+    // from then on the channel is that much sooner in the headphones.
+    const auto block = std::min (std::max (deviceStreams[index]->getHeldBlockSamples(), blockFloor),
                                  static_cast<size_t> (DeviceInputStream::kLargestDeviceBlock) * 16);
     return channelInputLatency[index] + static_cast<int> (block);
 }
@@ -1629,10 +1633,14 @@ void CaptureCoordinator::updateRecordingOffsets() noexcept
     // delivery is also what a driver handing over a backlog looks like. So
     // each change is tagged for the writer: provisional while the stream
     // holds a block its device has not confirmed, and refused when that
-    // block is taken back (the held block falls, which nothing else makes it
-    // do). The writer then puts back what the provisional change took out,
-    // where it took it from, and the backlog moves nothing in the stem
-    // either. Nothing allocates or locks (§11): the vectors were sized at
+    // block is taken back (the held block falls straight after being
+    // provisional). The writer then puts back what the provisional change
+    // took out, where it took it from, and the backlog moves nothing in the
+    // stem either. A held block that falls from a settled one is room given
+    // back for a block the device has left (DeviceInputStream drops exactly
+    // that much at a quiet moment): settled, a move of its own, which the
+    // writer answers with that much silence where the stream dropped it.
+    // Nothing allocates or locks (§11): the vectors were sized at
     // startMonitoring().
     const size_t count = std::min ({ deviceStreams.size(), recordingOffsets.size(),
                                      recordingOffsetKinds.size(), heldBlockSeen.size() });
@@ -1644,14 +1652,37 @@ void CaptureCoordinator::updateRecordingOffsets() noexcept
             reference = std::max (reference, channelInputLatency[i]
                                                  + static_cast<int> (deviceStreams[i]->getSettledBlockSamples()));
 
+    // The reference never falls while a take is being written. It only could
+    // when the slowest device gives back room it held for a larger block, and
+    // its stream then moves sooner by dropping a moment of quiet: that
+    // channel's own offset grows by the same amount and its stem stays in
+    // line. Had the reference fallen with it, every other stem would have
+    // been brought forward too, and the writer takes that out of the newest
+    // samples waiting -- audio, cut from every other microphone's track at
+    // whatever moment the room was given back. Between takes nothing is
+    // being lined up, so the next take starts from the rig as it stands
+    // rather than from a block some device ran at long before it.
+    if (ready)
+    {
+        if (activePipeline.load (std::memory_order_acquire) == nullptr)
+            stemReferenceFloor = 0;
+
+        reference = std::max (reference, stemReferenceFloor);
+        stemReferenceFloor = reference;
+    }
+
     for (size_t i = 0; i < count; ++i)
     {
         const auto& stream = *deviceStreams[i];
         const auto held = stream.getHeldBlockSamples();
 
-        recordingOffsetKinds[i] = held > stream.getSettledBlockSamples() ? StemOffsetKind::provisional
-                                : held < heldBlockSeen[i]                ? StemOffsetKind::refused
-                                                                         : StemOffsetKind::settled;
+        // Refused: the held block falls from a provisional one. A held block
+        // that falls from a settled one is room given back for a block the
+        // device no longer runs at -- a move of its own, settled.
+        const bool wasProvisional = recordingOffsetKinds[i] == StemOffsetKind::provisional;
+        recordingOffsetKinds[i] = held > stream.getSettledBlockSamples()  ? StemOffsetKind::provisional
+                                : held < heldBlockSeen[i] && wasProvisional ? StemOffsetKind::refused
+                                                                            : StemOffsetKind::settled;
         heldBlockSeen[i] = held;
 
         // A device that did not open is silent; it is not moved.

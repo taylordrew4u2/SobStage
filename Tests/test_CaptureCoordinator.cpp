@@ -1289,6 +1289,247 @@ TEST_CASE (CaptureCoordinator_ADriverBacklogMovesNoOtherStem)
     REQUIRE (r.stemsAligned);
 }
 
+namespace {
+
+struct HeldRoomTakeResult
+{
+    long long kitchenClap = -1, couchClap = -1, mixClap = -1;
+    long long headphoneClapSpread = -1;   // first to last loud headphone frame
+    uint64_t releases = 0, released = 0;
+    size_t couchHeldAtEnd = 0;
+    double quickMs = 0.0, slowestWhileHeld = 0.0, slowestAtEnd = 0.0, quickAtEnd = 0.0;
+    int kitchenDropped = 0, kitchenShift = 0, couchDropped = 0, couchShift = 0;
+    bool aligned = false;
+    int nextTakeKitchenStart = -1, nextTakeCouchStart = -1;
+};
+
+// Another app holds Couch's device at 1156 frames for a second, then lets it
+// go back to 64. Silent but for one clap both microphones hear at once, after
+// the room has been given back. Couch's deliveries may run `couchLate`
+// samples late for a moment around when the room is given back (3.875 s to
+// 4.25 s); after the take, a second one starts on the same streams.
+HeldRoomTakeResult recordAnIoSizeExcursion (int kitchenLatency, int couchLate = 0)
+{
+    const auto dir = tempDir() + "/io_size_return_" + std::to_string (kitchenLatency) + "_" + std::to_string (couchLate);
+    std::remove ((dir + "/01_Kitchen.wav").c_str());
+    std::remove ((dir + "/02_Couch.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
+    REQUIRE (makeDir (dir));
+    const auto nextDir = dir + "_next";
+    REQUIRE (makeDir (nextDir));
+
+    DeviceInputStream::setClockForTesting (ioSizeClock);
+    ioSizeClockNs = 1;
+
+    FakeBackend backend;
+    backend.grantedOutputBufferFrames = 64;
+    backend.inputLatencyFrames["dev-a"] = kitchenLatency;
+    backend.inputLatencyFrames["dev-b"] = 0;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
+    REQUIRE (c.startRecording (dir, 16, "2026-10-12T00:00:00Z"));
+
+    HeldRoomTakeResult r;
+    r.quickMs = c.getMonitoringLatencyMs();
+
+    constexpr long long growAt = 48000, returnAt = 96000, clapAt = 288000, end = 336000;
+    constexpr long long lateFrom = 186000, lateUntil = 204000;
+    std::vector<float> a (4096, 0.0f), b (4096, 0.0f), out (64);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+    float* outs[] = { out.data() };
+
+    const auto nsAt = [] (long long sample) { return static_cast<int64_t> (sample * 1.0e9 / 48000.0) + 1; };
+    const auto couchBlock = [] (long long next) { return next >= growAt && next < returnAt ? 1156 : 64; };
+    const auto couchDue = [&] (long long next)
+    {
+        return next + couchBlock (next) + (next >= lateFrom && next < lateUntil ? couchLate : 0);
+    };
+    const auto fill = [] (std::vector<float>& v, long long first, int n, long long heardAt)
+    {
+        for (int i = 0; i < n; ++i)
+            v[static_cast<size_t> (i)] = first + i == heardAt ? 0.3f : 0.0f;
+    };
+
+    long long aNext = 0, bNext = 0, outFrame = 0, firstLoud = -1, lastLoud = -1, pullAt = 32;
+
+    const auto runUntil = [&] (long long until)
+    {
+        for (; pullAt < until; pullAt += 64)
+        {
+            while (aNext + 64 <= pullAt || couchDue (bNext) <= pullAt)
+            {
+                const int bBlock = couchBlock (bNext);
+
+                if (aNext + 64 <= couchDue (bNext))
+                {
+                    ioSizeClockNs = nsAt (aNext + 64);
+                    fill (a, aNext, 64, clapAt + kitchenLatency);
+                    backend.inputCallbacks[0] (aIn, 1, nullptr, 0, 64);
+                    aNext += 64;
+                }
+                else
+                {
+                    ioSizeClockNs = nsAt (couchDue (bNext));
+                    fill (b, bNext, bBlock, clapAt);
+                    backend.inputCallbacks[1] (bIn, 1, nullptr, 0, bBlock);
+                    bNext += bBlock;
+                }
+            }
+
+            ioSizeClockNs = nsAt (pullAt);
+            c.pullOutputBlock (outs, 1, 64);
+
+            // Back at 64, but not yet for two seconds: the room is still held.
+            if (pullAt > returnAt + 48000 && pullAt < returnAt + 72000)
+                r.slowestWhileHeld = c.getSlowestMonitoringLatencyMs();
+
+            for (int i = 0; i < 64; ++i, ++outFrame)
+                if (std::abs (out[static_cast<size_t> (i)]) > 0.1f)
+                {
+                    firstLoud = firstLoud < 0 ? outFrame : firstLoud;
+                    lastLoud = outFrame;
+                }
+        }
+    };
+
+    runUntil (end);
+
+    const auto couch = c.getChannelHeldRoom (1);
+    r.releases = couch.releases;
+    r.released = couch.releasedSamples;
+    r.couchHeldAtEnd = couch.heldBlock;
+    r.slowestAtEnd = c.getSlowestMonitoringLatencyMs();
+    r.quickAtEnd = c.getMonitoringLatencyMs();
+    r.headphoneClapSpread = firstLoud < 0 ? -1 : lastLoud - firstLoud;
+
+    c.stopRecording();
+    r.kitchenDropped = c.getDeviceAlignmentDroppedFramesThisTake ("dev-a");
+    r.kitchenShift = c.getDeviceAlignmentSilenceFramesThisTake ("dev-a");
+    r.couchDropped = c.getDeviceAlignmentDroppedFramesThisTake ("dev-b");
+    r.couchShift = c.getDeviceAlignmentSilenceFramesThisTake ("dev-b");
+    r.aligned = c.areStemsAligned();
+
+    // The next take, on the same streams: lined up to the rig as it stands.
+    runUntil (end + 4800);
+    REQUIRE (c.startRecording (nextDir, 16, "2026-10-12T00:01:00Z"));
+    runUntil (end + 24000);
+    r.nextTakeKitchenStart = c.getDeviceAlignmentStartFrames ("dev-a");
+    r.nextTakeCouchStart = c.getDeviceAlignmentStartFrames ("dev-b");
+    c.stopRecording();
+
+    c.stopMonitoring();
+    DeviceInputStream::setClockForTesting ([]() -> int64_t { return 0; });
+
+    r.kitchenClap = loudestSampleIn (dir + "/01_Kitchen.wav");
+    r.couchClap = loudestSampleIn (dir + "/02_Couch.wav");
+    r.mixClap = loudestSampleIn (dir + "/MIX.wav");
+    return r;
+}
+
+} // namespace
+
+TEST_CASE (CaptureCoordinator_RoomHeldForABlockTheDeviceLeftIsGivenBackAndTheStemsStayInLine)
+{
+    // The room Couch's ring held for 1156 used to stay held for the rest of
+    // the session: Couch 23 ms later than Kitchen in the headphones for
+    // good -- the talker hearing themselves late, and their voice in the mix
+    // twice, 23 ms apart, through Kitchen's microphone. Two seconds after the
+    // device is back at 64 the room is given back at the first quiet moment,
+    // and the stems stay in line through it: Couch's is held back by what its
+    // stream dropped, and nothing is taken out of Kitchen's.
+    const auto r = recordAnIoSizeExcursion (0);
+
+    // Given back, once, exactly the room, and the headphone delay the app
+    // names said so: Couch's own path was 1092 samples longer while it was
+    // held, and is Kitchen's again now.
+    REQUIRE (r.releases == 1u);
+    REQUIRE (r.released == 1092u);
+    REQUIRE_NEAR (r.slowestWhileHeld - r.quickMs, 1092.0 / 48.0, 1e-6);
+    REQUIRE_NEAR (r.slowestAtEnd, r.quickAtEnd, 1e-9);
+    REQUIRE (r.couchHeldAtEnd == 64u);
+
+    // In the headphones the clap is one clap: both microphones' at the same
+    // frame, not two 23 ms apart.
+    REQUIRE (r.headphoneClapSpread >= 0);
+    REQUIRE (r.headphoneClapSpread <= 2);
+
+    // In the files: one frame in both stems and the mix. Couch was the
+    // slowest device while it ran at 1156, and the stems stay lined up to
+    // that: Couch's stem is held back by what its stream dropped -- silence
+    // where a moment of quiet was -- and nothing came out of Kitchen's.
+    REQUIRE (r.kitchenClap > 0);
+    REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+    REQUIRE (std::llabs (r.mixClap - r.couchClap) <= 1);
+    REQUIRE (r.kitchenDropped == 0);
+    REQUIRE (static_cast<uint64_t> (r.couchShift) == r.released);
+    REQUIRE (r.aligned);
+
+    // That 1092 the stems were lined up to is for the take it happened in.
+    // The next take starts from the rig as it stands, both devices at 64:
+    // neither stem opens 23 ms late.
+    REQUIRE (r.nextTakeKitchenStart == 0);
+    REQUIRE (r.nextTakeCouchStart == 0);
+}
+
+TEST_CASE (CaptureCoordinator_RoomGivenBackWhileADeliveryIsLateKeepsTheStemsInLine)
+{
+    // Couch's deliveries run a millisecond late just as its room is given
+    // back, so its ring reads 48 samples lower than it will a moment later.
+    // Dropping what the level read above the smaller target moved Couch by
+    // 48 samples less than the 1092 the writer held its stem back by: the
+    // clap 48 samples apart in the files. Exactly the room is dropped.
+    const auto r = recordAnIoSizeExcursion (0, 48);
+
+    REQUIRE (r.releases == 1u);
+    REQUIRE (r.released == 1092u);
+    REQUIRE (r.kitchenClap > 0);
+    REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+    REQUIRE (std::llabs (r.mixClap - r.couchClap) <= 1);
+    REQUIRE (r.headphoneClapSpread <= 2);
+    REQUIRE (r.aligned);
+}
+
+TEST_CASE (CaptureCoordinator_RoomGivenBackOnTheQuickerDeviceIsNotTakenForARefusedBlock)
+{
+    // Kitchen's interface reports 1400 frames more input latency, so Couch is
+    // the quicker device throughout: when it grew to 1156 the writer took
+    // the move's silence back out of its stem, provisionally, then for good
+    // once the device confirmed the size. Giving the room back later is a
+    // move of its own -- the held block falls from a settled one -- and the
+    // writer must hold the stem back for it, not "undo" the growth by
+    // putting that silence back where it was taken from (which also struck
+    // the 1092 samples from the take's record of what it had taken out).
+    const auto r = recordAnIoSizeExcursion (1400);
+
+    REQUIRE (r.releases == 1u);
+    REQUIRE (r.released == 1092u);
+
+    // In the headphones Couch is back to its own path: its clap 1400
+    // samples before Kitchen's, not 308.
+    REQUIRE (std::llabs (r.headphoneClapSpread - 1400) <= 2);
+
+    REQUIRE (r.kitchenClap > 0);
+    REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+    REQUIRE (std::llabs (r.mixClap - r.couchClap) <= 1);
+
+    // The record: the growth's silence taken out of Couch's stem, the room
+    // given back as silence written into it, and Kitchen's stem untouched.
+    REQUIRE (r.couchDropped >= 1092 - 2);
+    REQUIRE (r.couchDropped <= 1092 + 2);
+    REQUIRE (static_cast<uint64_t> (r.couchShift) == r.released);
+    REQUIRE (r.kitchenDropped == 0);
+    REQUIRE (r.kitchenShift == 0);
+    REQUIRE (r.aligned);
+
+    // Kitchen is the slowest device in the next take too: Couch opens 1400
+    // samples late, Kitchen on time.
+    REQUIRE (r.nextTakeKitchenStart == 0);
+    REQUIRE (r.nextTakeCouchStart == 1400);
+}
+
 TEST_CASE (CaptureCoordinator_ADriverBacklogMovesNothingInItsOwnStem)
 {
     // The same backlog on Kitchen, now the quicker device: Couch reports more

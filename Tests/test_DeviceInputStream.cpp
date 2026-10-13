@@ -1534,7 +1534,11 @@ TEST_CASE (DeviceInputStream_AnIoSizeTheDeviceRanAtBeforeIsAbsorbedWithoutAGap)
     // The device runs small for two minutes in the middle: long enough for a
     // loop steering the ring back down to a small block's level (200 PPM is
     // under ten samples a second) to have spent the headroom, so the growth
-    // after it would run dry.
+    // after it would run dry. The microphone hears a ramp, never quiet, so
+    // the room is never given back in that time either (it is only given back
+    // at a quiet moment: see ...RoomHeldForALargerBlockIsGivenBackAtAQuietMoment,
+    // where the cost of a later growth is the one gap or shift any growth
+    // has).
     const auto r = runBlockSwitches ({ { 0.0, 64 }, { 5.0, 1156 }, { 10.0, 64 }, { 135.0, 1156 },
                                        { 140.0, 512 }, { 145.0, 1156 } },
                                      150.0, 6.0, { 7.0, 12.0, 70.0, 134.0, 137.0, 142.0, 149.0 });
@@ -1792,6 +1796,218 @@ TEST_CASE (DeviceInputStream_AfterAGapTheChannelResumesExactlyWhereItStopped)
     // At least one gap found the resampler well between two samples, so a
     // dropped fraction could not have passed unseen.
     REQUIRE (wellBetween);
+}
+
+namespace {
+
+// A device at 64 frames whose IO block follows `schedule` (from each time
+// on, that size), pulled 64 at a time for `seconds`. Its microphone hears a
+// 1 kHz tone at -12 dBFS until `loudUntil`, then quiet: digital silence, or
+// room noise of peak `noise` -- and, on top, a one-sample click of 0.5 at
+// each of `clicksAt` (seconds of the device's own clock). Reports when (if
+// ever) the stream gave held room back, how loud the audio around the jump
+// was, and where each click came out of the stream.
+struct ReleaseRun
+{
+    double releasedAt = -1.0;
+    uint64_t released = 0, releases = 0, lossEvents = 0;
+    size_t heldAtEnd = 0;
+    float loudestNearJump = 0.0f;
+    std::vector<double> clickOut; // output sample index of each click (centroid)
+};
+
+ReleaseRun runIoSizeSchedule (const std::vector<std::pair<double, int>>& schedule, double loudUntil,
+                              double seconds, float noise = 0.0f, const std::vector<double>& clicksAt = {})
+{
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    std::vector<float> in (4096), out (64), heard;
+    long long produced = 0;
+    double blockStart = 0.0, nextOut = 0.0005;
+    ReleaseRun r;
+    float recentPeak = 0.0f;
+    uint32_t lcg = 12345u;
+
+    const auto blockAt = [&] (double t)
+    {
+        int block = 64;
+        for (const auto& [at, size] : schedule)
+            if (t >= at)
+                block = size;
+        return block;
+    };
+
+    while (nextOut < seconds)
+    {
+        const int block = blockAt (blockStart);
+
+        if (blockStart + block / 48000.0 <= nextOut)
+        {
+            blockStart += block / 48000.0;
+            simulatedNs = static_cast<int64_t> (blockStart * 1.0e9) + 1;
+
+            for (int i = 0; i < block; ++i)
+            {
+                const long long n = produced + i;
+                const double t = static_cast<double> (n) / 48000.0;
+                float v = t < loudUntil ? static_cast<float> (0.25 * std::sin (2.0 * 3.141592653589793 * 1000.0 * t)) : 0.0f;
+
+                if (t >= loudUntil && noise > 0.0f)
+                {
+                    lcg = lcg * 1664525u + 1013904223u;
+                    v += noise * (static_cast<float> (lcg >> 8) / 8388608.0f - 1.0f);
+                }
+
+                for (double c : clicksAt)
+                    if (n == std::llround (c * 48000.0))
+                        v = 0.5f;
+
+                in[static_cast<size_t> (i)] = v;
+            }
+
+            s.pushBlock (in.data(), block);
+            produced += block;
+            continue;
+        }
+
+        simulatedNs = static_cast<int64_t> (nextOut * 1.0e9) + 1;
+        const auto before = s.getHeldReleases();
+        s.pull (out.data(), 64);
+        heard.insert (heard.end(), out.begin(), out.end());
+
+        float peak = 0.0f;
+        for (float x : out)
+            peak = std::max (peak, std::abs (x));
+
+        if (r.releasedAt < 0.0 && s.getHeldReleases() > before)
+        {
+            r.releasedAt = nextOut;
+            r.loudestNearJump = std::max (recentPeak, peak);
+        }
+
+        recentPeak = peak;
+        nextOut += 64 / 48000.0;
+    }
+
+    // Each click comes out spread over two samples by the interpolator: its
+    // place is the centroid of what stands above the noise.
+    for (size_t n = 0; n < heard.size(); ++n)
+        if (heard[n] > 0.1f)
+        {
+            double w = 0.0, wi = 0.0;
+            for (size_t k = n; k < std::min (heard.size(), n + 3); ++k)
+                if (heard[k] > 0.02f)
+                {
+                    w += heard[k];
+                    wi += heard[k] * static_cast<double> (k);
+                }
+            r.clickOut.push_back (wi / w);
+            n += 3;
+        }
+
+    r.released = s.getReleasedHeldSamples();
+    r.releases = s.getHeldReleases();
+    r.lossEvents = s.getLossEvents();
+    r.heldAtEnd = s.getHeldBlockSamples();
+    return r;
+}
+
+// One excursion: `largeBlock` from 1 s to 2 s, `smallBlock` from then on.
+ReleaseRun runIoSizeExcursion (int largeBlock, int smallBlock, double loudUntil, double seconds, float noise = 0.0f,
+                               const std::vector<double>& clicksAt = {})
+{
+    return runIoSizeSchedule ({ { 0.0, 64 }, { 1.0, largeBlock }, { 2.0, smallBlock } }, loudUntil, seconds, noise, clicksAt);
+}
+
+} // namespace
+
+TEST_CASE (DeviceInputStream_RoomHeldForALargerBlockIsGivenBackAtAQuietMoment)
+{
+    // Held for good, as it was, the room for one excursion to 1024 frames
+    // kept this microphone 20 ms later than the others in the headphones for
+    // the rest of the session. Two seconds after the device is back at 64
+    // it is given back -- but only at a quiet moment, so the jump forward is
+    // quiet to quiet: while the microphone hears a tone, nothing moves.
+    const auto loud = runIoSizeExcursion (1024, 64, 6.0, 8.0);
+
+    REQUIRE (loud.releasedAt > 6.0);              // not while the tone played
+    REQUIRE (loud.releasedAt < 6.1);              // but soon after it stopped
+    REQUIRE (loud.releases == 1u);
+    REQUIRE (loud.released == 960u);              // exactly the room: 1024 - 64
+    REQUIRE (loud.heldAtEnd == 64u);
+    REQUIRE (loud.loudestNearJump < DeviceInputStream::kQuietLevel);
+
+    // Quiet throughout: given back two seconds after the return, not before.
+    const auto quiet = runIoSizeExcursion (1024, 64, 0.0, 5.0);
+    REQUIRE (quiet.releasedAt > 4.0);
+    REQUIRE (quiet.releasedAt < 4.1);
+    REQUIRE (quiet.heldAtEnd == 64u);
+}
+
+TEST_CASE (DeviceInputStream_GivingBackRoomMovesTheChannelByExactlyTheRoom)
+{
+    // The writer lines the stem up by the room given back, so the stream must
+    // move by exactly that: two clicks, one while the room is still held and
+    // one after it was given back, come out exactly 960 samples closer
+    // together than they went in -- not 958 (the interpolator's pair taken
+    // from the wrong samples) or 961 (a sample dropped with its phase).
+    const auto r = runIoSizeExcursion (1024, 64, 0.0, 6.0, 0.0f, { 3.5, 5.0 });
+
+    REQUIRE (r.releases == 1u);
+    REQUIRE (r.releasedAt > 4.0);
+    REQUIRE (r.releasedAt < 4.1);
+    REQUIRE (r.clickOut.size() == 2u);
+    REQUIRE_NEAR ((r.clickOut[1] - r.clickOut[0]) - 1.5 * 48000.0, -960.0, 0.05);
+}
+
+TEST_CASE (DeviceInputStream_RoomIsGivenBackInARoomWithNoiseInIt)
+{
+    // Quiet is not digital silence: the noise of an ordinary room between
+    // words, here up to -46 dBFS. A threshold at -50 dBFS was never met by
+    // it, and the room stayed held for good after all.
+    const auto r = runIoSizeExcursion (1024, 64, 0.0, 5.0, 0.005f);
+
+    REQUIRE (r.releases == 1u);
+    REQUIRE (r.releasedAt > 4.0);
+    REQUIRE (r.releasedAt < 4.1);
+    REQUIRE (r.released == 960u);
+}
+
+TEST_CASE (DeviceInputStream_RoomIsKeptForABlockOnlyALittleLarger)
+{
+    // A device that goes from 1156 to 640 -- more than half -- keeps its
+    // room: devices whose deliveries vary a little must not have room taken
+    // back and grown again, a shift each way. And nothing is given back
+    // within two seconds of a return, in case the larger size comes back.
+    const auto slight = runIoSizeExcursion (1156, 640, 0.0, 6.0);
+    REQUIRE (slight.releasedAt < 0.0);
+    REQUIRE (slight.heldAtEnd == 1156u);
+
+    const auto brief = runIoSizeExcursion (1156, 64, 0.0, 3.9);
+    REQUIRE (brief.releasedAt < 0.0);
+    REQUIRE (brief.heldAtEnd == 1156u);
+}
+
+TEST_CASE (DeviceInputStream_ADeviceThatKeepsGoingBackToALargerBlockKeepsItsRoomLonger)
+{
+    // A growth past the room held costs a gap (the device holds its audio
+    // that much longer), and giving the room back means the next growth
+    // costs one again. A device switching between 1156 and 64 every three
+    // seconds -- another app opening and closing it -- had its room given
+    // back two seconds into every spell at 64 and paid a gap every six
+    // seconds, enough to step the buffer ladder. Each return to a block
+    // whose room was given back doubles how long it is kept next time, so
+    // it pays twice: the first growth, and the first return.
+    std::vector<std::pair<double, int>> toggling;
+    for (int i = 0; i < 10; ++i)
+        toggling.push_back ({ 1.0 + 3.0 * i, i % 2 == 0 ? 1156 : 64 });
+
+    const auto r = runIoSizeSchedule (toggling, 0.0, 31.0);
+
+    REQUIRE (r.releases == 1u);
+    REQUIRE (r.lossEvents == 2u);
 }
 
 TEST_CASE (DeviceInputStream_AStreamsPlaceInTimeIsItsOwnDevicesBlock)

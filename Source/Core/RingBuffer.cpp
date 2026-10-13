@@ -1,5 +1,6 @@
 #include "RingBuffer.h"
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace mma {
@@ -37,6 +38,24 @@ size_t RingBuffer::discard (size_t numSamples) noexcept
 
     readIndex.store (r, std::memory_order_release);
     return toDrop;
+}
+
+float RingBuffer::peekPeak (size_t numSamples) const noexcept
+{
+    const size_t capacity = buffer.size();
+    const size_t count = std::min (numSamples, availableForRead());
+    size_t r = readIndex.load (std::memory_order_relaxed);
+    float peak = 0.0f;
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        peak = std::max (peak, std::abs (buffer[r]));
+
+        if (++r == capacity)
+            r = 0;
+    }
+
+    return peak;
 }
 
 size_t RingBuffer::availableForRead() const noexcept

@@ -138,21 +138,34 @@ public:
     /// are lined up afterwards, on the writer thread, where it costs the
     /// monitor path nothing (WritePipeline, StemAligner).
     ///
-    /// What the stream does hold is room for its *own* device's largest
-    /// block (see getDeviceBlockSamples), which is what lets the ring absorb
-    /// an IO-size change: after a device has once run at a larger block, the
-    /// room that block needs stays held while it runs smaller, so a return
-    /// to the larger size finds it there and loses nothing, and the
-    /// channel's place in time never moves. Only the first growth past
-    /// anything held moves the channel -- the device itself now holds its
-    /// audio that much longer -- and it moves once, exactly. When the ring ran
-    /// dry for it, that gap is counted as lost audio; when the cushion
-    /// covered it, the silence that moves the channel is counted as a shift
-    /// (getAlignmentSilenceSamples). Its place in time is therefore always
-    /// the cushion (cushionSamples) plus the block it holds room for
-    /// (getHeldBlockSamples; the block asked
-    /// for, before the device has settled on one), which is what the
-    /// coordinator tells the writer.
+    /// What the stream does hold is room for its *own* device's recent
+    /// largest block, which is what lets the ring absorb an IO-size change:
+    /// after a device has run at a larger block, the room that block needs
+    /// stays held while it runs smaller, so a quick return to the larger size
+    /// finds it there and loses nothing, and the channel's place in time
+    /// never moves. Only a growth past anything held moves the channel --
+    /// the device itself now holds its audio that much longer -- and it moves
+    /// once, exactly. When the ring ran dry for it, that gap is counted as
+    /// lost audio; when the cushion covered it, the silence that moves the
+    /// channel is counted as a shift (getAlignmentSilenceSamples).
+    ///
+    /// Held room is given back once the device has run at a block at most
+    /// half of it for kHeldRoomReleaseSeconds: the headphones should not
+    /// carry latency held for a size that may never come back. Kept for good,
+    /// as it was, one excursion to 1024 frames and back left that microphone
+    /// 20 ms later than the rest in the headphones for the rest of the
+    /// session: the talker heard themselves late, and their voice reached
+    /// the mix twice, 20 ms apart, through the other microphones -- a
+    /// slapback, heard as robotic. Exactly the room given back is dropped
+    /// from the ring, at once, but only at a quiet moment (kQuietLevel), so
+    /// the jump forward is silent; until one comes, nothing moves. Exactly
+    /// that much, not whatever the level happens to read above the smaller
+    /// target at that moment: the level carries a delivery's lateness, and
+    /// the writer lines the stem up by the room given back. Its place in
+    /// time is therefore always the cushion (cushionSamples) plus the block
+    /// it holds room for (getHeldBlockSamples; the block asked for, before
+    /// the device has settled on one), which is what the coordinator tells
+    /// the writer.
 
     /// The largest IO block the device has run at since prepare(): its real
     /// IO size, which CoreAudio does not promise is the one asked for, and
@@ -172,6 +185,35 @@ public:
     /// with each other and with what the stream has actually done.
     size_t getSettledBlockSamples() const noexcept { return settledBlockPublished.load (std::memory_order_relaxed); }
     size_t getHeldBlockSamples() const noexcept { return heldBlockPublished.load (std::memory_order_relaxed); }
+
+    /// How long a device must run at a block at most half the room held for
+    /// a larger one before that room is given back, and how quiet the audio
+    /// either side of the jump must be for it to be given back then: below
+    /// -40 dBFS for the 5 ms before it and everything the jump passes over
+    /// and lands on. Far below speech, and above the noise of an ordinary
+    /// room between words: measured, background noise up to -50 dBFS RMS
+    /// still lets the room go within a fraction of a second, where a -50 dBFS
+    /// threshold was never met by noise at -58 dBFS RMS and the room was held
+    /// for good after all. A jump between two samples under it is a step of
+    /// at most -34 dBFS, about -52 dBFS at the ears at the default headphone
+    /// volume.
+    ///
+    /// A device that goes back to a block whose room was given back pays a
+    /// gap for it, as any growth does, so each time it does, its room is
+    /// kept twice as long before it goes again, up to
+    /// kHeldRoomReleaseMaxSeconds.
+    static constexpr double kHeldRoomReleaseSeconds = 2.0;
+    static constexpr double kHeldRoomReleaseMaxSeconds = 64.0;
+    static constexpr float kQuietLevel = 0.01f;
+    static constexpr double kQuietLeadMs = 5.0;
+
+    /// Samples dropped, at quiet moments, giving back room held for a larger
+    /// block (see above), and how many times. The writer holds the stem back
+    /// by the same amount at the same moment, so the stem stays in line with
+    /// the others: what was quiet room sound there becomes digital silence,
+    /// counted on the take's record as silence written to keep it in step.
+    uint64_t getReleasedHeldSamples() const noexcept { return releasedHeldSamples.load (std::memory_order_relaxed); }
+    uint64_t getHeldReleases() const noexcept { return heldReleases.load (std::memory_order_relaxed); }
 
     /// Silence written, without consuming, to move the channel later when its
     /// device's IO block grew by less than the ring's cushion. Not lost audio
@@ -324,6 +366,19 @@ private:
     // getDeviceBlockSamples().
     size_t previousPushSamples = 0;
     std::atomic<size_t> deviceBlockSamples { 0 };
+
+    // Producer-owned: samples delivered since a pair of deliveries last
+    // reached the device's recent block, the largest pair among them, and
+    // how many it takes before the room goes (kHeldRoomReleaseSeconds,
+    // doubled each time the device goes back to a block whose room was
+    // given back); and, published, that recent block -- the device block
+    // the consumer holds room for. It rises with deviceBlockSamples, and
+    // falls to the smaller size once the device has delivered at most half
+    // of it for that long.
+    uint64_t smallerRunSamples = 0;
+    size_t smallerRunLargest = 0;
+    uint64_t releaseAfterSamples = 96000;
+    std::atomic<size_t> recentBlockSamples { 0 };
     std::atomic<size_t> largestPullSamples { 0 };
     size_t usableCapacity() const noexcept;
 
@@ -416,17 +471,30 @@ private:
     bool inGap = false;
     void countGap (int samples) noexcept;
 
-    // Consumer-owned: the largest device block the consumer has accounted
-    // for, and the shift silence it has written (getAlignmentSilenceSamples).
+    // Consumer-owned: the device block the consumer holds room for -- the
+    // largest it has accounted for, until that room is given back
+    // (releaseHeldRoom) -- and the shift silence it has written
+    // (getAlignmentSilenceSamples).
     size_t seenDeviceBlock = 0;
     std::atomic<uint64_t> alignmentSilence { 0 };
+
+    // Consumer-owned: how many of the samples this stream handed on last
+    // were quiet (below kQuietLevel), counting back from the newest; and the
+    // room given back for a block the device no longer runs at.
+    size_t quietRunSamples = 0;
+    std::atomic<uint64_t> releasedHeldSamples { 0 };
+    std::atomic<uint64_t> heldReleases { 0 };
+    void releaseHeldRoom (size_t block, int numSamples) noexcept;
+    void noteQuiet (const float* samples, int numSamples) noexcept;
+    void pullBlock (float* destination, int numSamples) noexcept;
     std::atomic<size_t> settledBlockPublished { 0 };
     std::atomic<size_t> heldBlockPublished { 0 };
     void publishPlaceInTime() noexcept;
 
     /// What this stream holds beyond the base target, with the device's block
-    /// included: the largest block the device has delivered, or a provisional
-    /// one it has moved for.
+    /// included: the block it holds room for (the largest the device has
+    /// delivered, until that room is given back), or a provisional one it
+    /// has moved for.
     size_t heldLatency() const noexcept;
     void recomputeTarget() noexcept;
 

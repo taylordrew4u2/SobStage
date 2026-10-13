@@ -129,8 +129,15 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
     largestPushSamples.store (0, std::memory_order_relaxed);
     previousPushSamples = 0;
     deviceBlockSamples.store (0, std::memory_order_relaxed);
+    smallerRunSamples = 0;
+    smallerRunLargest = 0;
+    recentBlockSamples.store (0, std::memory_order_relaxed);
+    quietRunSamples = 0;
+    releasedHeldSamples.store (0, std::memory_order_relaxed);
+    heldReleases.store (0, std::memory_order_relaxed);
     largestPullSamples.store (0, std::memory_order_relaxed);
     rate = sampleRate > 0.0 ? sampleRate : 48000.0;
+    releaseAfterSamples = static_cast<uint64_t> (rate * kHeldRoomReleaseSeconds);
 
     // §5.4: this is monitor latency, so it is one pull and a few milliseconds
     // of late delivery rather than a fraction of the ring. The remaining
@@ -211,10 +218,57 @@ void DeviceInputStream::pushBlock (const float* samples, int numSamples) noexcep
         largestPushSamples.store (static_cast<size_t> (numSamples), std::memory_order_relaxed);
 
     // The device's IO block: a size two deliveries in a row have reached.
-    if (const auto pair = std::min (previousPushSamples, static_cast<size_t> (numSamples));
-        pair > deviceBlockSamples.load (std::memory_order_relaxed))
+    const auto pair = std::min (previousPushSamples, static_cast<size_t> (numSamples));
+    const auto largestBlock = deviceBlockSamples.load (std::memory_order_relaxed);
+
+    if (pair > largestBlock)
         deviceBlockSamples.store (pair, std::memory_order_relaxed);
+
     previousPushSamples = static_cast<size_t> (numSamples);
+
+    // And the block it runs at now, which is what the consumer holds room
+    // for: the same, except that it comes back down once the device has run
+    // at no more than half of it for a while (kHeldRoomReleaseSeconds at
+    // first). Half, so a device whose deliveries merely vary a little -- 470
+    // and 471, say -- never has its room taken back and grown again by a
+    // sample at a time. A single large delivery is a pair with the smaller
+    // one either side of it, so a backlog handed over in one piece neither
+    // raises this nor restarts the count.
+    if (const auto recent = recentBlockSamples.load (std::memory_order_relaxed); pair >= recent)
+    {
+        if (pair > recent)
+        {
+            // Back up to a block whose room it had stopped holding: this
+            // device does come back to it, and each time it does, the growth
+            // costs a gap, as any growth past the room held does. So the room
+            // is kept twice as long before it goes next time. Without this a
+            // device another app switched between 1156 and 64 every three
+            // seconds paid a gap every six, ten a minute, which steps the
+            // buffer ladder; now it pays twice, and then never again.
+            if (recent > 0 && recent < largestBlock)
+                releaseAfterSamples = std::min (releaseAfterSamples * 2,
+                                                static_cast<uint64_t> (rate * kHeldRoomReleaseMaxSeconds));
+
+            recentBlockSamples.store (pair, std::memory_order_relaxed);
+        }
+
+        smallerRunSamples = 0;
+        smallerRunLargest = 0;
+    }
+    else
+    {
+        smallerRunSamples += static_cast<uint64_t> (numSamples);
+        smallerRunLargest = std::max (smallerRunLargest, pair);
+
+        if (smallerRunSamples >= releaseAfterSamples)
+        {
+            if (smallerRunLargest > 0 && smallerRunLargest * 2 <= recent)
+                recentBlockSamples.store (smallerRunLargest, std::memory_order_relaxed);
+
+            smallerRunSamples = 0;
+            smallerRunLargest = 0;
+        }
+    }
 
     // A full ring means the consumer is not keeping up. Dropping the newest
     // samples is the only lock-free option; the loop reacts by speeding this
@@ -381,6 +435,94 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     if (destination == nullptr || numSamples <= 0)
         return;
 
+    pullBlock (destination, numSamples);
+    noteQuiet (destination, numSamples);
+}
+
+void DeviceInputStream::noteQuiet (const float* samples, int numSamples) noexcept
+{
+    // How much of what this stream has just handed on, counting back from
+    // its newest sample, was quiet: the run a jump forward may follow.
+    for (int i = numSamples; i-- > 0;)
+        if (std::abs (samples[i]) >= kQuietLevel)
+        {
+            quietRunSamples = static_cast<size_t> (numSamples - 1 - i);
+            return;
+        }
+
+    quietRunSamples += static_cast<size_t> (numSamples);
+}
+
+void DeviceInputStream::releaseHeldRoom (size_t block, int numSamples) noexcept
+{
+    // The room given back is exactly the difference between the two blocks:
+    // the target falls by that much (recomputeTarget, while the device's
+    // last delivery is no larger than the smaller block), so dropping that
+    // much leaves the level exactly where it stood against its target, and
+    // the loop carries on as if nothing had happened. Dropping whatever the
+    // level read above the smaller target instead moved the channel by a
+    // delivery's lateness more or less than its place in time says -- and
+    // the writer lines the stem up by its place in time.
+    const auto lastPush = static_cast<size_t> (std::max (0, lastPushSamples.load (std::memory_order_acquire)));
+
+    if (block >= seenDeviceBlock || provisionalBlock > 0 || lastPush > block)
+        return;
+
+    const size_t drop = seenDeviceBlock - block;
+
+    // Only from steady playout: not across a gap still being answered for,
+    // and not while the interpolator waits to be primed (a carried sample
+    // and its phase belong to the gap they span).
+    if (! primed || carryPending || inGap || silenceOwed > 0.0)
+        return;
+
+    // Never into what this pull is about to play, nor the sample after it
+    // the interpolator leans on.
+    const size_t keep = static_cast<size_t> (numSamples) + 2;
+
+    if (ring.availableForRead() < drop + keep)
+        return;
+
+    // Only at a quiet moment: the last few milliseconds handed on, the
+    // sample the interpolator is heading for, all that the jump passes over,
+    // and what this pull lands on, all below kQuietLevel. Then the jump is
+    // quiet to quiet in the headphones, and what the stem loses is a moment
+    // of quiet room sound. Until then the room stays held and nothing moves.
+    const auto lead = static_cast<size_t> (kQuietLeadMs * rate / 1000.0);
+
+    if (quietRunSamples < lead || std::abs (currentSample) >= kQuietLevel
+        || ring.peekPeak (drop + keep) >= kQuietLevel)
+        return;
+
+    // The interpolator's pair moves along by exactly `drop` samples, its
+    // phase kept, so the channel moves forward by exactly what was dropped
+    // and not a fraction more or less. It works from a held last sample too:
+    // the crossing it was waiting to complete is completed from the new pair.
+    if (drop >= 2)
+    {
+        ring.discard (drop - 2);
+        readOne (previousSample);
+    }
+    else
+    {
+        previousSample = currentSample;
+    }
+
+    readOne (currentSample);
+    heldLast = false;
+
+    seenDeviceBlock = block;
+
+    // The level fell with the target, by the same amount: the loop's error
+    // is unchanged, so its smoothing carries on rather than restarting.
+    fillAverage -= static_cast<double> (drop);
+
+    releasedHeldSamples.fetch_add (static_cast<uint64_t> (drop), std::memory_order_relaxed);
+    heldReleases.fetch_add (1, std::memory_order_relaxed);
+}
+
+void DeviceInputStream::pullBlock (float* destination, int numSamples) noexcept
+{
     if (! channelLive.load (std::memory_order_relaxed))
     {
         // §6.5: the channel survives the mic leaving, and yields silence.
@@ -434,10 +576,12 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     // no cushion at all. The silence already written stood in for the delay, not
     // for late audio, so none of the block is skipped. A block no larger than
     // what is held (a device going back to a size it ran at before) changes
-    // nothing at all: the headroom was kept for it.
+    // nothing at all: the headroom was kept for it -- until the device has
+    // run at no more than half of it for a while (kHeldRoomReleaseSeconds at
+    // first), when it is given back (releaseHeldRoom).
     const auto lastPush = static_cast<size_t> (std::max (0, lastPushSamples.load (std::memory_order_acquire)));
     {
-        const auto block = deviceBlockSamples.load (std::memory_order_relaxed);
+        const auto block = recentBlockSamples.load (std::memory_order_relaxed);
         const bool firstDelivery = seenDeviceBlock == 0;
         const size_t before = heldLatency(); // a provisional block's room included
 
@@ -506,6 +650,13 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
         rebufferCounted = true;
         rebufferOwed = true;
     }
+
+    // And the other way: the device has been back at a block at most half
+    // the room held for a while (pushBlock). That room is given back, at
+    // the first quiet moment (releaseHeldRoom).
+    if (const auto recent = recentBlockSamples.load (std::memory_order_relaxed);
+        recent > 0 && recent < seenDeviceBlock && ! rebuffering && started.load (std::memory_order_relaxed))
+        releaseHeldRoom (recent, numSamples);
 
     // Where this stream now sits, for the writer to line its stem up by.
     publishPlaceInTime();

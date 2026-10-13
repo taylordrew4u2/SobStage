@@ -230,7 +230,12 @@ files really are empty and the card says so instead of calling it saved.
   in its own channel only, and where there is one its delay is shown beside
   it ("slowest mic"). If that one is past 10 ms while the others are not,
   or 5 ms or more behind them, the app tells you which microphone it is, in
-  the activity list. The figure includes a small safety margin, the same
+  the activity list. When a Mac moves a microphone to a larger buffer for a
+  while and then back, that microphone is late in your headphones only
+  while the larger buffer lasts: about two seconds after it is back, at the
+  first quiet moment, it catches up with the others, and the delay shown
+  follows it. Its track gets the same few milliseconds of silence at that
+  moment, so the tracks stay lined up. The figure includes a small safety margin, the same
   for every microphone: about 5 ms at the smallest buffer. It lets a
   computer that is busy for a moment hand a microphone's sound over a few
   milliseconds late without a click or a gap in your headphones or the
