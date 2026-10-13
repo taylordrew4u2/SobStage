@@ -58,6 +58,7 @@ add_library(mma_core STATIC
     Source/Core/FeedbackDetector.cpp
     Source/Core/AlarmTone.cpp
     Source/Core/MixBusLimiter.cpp
+    Source/Core/PeakLimiter.cpp
     Source/Core/RingBuffer.cpp
     Source/Core/SessionWriter.cpp
     Source/Core/SessionMetadata.cpp

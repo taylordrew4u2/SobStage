@@ -2113,18 +2113,21 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
             trimFrame[static_cast<size_t> (ch)] =
                 (inputs[ch] != nullptr) ? inputs[ch][s] * trimGains[static_cast<size_t> (ch)] : 0.0f;
 
-        // §5.1: master volume is an output-stage gain, deliberately outside
-        // processSample, so the bus keeps its -3 dBFS ceiling regardless of how
-        // loud the listener happens to be running their headphones.
-        const float bus = monitorBus.processSample (trimFrame);
-        busScratch[static_cast<size_t> (s)] = bus;
-        mixScratch[static_cast<size_t> (s)] = monitorBus.applyMasterVolume (bus);
+        // §5.1/§5.5: the bus, then the listener's volume, then the safety
+        // limiter on what reaches the ears -- all inside processSample. The
+        // volume used to be applied here, after the limiter, which left the
+        // -3 dBFS ceiling acting on the full-level bus: ordinary speech from
+        // a few microphones was squared off, and no volume setting helped.
+        float busBeforeVolume = 0.0f;
+        mixScratch[static_cast<size_t> (s)] = monitorBus.processSample (trimFrame, &busBeforeVolume);
+        busScratch[static_cast<size_t> (s)] = busBeforeVolume;
     }
 
-    // §5.5 feedback protection: the bus as summed and limited, before the
-    // listener's volume and before the app's own tones (pure tones, which a
-    // narrowband detector would take for a howl). A copy into a preallocated
-    // ring; the analysis runs on the guard's own thread (§11).
+    // §5.5 feedback protection: the bus as summed, before the listener's
+    // volume, the limiter and the app's own tones (pure tones, which a
+    // narrowband detector would take for a howl), so the -60 dBFS floor and
+    // the 10 dB rise mean the same at every volume. A copy into a
+    // preallocated ring; the analysis runs on the guard's own thread (§11).
     feedbackGuard.push (busScratch.data(), numSamples);
 
     mixMeter.processAudioBlock (mixScratch.data(), numSamples);

@@ -13,7 +13,8 @@
 //     microphone's stem and in the mix, never a full-scale click, and never
 //     poisons the loudness figure reported for the take;
 //   - the headphone bus never outputs a non-finite or over-ceiling sample,
-//     whatever it is fed (§5).
+//     whatever it is fed (§5), and at the default volume leaves a loud bus
+//     to the volume rather than the limiter.
 //
 //   sim_mix_bus            (no arguments; exits non-zero on any failure)
 
@@ -432,7 +433,11 @@ void headphoneBus()
 {
     std::printf ("-- the headphone bus, fed the same bad samples --\n");
 
+    // At full volume the headphones get the bus itself, so the figures below
+    // read directly. (The volume now comes before the ceiling; at the
+    // default it would scale every one of them.)
     MonitorBus bus (kRate);
+    bus.setMasterVolume (100.0);
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float inf = std::numeric_limits<float>::infinity();
 
@@ -471,12 +476,26 @@ void headphoneBus()
     const float recovered = bus.processSample ({ 0.1f, 0.2f });
     check (std::abs (recovered - 0.3f) < 1e-6f, "and the monitor carries on when the microphone recovers");
 
-    // Loud but finite input is still the limiter's job, as before.
+    // Loud but finite input is still the limiter's job, as before -- judged
+    // on what reaches the ears, after the volume.
+    const float monitorCeiling = std::pow (10.0f, MonitorBus::kLimiterCeilingDb / 20.0f);
     MonitorBus loud (kRate);
+    loud.setMasterVolume (100.0);
     float loudest = 0.0f;
     for (int i = 0; i < 100; ++i)
         loudest = std::max (loudest, std::abs (loud.processSample ({ 1.0f, 1.0f, 1.0f, 1.0f })));
-    check (loudest <= 1.0f && loudest > 0.5f, "four full-scale microphones are held at the monitor ceiling");
+    check (loudest <= monitorCeiling + 1e-6f && loudest > monitorCeiling * 0.99f,
+           "four full-scale microphones at full volume are held at the -3 dBFS ceiling");
+
+    // At the default volume the same four reach the ears at -6 dBFS, under
+    // the ceiling: they are turned down by the volume, not squared off.
+    MonitorBus atDefault (kRate);
+    const float expected = 4.0f * MonitorBus::monitorVolumeToLinearGain (MonitorBus::kDefaultMonitorVolume);
+    float worstError = 0.0f;
+    for (int i = 0; i < 100; ++i)
+        worstError = std::max (worstError, std::abs (atDefault.processSample ({ 1.0f, 1.0f, 1.0f, 1.0f }) - expected));
+    check (worstError < 1e-6f && atDefault.getLimiterEngagementCount() == 0,
+           "at the default volume they reach the headphones untouched by the limiter");
 }
 
 } // namespace

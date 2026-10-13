@@ -45,7 +45,7 @@ Podcasts and panels often put a USB microphone in front of each person, but ever
 | Area | What it does |
 |---|---|
 | **Capture** | Up to 8 inputs; one 24-bit WAV per *input* (a four-input interface gives four tracks) plus a summed `MIX.wav`. Stereo mics collapse to mono only after analysis proves both sides identical, remembered per port. |
-| **Monitoring** | One shared mix with per-channel trim, a -3 dBFS brickwall limiter, runaway-level cut and feedback detection. On macOS it plays from every mic's own headphone jack at once. |
+| **Monitoring** | One shared mix with per-channel trim, a -3 dBFS safety limiter after the volume that turns loud moments down instead of squaring them off, runaway-level cut and feedback detection. On macOS it plays from every mic's own headphone jack at once. |
 | **Safety** | Dropouts, unplugged mics, a slow or removed card and low space are announced with the take time they happened. A pre-flight benchmark refuses a card that cannot sustain 2x the needed throughput. Optional local backup copy. |
 | **Recovery** | After a crash or power loss, the next launch repairs the WAV headers from the audio on disk and offers the take back. |
 | **Export** | Podcast-ready loudness copy of the mix (Spotify, Apple Podcasts, EBU R128) with a look-ahead true-peak limiter. Stems and the original mix are never touched. |

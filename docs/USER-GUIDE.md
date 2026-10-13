@@ -268,6 +268,12 @@ files really are empty and the card says so instead of calling it saved.
   the folder becomes `2026-08-27_1030_<name>`. Leaving it empty is fine.
 - **Spacebar** mutes and unmutes the headphones instantly. Recording is never
   affected by muting.
+- **Headphones distorting when several people talk at once?** Turn the monitor
+  volume down. The headphones have a safety limit at −3 dBFS, and it works on
+  what you actually hear, after the volume: at the usual volume even a lively
+  room stays well under it. When the mix does reach it, the limit turns the
+  mix down for a moment rather than squashing the loud bits. It never
+  touches the recording.
 - **The Mac sleeping (macOS).** Close the lid with the app open and, when the
   Mac wakes, the app waits for your microphones and headphones to start again
   rather than calling them unplugged. The same goes for the Mac waking with

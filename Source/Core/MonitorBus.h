@@ -1,22 +1,32 @@
 #pragma once
 #include <atomic>
-#include <vector>
 #include <cstddef>
+#include <cstdint>
+#include <vector>
+#include "PeakLimiter.h"
 
 namespace mma {
 
 /// §5: the live monitor mix. Unity sum (no per-channel attenuation with channel
-/// count -- level is managed by trim and master volume only), a mandatory
-/// zero-lookahead brickwall limiter at -3dBFS, a runaway cut if that limiter
-/// stays engaged for >500ms, and a global mute. Third-octave feedback detection
-/// (§5.5) watches this bus from FeedbackGuard and cuts it the same way.
-/// This bus's limiter is a *separate instance* from MixBusLimiter (§6.1) so a
-/// monitor mute or runaway cut can never silence the recorded mix file.
+/// count -- level is managed by trim and master volume only), then the
+/// listener's master volume, then a mandatory zero-lookahead safety limiter at
+/// -3 dBFS on what actually reaches the ears, a runaway cut if that limiter is
+/// needed for >500ms without a break, and a global mute. Third-octave feedback
+/// detection (§5.5) watches the summed bus from FeedbackGuard and cuts it the
+/// same way. This bus's limiter is a *separate instance* from MixBusLimiter
+/// (§6.1) so a monitor mute or runaway cut can never silence the recorded mix
+/// file.
 class MonitorBus
 {
 public:
     static constexpr float kLimiterCeilingDb = -3.0f;
-    static constexpr double kLimiterReleaseSeconds = 0.001; // 1ms release
+    static constexpr double kLimiterHoldSeconds = PeakLimiter::kHoldSeconds;       // 10 ms
+    static constexpr double kLimiterReleaseSeconds = PeakLimiter::kReleaseSeconds; // 50 ms
+
+    /// §5: what "continuous" tolerates when timing a runaway. A stretch
+    /// shorter than this with no sample over the ceiling is part of the same
+    /// engagement; a longer one ends it.
+    static constexpr double kRunawayGapSeconds = 0.001;
     static constexpr double kRunawayCutSeconds = 0.5;       // 500ms continuous engagement -> mute
 
     static constexpr double kFeedbackBandRiseDb = 10.0;
@@ -30,11 +40,26 @@ public:
 
     explicit MonitorBus (double sampleRate) noexcept;
 
-    /// Sum trimmed input channels to a single mono/stereo monitor sample, apply the
-    /// safety limiter, and return the limited sample. No EQ, no filtering, no
-    /// lookahead -- only summing, trim (applied by caller before summing), and this
-    /// limiter belong on this bus.
-    float processSample (const std::vector<float>& trimmedInputSamples) noexcept;
+    /// One sample of the headphone mix: the trimmed inputs summed at unity,
+    /// turned to the listener's master volume, then through the -3 dBFS
+    /// safety limiter. Returns what reaches the ears.
+    ///
+    /// The volume comes before the limiter. It used to come after, so the
+    /// ceiling was tested on the bus at full level: three or four mics in one
+    /// room reached -3 dBFS on ordinary speech and were squared off there,
+    /// and turning the headphones down only made the same distortion quieter.
+    /// Tested on what the listener hears, the ceiling now does what §5.5 says
+    /// it is for -- protecting ears from a fault -- and the volume control
+    /// takes the mix out of it.
+    ///
+    /// `busBeforeVolume`, when given, receives the summed bus before the
+    /// volume: what the mix meter shows and the feedback guard listens to.
+    /// Zero while the monitor is muted or cut, and for a sample carrying a
+    /// faulty microphone's NaN or infinity. No EQ, no filtering, no lookahead -- only
+    /// summing, trim (applied by the caller), the volume and this limiter
+    /// belong on this bus.
+    float processSample (const std::vector<float>& trimmedInputSamples,
+                         float* busBeforeVolume = nullptr) noexcept;
 
     /// Maps 0-100 UI volume to a linear gain, logarithmically, per §5.1.
     static float monitorVolumeToLinearGain (double volume0to100) noexcept;
@@ -44,11 +69,15 @@ public:
     void setMasterVolume (double volume0to100) noexcept;
     double getMasterVolume() const noexcept { return masterVolume.load (std::memory_order_relaxed); }
 
-    /// Output-stage gain, applied to the bus result on the way to the headphone
-    /// device. Deliberately NOT part of processSample: §5.4 puts nothing on the
-    /// bus but summing, trim and the safety limiter, so the -3 dBFS ceiling stays
-    /// a property of the bus rather than of the current listening level.
-    float applyMasterVolume (float busSample) const noexcept;
+    /// The linear gain the master volume maps to (0..1), as the audio thread
+    /// will next apply it.
+    float getMasterGain() const noexcept { return masterGain.load (std::memory_order_acquire); }
+
+    /// Times the safety limiter has started turning the headphones down,
+    /// since this bus was made. One loud passage counts once, however many
+    /// peaks it has. Read on any thread; the mix meter's CLIP is latched from
+    /// it, so the user can see the mix is too hot instead of only hearing it.
+    uint64_t getLimiterEngagementCount() const noexcept { return limiterEngagements.load (std::memory_order_relaxed); }
 
     /// Maps a -20..+20 dB trim value to a linear multiplier.
     static float trimDbToLinearGain (float trimDb) noexcept;
@@ -81,11 +110,15 @@ private:
     bool limiterEngaged = false;
     double limiterEngagedSeconds = 0.0;
 
-    // How long the limiter has been *below* the ceiling within the current
-    // engagement. The run is only broken once this passes the 1 ms release; a
-    // gap shorter than that is part of the same continuous engagement, which is
-    // what §5 means by "500 ms continuous".
+    // How long the limiter has had nothing over the ceiling within the
+    // current engagement. The run is only broken once this passes
+    // kRunawayGapSeconds; a gap shorter than that is part of the same
+    // continuous engagement, which is what §5 means by "500 ms continuous".
     double limiterReleasedSeconds = 0.0;
+
+    // The gain-riding limiter itself, audio-thread-owned like the counters.
+    PeakLimiter limiter;
+    std::atomic<uint64_t> limiterEngagements { 0 };
 
     // These values cross between the message thread and the audio callback.
     // Atomics keep UI changes lock-free and prevent undefined behaviour in the
@@ -95,11 +128,13 @@ private:
     std::atomic<bool> limiterResetRequested { false };
     std::atomic<double> masterVolume { kDefaultMonitorVolume };
 
-    // Precomputed so the audio callback never calls std::pow. processSample and
-    // applyMasterVolume both run once per sample per block, and a transcendental
-    // in there is time taken directly out of the callback's deadline (§11).
-    float ceilingLinear;
+    // Precomputed so the audio callback never calls std::pow. processSample
+    // runs once per sample per block, and a transcendental in there is time
+    // taken directly out of the callback's deadline (§11). The ceiling is
+    // likewise computed once, into the limiter.
     std::atomic<float> masterGain;
+
+    void clearEngagement() noexcept;
 
     // Feedback detector state: level at the start of the current growth window.
     double feedbackWindowStartDb = -200.0;
