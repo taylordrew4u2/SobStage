@@ -1,4 +1,5 @@
 #include "TestFramework.h"
+#include "Core/MixBusLimiter.h"
 #include "Core/PeakLimiter.h"
 #include <algorithm>
 #include <cmath>
@@ -177,4 +178,34 @@ TEST_CASE (PeakLimiter_ResetReturnsToUnityButKeepsTheCount)
     REQUIRE (limiter.getGain() == 1.0f);
     REQUIRE (limiter.process (0.4f) == 0.4f);
     REQUIRE (limiter.getEngagements() == 1u);
+}
+
+TEST_CASE (MixBusLimiter_HoldsTheFileUnderMinusOneDbfsWithoutSquaringItOff)
+{
+    // §6.1: MIX.wav is the unity sum of every microphone in the room, so a
+    // few people laughing together run it over -1 dBFS. It was hard-clipped
+    // there, every crest; it is now turned down and keeps its shape.
+    MixBusLimiter limiter (kRate);
+    const float ceiling = limiter.getCeilingLinear();
+    REQUIRE_NEAR (ceiling, std::pow (10.0f, MixBusLimiter::kCeilingDb / 20.0f), 1e-6);
+
+    int flatTopped = 0;
+    float previous = 0.0f, loudest = 0.0f;
+
+    for (int i = 0; i < 48000; ++i)
+    {
+        const float out = limiter.processSample (sineAt (1.5f, 220.0f, i));
+        loudest = std::max (loudest, std::abs (out));
+
+        if (std::abs (out) >= ceiling * 0.99999f && std::abs (previous) >= ceiling * 0.99999f)
+            ++flatTopped;
+
+        previous = out;
+    }
+
+    REQUIRE (loudest <= ceiling);
+    REQUIRE (loudest > ceiling * 0.999f);
+    REQUIRE (flatTopped < 40); // the first crest's rise, once; hard clipping held ~20000
+    REQUIRE (limiter.getEngagementCount() == 1u);
+    REQUIRE (limiter.processSample (std::numeric_limits<float>::quiet_NaN()) == 0.0f);
 }

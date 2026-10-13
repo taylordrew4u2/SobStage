@@ -26,7 +26,7 @@ and Windows. The table below lists the largest areas rather than every file:
 | Area | Spec | Tests |
 |---|---|---|
 | `MonitorBus` — sum, trim, master volume ahead of the −3 dBFS safety limiter, runaway cut, feedback protection | §5 | 26 |
-| `PeakLimiter` — zero-lookahead gain-riding limiter (instant attack, 10 ms hold, 50 ms release) for the headphones | §5.5 | 8 |
+| `PeakLimiter` / `MixBusLimiter` — zero-lookahead gain-riding limiter (instant attack, 10 ms hold, 50 ms release) for the headphones and `MIX.wav` | §5.5, §6.1 | 9 |
 | `RecordingEngine` — mid-take unplug/reconnect/new-mic events | §6.5 | 15 |
 | `PreflightThroughputTest` — rolling-minimum throughput, 2x gate, FAT32 | §6.4 | 22 |
 | `SessionFolderNaming` — sanitization, truncation, collision suffixes | §6.2 | 11 |

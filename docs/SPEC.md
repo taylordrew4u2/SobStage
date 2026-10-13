@@ -193,7 +193,7 @@ Note: everyone is in the same room and already hears each other acoustically at 
 ## 6. Recording
 ### 6.1 What is written
 - Discrete per-microphone files at unity gain, plus one summed mix file.
-- The mix file is trim + sum + a **mix-bus limiter at −1 dBFS**. This is a separate instance from the monitor safety limiter in §5.5 and is not affected by the runaway cut — a monitor mute must never silence the recording.
+- The mix file is trim + sum + a **mix-bus limiter at −1 dBFS**. This is a separate instance from the monitor safety limiter in §5.5 and is not affected by the runaway cut — a monitor mute must never silence the recording. It is the same kind of limiter (zero lookahead, instant attack, 10 ms hold, 50 ms release, the ceiling guaranteed): a loud overlap is turned down in `MIX.wav` rather than squared off. It used to be a per-sample hard clip, which held four in-phase microphones 2.6 dB over the ceiling flat for 22000 samples a second; now only the first crest's rise, 25 samples, once. Stems never pass through it.
 - The mix file is not affected by master monitor volume.
 - WAV/BWF. Bit depth per §2.3. Sample rate per §2.2.
 - BWF timestamp and a shared session origin in every file, so a DAW aligns stems on import without manual nudging.

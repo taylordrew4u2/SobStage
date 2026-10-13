@@ -187,6 +187,11 @@ bool WritePipeline::start (const std::string& sessionFolder,
     stemScratch.assign (drainFrames, 0.0f);
     mixScratch.assign (drainFrames, 0.0f);
 
+    // §6.1: a fresh MIX.wav limiter per take, at unity. Its gain carries from
+    // one drained chunk to the next, so a peak at a chunk's edge is turned
+    // down as smoothly as one in the middle.
+    mixLimiter = MixBusLimiter (rate);
+
     // Every channel's alignment line, and the hand-off for changes to it.
     // Offsets start unpublished, so the first block the audio thread hands
     // over queues each channel's starting offset at frame zero.
@@ -598,7 +603,7 @@ void WritePipeline::drainOnce (bool finalFlush)
         // §6.1: the mix file gets its own limiter instance at -1 dBFS, separate
         // from the monitor limiter, so a monitor mute never silences the file.
         for (size_t f = 0; f < frames; ++f)
-            mixScratch[f] = MixBusLimiter::processSample (mixScratch[f]);
+            mixScratch[f] = mixLimiter.processSample (mixScratch[f]);
 
         // Measured from the same buffer that is about to be written, after the
         // limiter, so the loudness reported is the loudness of the file.

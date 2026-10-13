@@ -301,6 +301,9 @@ private:
     std::vector<float> stemScratch;
     std::vector<float> mixScratch;
 
+    // §6.1's MIX.wav limiter. Writer-thread-owned, remade at start().
+    MixBusLimiter mixLimiter;
+
     // Stem alignment. The audio thread queues each change to a channel's
     // offset (publishedOffsets is what it has queued, audio-thread-owned);
     // the writer applies them at the frames they were tagged with.
