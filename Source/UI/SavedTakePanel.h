@@ -90,9 +90,15 @@ private:
     juce::Label problemLabel;
     juce::Label routeNote;
 
-    /// The backup line's height: one line for a backup's path, three for the
-    /// card copy's sentence, which names the folder on this computer.
-    int mirrorValueHeight = kRowHeight;
+    /// The line under the files is the card copy's sentence, not a backup's
+    /// path: it is as tall as its words need (wrappedHeight).
+    bool mirrorIsCardCopy = false;
+
+    /// The height `label` needs to draw all of its text, wrapped at the width
+    /// the card gives it, and never less than `atLeast`. The card copy's
+    /// longest sentences end with the folder the take is safe in, and a fixed
+    /// three lines cut exactly that off.
+    int wrappedHeight (const juce::Label& label, int atLeast) const;
 
     juce::TextButton openButton { "Open the folder" };
     juce::TextButton copyAgainButton { "Copy again" };

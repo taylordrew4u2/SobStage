@@ -2,6 +2,8 @@
 #include "../Core/TakeCompleteness.h"
 #include "AppLookAndFeel.h"
 
+#include <cmath>
+
 namespace mma {
 
 namespace {
@@ -129,7 +131,7 @@ void SavedTakePanel::setTake (const juce::String& folder,
     mirrorValue.setVisible (mirrorFolder.isNotEmpty() || mirrorNote.isNotEmpty());
     mirrorValue.setText (mirrorFolder.isNotEmpty() ? "A second copy is in " + mirrorFolder : mirrorNote,
                          juce::dontSendNotification);
-    mirrorValueHeight = kRowHeight;
+    mirrorIsCardCopy = false;
     copyAgainButton.setVisible (false);
     routeNote.setVisible (false);
 
@@ -161,7 +163,7 @@ void SavedTakePanel::setCardCopy (const juce::String& line, bool canCopyAgain)
 
     mirrorValue.setText (line, juce::dontSendNotification);
     mirrorValue.setVisible (line.isNotEmpty());
-    mirrorValueHeight = 3 * kRowHeight;
+    mirrorIsCardCopy = true;
     copyAgainButton.setVisible (canCopyAgain);
     resized();
 }
@@ -186,19 +188,37 @@ bool SavedTakePanel::keyPressed (const juce::KeyPress& key)
     return false;
 }
 
+int SavedTakePanel::wrappedHeight (const juce::Label& label, int atLeast) const
+{
+    // At the width the card will have; before it has been given one, its full
+    // width, as ModalCard's footnote does.
+    const int cardWidth = getWidth() > 0 ? getCardWidth() : kCardWidth;
+    const auto font = label.getFont();
+    const auto border = label.getBorderSize();
+    const float available = (float) juce::jmax (1, cardWidth - 2 * kCardPadding - border.getLeftAndRight());
+    const float textWidth = font.getStringWidthFloat (label.getText());
+
+    // JUCE's own rule in GlyphArrangement: one line when it fits, otherwise
+    // the fewest lines that beat the text's width plus an 80px allowance for
+    // ragged breaks -- and the label draws as many as its height holds.
+    const int lines = textWidth < available ? 1 : (int) ((textWidth + 80.0f) / available) + 1;
+
+    return juce::jmax (atLeast, (int) std::ceil ((float) lines * font.getHeight()) + border.getTopAndBottom() + 1);
+}
+
 int SavedTakePanel::getContentHeight() const
 {
     int height = kRowHeight + 2 + kRowHeight   // the folder, then the file count
                + 12 + listHeight;
 
     if (problemLabel.isVisible())
-        height += 52 + 12;
+        height += wrappedHeight (problemLabel, 52) + 12;
 
     if (routeNote.isVisible())
-        height += 52 + 12;
+        height += wrappedHeight (routeNote, 52) + 12;
 
     if (mirrorValue.isVisible())
-        height += 10 + mirrorValueHeight;
+        height += 10 + (mirrorIsCardCopy ? wrappedHeight (mirrorValue, kRowHeight) : kRowHeight);
 
     if (emptyWarning.isVisible())
         height += 10 + 34;
@@ -211,13 +231,13 @@ void SavedTakePanel::layOutContent (juce::Rectangle<int> area)
     // Above the folder and the files: what happened comes before what survived.
     if (problemLabel.isVisible())
     {
-        problemLabel.setBounds (area.removeFromTop (52));
+        problemLabel.setBounds (area.removeFromTop (wrappedHeight (problemLabel, 52)));
         area.removeFromTop (12);
     }
 
     if (routeNote.isVisible())
     {
-        routeNote.setBounds (area.removeFromTop (52));
+        routeNote.setBounds (area.removeFromTop (wrappedHeight (routeNote, 52)));
         area.removeFromTop (12);
     }
 
@@ -244,7 +264,8 @@ void SavedTakePanel::layOutContent (juce::Rectangle<int> area)
     if (mirrorValue.isVisible())
     {
         area.removeFromTop (10);
-        mirrorValue.setBounds (area.removeFromTop (mirrorValueHeight));
+        mirrorValue.setBounds (area.removeFromTop (mirrorIsCardCopy ? wrappedHeight (mirrorValue, kRowHeight)
+                                                                    : kRowHeight));
     }
 
     if (emptyWarning.isVisible())
