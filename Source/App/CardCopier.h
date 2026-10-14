@@ -183,9 +183,10 @@ private:
         bool resync = false;
         /// Its combined video or podcast copy is still being made.
         bool awaitingFollowUps = false;
-        /// An attempt has copied it: anything that fails now is only what was
-        /// added to its folder since.
-        bool copiedBefore = false;
+        /// What the last attempt that copied it left on the card, by size.
+        /// A later attempt that fails says "only a file added since" only
+        /// while the card it finds still holds these.
+        std::map<std::string, uint64_t> copiedFiles;
         /// Gone again after following the folder through a rename: a bound,
         /// so a folder renamed over and over cannot keep the worker busy.
         int movedFolderRetries = 0;

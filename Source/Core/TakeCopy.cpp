@@ -320,8 +320,17 @@ std::string lastPartOf (const std::string& path)
 
 namespace {
 
+/// What one attempt saw of the take's folder on the card in the reader.
+struct CardLook
+{
+    /// The card was there and its take folder was looked at (or found not
+    /// to be there at all): `files` is what that folder holds.
+    bool looked = false;
+    std::map<std::string, uint64_t> files;
+};
+
 Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const Marker& marker, Control& control,
-                     std::set<std::string>& verified)
+                     std::set<std::string>& verified, CardLook& look)
 {
     Result result;
     result.cardFolder = marker.cardFolder;
@@ -392,6 +401,7 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
         if (! control.keepMarker && fs.exists (markerPath))
             (void) fs.remove (markerPath);
 
+        result.filesOnCard = localSizes;
         return finish (result, Outcome::Copied);
     }
 
@@ -445,6 +455,9 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
         if (rootParent == root || ! fs.exists (rootParent))
             return finish (result, Outcome::CardMissing);
 
+        // A card is there, without even the save folder: none of the take.
+        look.looked = true;
+
         if (const auto r = fs.makeFolder (root); ! r.ok())
             return refusedOnCard (outcomeForCardError (fs, rootParent, r), {}, r);
     }
@@ -469,8 +482,13 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
         rememberOnThisComputer ({ root, cardFolder });
 
     if (! fs.exists (cardFolder))
+    {
+        // The card in the reader has no folder for this take: none of it.
+        look.looked = true;
+
         if (const auto r = fs.makeFolder (cardFolder); ! r.ok())
             return refusedOnCard (outcomeForCardError (fs, root, r), {}, r);
+    }
 
     std::vector<Entry> cardEntries;
     if (const auto r = fs.list (cardFolder, cardEntries); ! r.ok())
@@ -489,6 +507,9 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
         else
             onCard[e.name] = e.size;
     }
+
+    look.looked = true;
+    look.files = onCard;
 
     // A file checked earlier in this run is on the card only while the card
     // still lists it, under its name and at its size. A reader that dropped
@@ -754,6 +775,7 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
             return refusedOnCard (outcomeForCardError (fs, root, r), name, r);
 
         verified.insert (key);
+        look.files[name] = size;
         ++result.filesCopied;
     }
 
@@ -773,6 +795,7 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
     if (! control.keepMarker)
         (void) fs.remove (markerPath);
 
+    result.filesOnCard = localSizes;
     return finish (result, Outcome::Copied);
 }
 
@@ -783,7 +806,23 @@ Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marke
     std::set<std::string> scratchVerified;
     auto& verified = control.verified != nullptr ? *control.verified : scratchVerified;
 
-    auto result = copyTakeOnce (fs, localFolder, marker, control, verified);
+    CardLook look;
+    auto result = copyTakeOnce (fs, localFolder, marker, control, verified, look);
+
+    // Only a file added since is missing when every file an earlier attempt
+    // copied is on the card this attempt looked at -- the records by name,
+    // as they are rewritten. A card that could not be looked at (out, or
+    // refused before its take folder was reached) is the one that was
+    // checked; another card at the same place, or one emptied, is not.
+    if (control.copiedBefore != nullptr && ! control.copiedBefore->empty())
+        result.addedFilesOnly = ! look.looked
+            || std::all_of (control.copiedBefore->begin(), control.copiedBefore->end(),
+                            [&look] (const std::pair<const std::string, uint64_t>& copied)
+                            {
+                                const auto there = look.files.find (copied.first);
+                                return there != look.files.end()
+                                    && (isRecordFile (copied.first) || there->second == copied.second);
+                            });
 
     // A card that cannot be trusted with what it held a moment ago -- pulled,
     // swapped, garbled, or holding files that are not this take's -- has

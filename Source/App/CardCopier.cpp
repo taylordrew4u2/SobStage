@@ -463,7 +463,7 @@ void CardCopier::run (std::shared_ptr<State> s)
         Job job;
         std::string scanRoot;
         bool keepMarker = false;
-        bool addedFilesOnly = false;
+        std::map<std::string, uint64_t> copiedBefore;
 
         {
             std::unique_lock<std::mutex> lock (s->lock);
@@ -498,7 +498,7 @@ void CardCopier::run (std::shared_ptr<State> s)
                 record.againWhenDone = false;
                 job = record.job;
                 keepMarker = record.awaitingFollowUps;
-                addedFilesOnly = record.copiedBefore;
+                copiedBefore = record.copiedFiles;
                 s->inFlight = key;
                 s->lastProgress = Clock::now();
             }
@@ -535,6 +535,7 @@ void CardCopier::run (std::shared_ptr<State> s)
         control.keepMarker = keepMarker;
         control.cancel = &s->cancelling;
         control.verified = &s->verified;
+        control.copiedBefore = &copiedBefore;
         control.shouldYield = [&s] { return s->held.load (std::memory_order_acquire); };
         control.progress = [&s, &key] (uint64_t done, uint64_t total)
         {
@@ -556,8 +557,6 @@ void CardCopier::run (std::shared_ptr<State> s)
         {
             result = cardcopy::copyTake (*fs, folder, job.marker, control);
         }
-
-        result.addedFilesOnly = addedFilesOnly;
 
         // A file on this computer that went missing mid-copy because the
         // folder was renamed in Finder: the folder is followed, and the copy
@@ -626,7 +625,8 @@ void CardCopier::run (std::shared_ptr<State> s)
         record.phase = copied ? Phase::Copied : Phase::StillOnComputer;
         record.last = result;
         record.resync = false;
-        record.copiedBefore = record.copiedBefore || copied;
+        if (copied)
+            record.copiedFiles = result.filesOnCard;
 
         if (! quietResync)
             s->finished.push_back ({ job.localFolder, folder, result, repeat && ! copied });

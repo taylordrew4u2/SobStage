@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -243,6 +244,10 @@ struct Control
     /// shows the file under its name and size, and forgotten for the whole
     /// take when an attempt fails in a way that puts the card in doubt.
     std::set<std::string>* verified = nullptr;
+    /// The take's files, by size, as an earlier attempt in this run left them
+    /// copied (Result::filesOnCard). With it, a failed attempt works out
+    /// whether this is only a file added since (Result::addedFilesOnly).
+    const std::map<std::string, uint64_t>* copiedBefore = nullptr;
 };
 
 struct Result
@@ -257,9 +262,15 @@ struct Result
     std::string filesystemType;
     uint64_t bytesCopied = 0;
     int filesCopied = 0;
-    /// An earlier attempt copied the take: this one was for a file added to
-    /// its folder since (a combined video, a podcast copy). Set by the caller.
+    /// An earlier attempt copied the take (Control::copiedBefore), and every
+    /// file it copied is on the card this attempt found -- or the card could
+    /// not be looked at, as when it is out: what failed is only a file added
+    /// to the folder since (a combined video, a podcast copy). False when the
+    /// card in the reader was looked at and does not hold the take: another
+    /// card at the same place ("NO NAME"), or one emptied since.
     bool addedFilesOnly = false;
+    /// Copied: every file of the take now on the card, by size.
+    std::map<std::string, uint64_t> filesOnCard;
 };
 
 /// Copies the finished take in `localFolder` to the card, checks every file

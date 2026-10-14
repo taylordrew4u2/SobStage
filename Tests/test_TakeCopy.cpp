@@ -1362,6 +1362,76 @@ TEST_CASE (TakeCopyWording_AFileAddedLaterIsNotTheWholeTake)
     REQUIRE (describe (r, where) == "Copied to the card: /Volumes/SD/RECORDINGS/2026-10-14_2000_Show.");
 }
 
+// Mutation: addedFilesOnly taken from history (an earlier attempt copied it)
+// rather than from the card this attempt found. Another card at the same
+// place -- every FAT32 SD card mounts as "NO NAME" -- holds none of the take,
+// and "This take is on the card" would be untrue of it.
+TEST_CASE (TakeCopy_OnlyAnAddedFileIsSaidOfTheCardInTheReaderNow)
+{
+    FakeFs fs;
+    finishedTake (fs);
+    Control control;
+    std::set<std::string> verified;
+    control.verified = &verified;
+    control.keepMarker = true;
+
+    const auto first = run (fs, toTheCard(), &control);
+    REQUIRE (first.outcome == Outcome::Copied);
+    REQUIRE (first.filesOnCard.size() == 5u);
+    REQUIRE (first.filesOnCard.at ("MIX.wav") == 300000u);
+
+    const auto copiedBefore = first.filesOnCard;
+    control.copiedBefore = &copiedBefore;
+    fs.addFile (local ("V01_Cam_with-sound.mov"), bytes (100000, 9));
+
+    // The same card, full now: the take is on it, the added file is not.
+    fs.cardFree = 1;
+    const auto sameCard = run (fs, { kRoot, first.cardFolder }, &control);
+    REQUIRE (sameCard.outcome == Outcome::CardFull);
+    REQUIRE (sameCard.addedFilesOnly);
+
+    // The card out: it cannot be looked at, and the one that was checked
+    // holds the take.
+    FakeFs out = fs;
+    out.pullCard();
+    const auto pulled = run (out, { kRoot, first.cardFolder }, &control);
+    REQUIRE (pulled.outcome == Outcome::CardMissing);
+    REQUIRE (pulled.addedFilesOnly);
+
+    // Another card in its place, full: none of the take is on it.
+    FakeFs swapped = fs;
+    swapped.pullCard();
+    swapped.addFolder (kRoot);
+    swapped.cardFree = 1;
+    const auto full = run (swapped, { kRoot, first.cardFolder }, &control);
+    REQUIRE (full.outcome == Outcome::CardFull);
+    REQUIRE_FALSE (full.addedFilesOnly);
+    REQUIRE (describe (full, kLocal).find ("on the card") == std::string::npos);
+
+    // Another card, locked, without even the save folder.
+    FakeFs locked = fs;
+    locked.pullCard();
+    locked.addFolder ("/cards/SD");
+    locked.failMakeFolder[kRoot] = { FsError::ReadOnly, 30 };
+    const auto refused = run (locked, { kRoot, first.cardFolder }, &control);
+    REQUIRE (refused.outcome == Outcome::CardLocked);
+    REQUIRE_FALSE (refused.addedFilesOnly);
+
+    // The take's folder on the card emptied of its sound since.
+    FakeFs emptied = fs;
+    emptied.files.erase (card ("MIX.wav"));
+    const auto partial = run (emptied, { kRoot, first.cardFolder }, &control);
+    REQUIRE (partial.outcome == Outcome::CardFull);
+    REQUIRE_FALSE (partial.addedFilesOnly);
+
+    // Nothing copied before in this run: never "only an added file".
+    Control fresh;
+    FakeFs never;
+    finishedTake (never);
+    never.cardFree = 1;
+    REQUIRE_FALSE (run (never, toTheCard(), &fresh).addedFilesOnly);
+}
+
 TEST_CASE (TakeCopy_TheComputerCopyGoneIsSaid)
 {
     FakeFs fs;

@@ -96,6 +96,9 @@ struct Gate
     bool open = true;
     bool blocked = false;
 
+    /// The card says it has no room: another card, full, in the reader.
+    bool cardFull = false;
+
     /// Every write to a file whose name contains this takes `slowWriteMs`:
     /// a slow card, which is not one that has stopped answering.
     std::string slowWritesTo;
@@ -165,7 +168,13 @@ public:
     bool exists (const std::string& p) override { gate->note (p); return real.exists (p); }
     cardcopy::FsResult list (const std::string& f, std::vector<cardcopy::Entry>& e) override { gate->note (f); return real.list (f, e); }
     cardcopy::FsResult makeFolder (const std::string& p) override { gate->note (p); return real.makeFolder (p); }
-    std::optional<uint64_t> freeBytes (const std::string& p) override { gate->note (p); return real.freeBytes (p); }
+    std::optional<uint64_t> freeBytes (const std::string& p) override
+    {
+        gate->note (p);
+        if (gate->cardFull && p.compare (0, gate->cardPrefix.size(), gate->cardPrefix) == 0)
+            return uint64_t (0);
+        return real.freeBytes (p);
+    }
     std::optional<bool> limitedTo4GiBFiles (const std::string& p) override { gate->note (p); return real.limitedTo4GiBFiles (p); }
     std::string filesystemTypeName (const std::string& p) override { gate->note (p); return real.filesystemTypeName (p); }
     cardcopy::FsResult readText (const std::string& p, std::string& t) override { gate->note (p); return real.readText (p, t); }
@@ -679,6 +688,7 @@ int main()
         check (cardcopy::describe (r, local.string()).find ("too big for the way this card is formatted")
                    != std::string::npos,
                "and the user is told so in plain words");
+
        #else
         check (true, "(RLIMIT_FSIZE is POSIX)");
        #endif
@@ -912,6 +922,49 @@ int main()
                "the first stays marked, for the next launch to find");
         check (copier.view (path.string()).phase == CardCopier::Phase::Copied,
                "the second take's card reads copied");
+    }
+
+    // "This take is on the card" is said of the card in the reader now, from
+    // what this attempt found on it -- not from an earlier attempt that
+    // copied it to another card. FAT32 cards all mount as "NO NAME".
+    std::printf ("\n12. Another card in the reader when the added file goes\n");
+    {
+        Fixture f;
+        const auto local = f.take ("2026-10-14_2350_Swap");
+        const auto cardRoot = f.card.parent_path();
+
+        CardCopier copier (f.factory());
+        copier.start (f.job (local, true));
+        const auto first = waitForResult (copier, 15s);
+        check (first.has_value() && first->result.outcome == cardcopy::Outcome::Copied, "the take is copied to card A");
+
+        // Card A out; card B, empty and full, at the same place.
+        writeBytes (local / "V01_Cam_with-sound.mov", 1u << 20, 9);
+        fs::rename (cardRoot, f.base / "CARD-A");
+        fs::create_directories (f.card);
+        f.gate->cardFull = true;
+
+        copier.followUpsFinished();
+        const auto r = waitForResult (copier, 15s);
+        check (r.has_value() && r->result.outcome == cardcopy::Outcome::CardFull, "card B is full");
+        check (r.has_value() && ! r->result.addedFilesOnly
+                   && cardcopy::describe (r->result, local.string()).find ("on the card") == std::string::npos,
+               "and the take is not said to be on the card, which holds none of it");
+        check (copier.summary().onlyOnComputer == 1 && copier.summary().addedFilesWaiting == 0,
+               "the status line counts it as only on this computer");
+
+        // Card A back, and full by now: the take IS on it, only the new file
+        // is not.
+        fs::remove_all (cardRoot);
+        fs::rename (f.base / "CARD-A", cardRoot);
+        copier.retry ([] (const cardcopy::Result&) { return true; });
+        const auto back = waitForResult (copier, 15s);
+        check (back.has_value() && back->result.outcome == cardcopy::Outcome::CardFull
+                   && back->result.addedFilesOnly
+                   && cardcopy::describe (back->result, local.string()).find ("This take is on the card") == 0,
+               "with card A back, the take is on it and only the added file is waiting");
+        check (copier.summary().onlyOnComputer == 0 && copier.summary().addedFilesWaiting == 1,
+               "and the status line says so");
     }
 
     std::printf ("\n%s (%d checks, %d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILED", checks, failures);
