@@ -483,6 +483,23 @@ int main()
         check (true, "(RLIMIT_FSIZE is POSIX)");
        #endif
 
+        // An entry that cannot be looked at -- gone since the folder was read,
+        // or a link to nothing -- is left out of a listing, not a reason to
+        // call the whole card unreadable.
+        {
+            const auto folder = f.base / "listing";
+            fs::create_directories (folder);
+            std::ofstream (folder / "MIX.wav") << "x";
+            std::error_code ec;
+            fs::create_symlink (folder / "nothing-here", folder / "dangling", ec);
+
+            NativeCopyFileSystem listing;
+            std::vector<cardcopy::Entry> entries;
+            const auto r = listing.list (folder.string(), entries);
+            check (r.ok() && entries.size() == 1 && entries.front().name == "MIX.wav",
+                   "a listing with an entry that cannot be looked at still lists the rest");
+        }
+
         check (cardcopy::classifyPosixError (ENOSPC) == cardcopy::FsError::NoSpace, "ENOSPC is a full card");
         check (cardcopy::classifyPosixError (EROFS) == cardcopy::FsError::ReadOnly, "EROFS is a locked card");
         check (cardcopy::classifyPosixError (EPERM) == cardcopy::FsError::NotAllowed,

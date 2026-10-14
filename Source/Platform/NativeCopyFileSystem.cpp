@@ -363,9 +363,22 @@ FsResult NativeCopyFileSystem::list (const std::string& folder, std::vector<Entr
     if (dir == nullptr)
         return fromErrno (errno);
 
-    errno = 0;
-    while (const auto* item = ::readdir (dir))
+    int listingError = 0;
+
+    for (;;)
     {
+        // errno is read straight after readdir and nowhere else: the stat
+        // below, or anything it calls, may leave its own errno behind, and an
+        // entry gone between the two is no reason to call the listing failed.
+        errno = 0;
+        const auto* item = ::readdir (dir);
+
+        if (item == nullptr)
+        {
+            listingError = errno;
+            break;
+        }
+
         const std::string name = item->d_name;
         if (name == "." || name == "..")
             continue;
@@ -384,7 +397,6 @@ FsResult NativeCopyFileSystem::list (const std::string& folder, std::vector<Entr
         entries.push_back (std::move (e));
     }
 
-    const int listingError = errno;
     ::closedir (dir);
     return listingError == 0 ? FsResult {} : fromErrno (listingError);
    #endif
