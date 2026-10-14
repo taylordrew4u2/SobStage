@@ -609,7 +609,43 @@ int main()
         cardcopy::Control control;
         const auto r = cardcopy::copyTake (real, local.string(), { f.card.string(), {} }, control);
 
+        // What this system does with a write that crosses the limit, with
+        // and without F_NOCACHE, so a failure below says which it was.
+        const auto probe = [&] (bool noCache)
+        {
+            const auto path = (f.base / (noCache ? "probe-nocache" : "probe-plain")).string();
+            const int fd = ::open (path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd < 0)
+                return std::string ("open failed, errno ") + std::to_string (errno);
+           #if defined(__APPLE__)
+            if (noCache)
+                (void) ::fcntl (fd, F_NOCACHE, 1);
+           #else
+            if (noCache)
+                { ::close (fd); return std::string ("(F_NOCACHE is macOS only)"); }
+           #endif
+            std::vector<char> block (4u << 20, 'x');
+            std::string said;
+            for (int i = 0; i < 2; ++i)
+            {
+                errno = 0;
+                const auto n = ::write (fd, block.data(), block.size());
+                said += "write " + std::to_string (n) + " errno " + std::to_string (errno) + "; ";
+            }
+            struct stat st {};
+            ::fstat (fd, &st);
+            ::close (fd);
+            return said + "size " + std::to_string (static_cast<long long> (st.st_size));
+        };
+        const auto plain = probe (false);
+        const auto noCache = probe (true);
+
         setrlimit (RLIMIT_FSIZE, &old);
+
+        std::printf ("  [measured] outcome %d, file %s, os error %d, %d files copied\n",
+                     static_cast<int> (r.outcome), r.fileName.c_str(), r.osError, r.filesCopied);
+        std::printf ("  [measured] 4 MB writes past a 1 MB limit: plain: %s\n", plain.c_str());
+        std::printf ("  [measured] 4 MB writes past a 1 MB limit: F_NOCACHE: %s\n", noCache.c_str());
 
         check (r.outcome == cardcopy::Outcome::FileTooBig, "EFBIG reads as a file too big for the card");
         check (! workingFilesOn (f.card / "2026-10-14_2330_Big"), "and the part written is removed");
