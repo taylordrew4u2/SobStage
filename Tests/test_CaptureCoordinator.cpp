@@ -19,6 +19,12 @@ using namespace mma;
 
 namespace {
 
+// What the resampler that puts each microphone on the output's clock adds to
+// every headphone figure, on top of the ring's cushion: it plays a sample up
+// to two samples after the ring gives it up (it works between the middle two
+// of four), and the figure counts both.
+constexpr double kResampler = DeviceInputStream::kResamplerDelaySamples;
+
 std::string tempDir()
 {
     for (const char* var : { "MMA_TEST_TMPDIR", "TMPDIR", "TMP", "TEMP" })
@@ -579,10 +585,10 @@ TEST_CASE (CaptureCoordinator_MicsOnDevicesWithDifferentInputLatencyLineUpInTheF
     // Their figure is the quicker microphone's own path -- the round trip,
     // the ring's cushion (256 samples at 64: one pull and three more of
     // late delivery, where it was two pulls and too thin to ride out a late
-    // IOProc) and its 12 frames -- with nothing of Couch's extra 37 frames
-    // in it.
+    // IOProc), the resampler's two samples and its 12 frames -- with nothing
+    // of Couch's extra 37 frames in it.
     REQUIRE (c.getAlignedInputLatencyFrames() == 49);
-    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 256 + 12) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 256 + kResampler + 12) / 48000.0 * 1000.0, 1e-9);
 
     REQUIRE (c.startRecording (dir, 16, "2026-10-07T00:00:00Z"));
 
@@ -934,9 +940,9 @@ TEST_CASE (CaptureCoordinator_MicsOnDevicesAtDifferentIoSizesLineUpInTheFiles)
     REQUIRE (r.couchAlignmentStart == 0);
 
     // Which the headphones do not hear: two 64-frame buffers, the ring's
-    // cushion (256 at 64), and Kitchen's own path -- nothing of Couch's
-    // block.
-    REQUIRE_NEAR (r.headphoneLatencyMs, (2.0 * 64 + 256) / 48000.0 * 1000.0, 1e-6);
+    // cushion (256 at 64), the resampler's two samples, and Kitchen's own
+    // path -- nothing of Couch's block.
+    REQUIRE_NEAR (r.headphoneLatencyMs, (2.0 * 64 + 256 + kResampler) / 48000.0 * 1000.0, 1e-6);
 }
 
 TEST_CASE (CaptureCoordinator_AnIoSizeThatGrowsMidTakeKeepsEveryStemInStep)
@@ -1582,9 +1588,10 @@ TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
     REQUIRE (c.getMonitorInputFrames (128) == 40 + 128);
     REQUIRE (c.getSlowestMonitorInputFrames (128) == 100 + 128);
     REQUIRE (c.getSlowestMonitoringDeviceId() == "dev-a");
-    // Each with the round trip and the cushion every ring holds (256 at 64).
-    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 256 + 40) / 48000.0 * 1000.0, 1e-9);
-    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs(), (2.0 * 64 + 256 + 100) / 48000.0 * 1000.0, 1e-9);
+    // Each with the round trip, the cushion every ring holds (256 at 64)
+    // and the resampler's two samples.
+    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 256 + kResampler + 40) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs(), (2.0 * 64 + 256 + kResampler + 100) / 48000.0 * 1000.0, 1e-9);
 
     std::vector<float> a (64, 0.0f), b (1156, 0.0f), out (64);
     const float* aIn[] = { a.data() };
@@ -1611,17 +1618,17 @@ TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
 
     // At the size it runs at now it is what the headphone figure carries:
     // Kitchen's 100 frames of input latency, none of Couch's 1156.
-    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 256 + 100) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 256 + kResampler + 100) / 48000.0 * 1000.0, 1e-9);
 
     // And the slowest figure is Couch's own path: its block in place of the
     // one asked for, and its input latency.
-    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs(), (64.0 + 256 + 1156 + 40) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs(), (64.0 + 256 + kResampler + 1156 + 40) / 48000.0 * 1000.0, 1e-9);
 
     // What the ladder says a step to 128 will cost: the round trip and the
     // cushion at 128 (a pull and 6 ms: 416), and each path's own input side
     // at it.
-    REQUIRE_NEAR (c.getMonitoringLatencyMsAt (128), (2.0 * 128 + 416 + 100) / 48000.0 * 1000.0, 1e-9);
-    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMsAt (128), (128.0 + 416 + 1156 + 40) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getMonitoringLatencyMsAt (128), (2.0 * 128 + 416 + kResampler + 100) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMsAt (128), (128.0 + 416 + kResampler + 1156 + 40) / 48000.0 * 1000.0, 1e-9);
 
     c.stopMonitoring();
     REQUIRE (c.getMonitorInputFrames (128) == 128);
@@ -4268,10 +4275,10 @@ TEST_CASE (CaptureCoordinator_TheMonitoringLatencyReachesTheCaller)
 
     REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
 
-    // The backend's round trip, and the cushion every microphone's ring
-    // holds ahead of the output: at 256 a pull and 6 ms of late delivery,
-    // 544 samples.
-    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - (10.67 + 544.0 / 48000.0 * 1000.0)) < 1e-9);
+    // The backend's round trip, the cushion every microphone's ring holds
+    // ahead of the output -- at 256 a pull and 6 ms of late delivery, 544
+    // samples -- and the resampler's two.
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - (10.67 + (544.0 + kResampler) / 48000.0 * 1000.0)) < 1e-9);
 }
 
 // Nothing monitoring means no monitoring latency. A figure left standing would
@@ -4374,8 +4381,9 @@ TEST_CASE (CaptureCoordinator_TheLatencyDescribesTheBufferTheDeviceGranted)
     // twice the estimate, because the device gave twice the buffer -- and
     // every microphone's ring is pulled 512 at a time, so it holds two of
     // those ahead of the output (two pulls of 512 already ride out more
-    // than the 6 ms of late delivery the cushion is sized for).
-    const double expected = (512.0 / 48000.0) * 1000.0 * 2.0 + (2.0 * 512.0 / 48000.0) * 1000.0;
+    // than the 6 ms of late delivery the cushion is sized for), and the
+    // resampler adds its two samples.
+    const double expected = (512.0 / 48000.0) * 1000.0 * 2.0 + ((2.0 * 512.0 + kResampler) / 48000.0) * 1000.0;
     REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - expected) < 1e-9);
 
     // And it is emphatically not the estimate's any more.
@@ -4400,14 +4408,14 @@ TEST_CASE (CaptureCoordinator_TheLatencyIncludesWhatTheOutputDeviceAdds)
 
     REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
 
-    const double expected = ((2.0 * 64.0 + 256.0 + 7200.0) / 48000.0) * 1000.0;
+    const double expected = ((2.0 * 64.0 + 256.0 + kResampler + 7200.0) / 48000.0) * 1000.0;
     REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - expected) < 1e-9);
     REQUIRE (coordinator.getMonitoringLatencyMs() > 150.0);
 
     // And it is still there after a buffer step: the ladder's figure for 128
     // keeps what the device adds.
     REQUIRE (std::abs (coordinator.getMonitoringLatencyMsAt (128)
-                       - ((2.0 * 128.0 + 416.0 + 7200.0) / 48000.0) * 1000.0) < 1e-9);
+                       - ((2.0 * 128.0 + 416.0 + kResampler + 7200.0) / 48000.0) * 1000.0) < 1e-9);
 }
 
 // A backend that cannot say keeps the estimate. Zero is not a small latency,
@@ -4427,7 +4435,7 @@ TEST_CASE (CaptureCoordinator_ABackendThatCannotSayKeepsTheEstimate)
     mic.fileName = "01_Singer";
 
     REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
-    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - (10.67 + 544.0 / 48000.0 * 1000.0)) < 1e-9);
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - (10.67 + (544.0 + kResampler) / 48000.0 * 1000.0)) < 1e-9);
 }
 
 // A device that granted exactly what was asked for reports exactly the
@@ -4448,7 +4456,7 @@ TEST_CASE (CaptureCoordinator_AGrantedBufferMatchingTheRequestChangesNothing)
 
     REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
 
-    const double expected = (256.0 / 48000.0) * 1000.0 * 2.0 + (544.0 / 48000.0) * 1000.0;
+    const double expected = (256.0 / 48000.0) * 1000.0 * 2.0 + ((544.0 + kResampler) / 48000.0) * 1000.0;
     REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - expected) < 1e-9);
 }
 

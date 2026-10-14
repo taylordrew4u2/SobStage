@@ -279,6 +279,15 @@ files really are empty and the card says so instead of calling it saved.
   room stays well under it. When the mix does reach it, the limit turns the
   mix down for a moment rather than squashing the loud bits, and MIX says
   CLIP. It never touches the recording.
+- **Every microphone keeps its own time.** No two USB microphones' clocks
+  run at exactly the same speed, so the app keeps easing each one onto the
+  headphones' clock. The way it used to do that made the very top of the
+  sound — "s" sounds, breaths, cymbals — swell and fade a few times a second,
+  a faint warble or swirl in the headphones and in the tracks. It now follows
+  the sound much more closely: at the very top the swell is about a third of
+  what it was, and lower down it is too small to hear. That adds a few
+  hundredths of a millisecond to the headphone delay, which the figure under
+  Advanced includes.
 - **A new two-channel USB microphone.** Many USB microphones send the same
   voice on two channels, and the app listens for about three seconds of
   sound to tell that from two separate inputs. Until it knows, the

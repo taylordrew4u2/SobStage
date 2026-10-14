@@ -734,12 +734,13 @@ int main()
            "the backend reports the period the card granted, not the one we asked for");
     check (192 != block, "the granted period really does differ from the request");
     {
-        // The round trip at the granted period, and the cushion every
+        // The round trip at the granted period, the cushion every
         // microphone's ring holds ahead of the output, sized from the larger
-        // of that period and the size asked for: a pull of 256 plus 6 ms of
-        // late delivery, 544 samples.
+        // of that period and the size asked for -- a pull of 256 plus 6 ms of
+        // late delivery, 544 samples -- and the drift resampler's two.
         const auto cushion = mma::DeviceInputStream::cushionSamples (static_cast<size_t> (std::max (192, block)), rate);
-        const double expected = (192.0 / rate) * 1000.0 * 2.0 + (static_cast<double> (cushion) / rate) * 1000.0;
+        const double expected = (192.0 / rate) * 1000.0 * 2.0
+                              + (static_cast<double> (cushion + mma::DeviceInputStream::kResamplerDelaySamples) / rate) * 1000.0;
         check (cushion == 544, "the ring's cushion is a pull and 6 ms of late delivery");
         const double reported = monitored.getMonitoringLatencyMs();
         check (std::fabs (reported - expected) < 0.001,

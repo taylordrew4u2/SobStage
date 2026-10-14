@@ -104,6 +104,28 @@ public:
                    "the ring must hold a full driver burst above its target fill, with a block "
                    "of delivery jitter and one in flight");
 
+    /// The resampler that moves this device's audio onto the output's clock
+    /// is a four-point cubic (Catmull-Rom): each output sample lands between
+    /// the second and third of the last four samples taken from the ring,
+    /// the outer two shaping the curve between them. So a sample leaves it
+    /// one to two samples after it left the ring, and the headphone delay
+    /// the app names counts this many (CaptureCoordinator::monitorPathMs):
+    /// 0.04 ms at 48 kHz.
+    ///
+    /// It was a straight line between two samples. Every channel's ratio sits
+    /// a little off 1.0 -- the loop tracking its device's clock -- so where
+    /// an output falls between two samples sweeps through a whole sample
+    /// over and over, once every 1/PPM samples: five times a second at 100
+    /// PPM, once a second at 20. Half way between two samples, a straight
+    /// line is a two-sample average, which takes 3 dB off 12 kHz and 6 dB off
+    /// 16 kHz; at a sample it takes nothing. So the top of every voice rose
+    /// and fell at that rate, in the headphones and in the stems: sibilance
+    /// and breath warbling, a swirl on cymbals. Measured through this class,
+    /// a tone at 8/12/16 kHz swung 1.2/3.0/6.0 dB. The cubic's worst case is
+    /// 0.2/1.1/3.3 dB, its best is the samples themselves, and it costs one
+    /// more sample of delay and a few multiplies a sample.
+    static constexpr int kResamplerDelaySamples = 2;
+
     /// §3.1/§3.3: a drift figure is only claimed once this much of it has been
     /// measured. Before that the estimate's resolution is too coarse to name.
     static constexpr double kMeasurementSeconds = 60.0;
@@ -315,7 +337,7 @@ public:
     uint64_t getLossEvents() const noexcept { return lossEvents.load (std::memory_order_relaxed); }
 
     /// Diagnostics for the harnesses: how often the interpolator restarted
-    /// its pair (a sub-sample step each time), held its last sample for a
+    /// its taps (a sub-sample step each time), held a sample for a
     /// missing look-ahead, and skipped late audio. None of these is loss;
     /// all of them are a seam in the audio, and a take with one per block
     /// is a take with a click per block.
@@ -524,22 +546,34 @@ private:
     static constexpr double kExcessDriftThresholdPpm = 100.0;
     static constexpr double kExcessDriftSustainSeconds = 10.0;
 
-    // Linear-interpolation resampler state. Two samples and a phase is all a
-    // ratio this close to 1.0 needs, and it costs no allocation in the callback.
-    float previousSample = 0.0f;
-    float currentSample = 0.0f;
+    // Resampler state (kResamplerDelaySamples): the last four samples taken
+    // from the ring, oldest first, and how far past taps[1] the next output
+    // lands -- it is played between taps[1] and taps[2]. Fixed storage, so
+    // nothing allocates in the callback. Taps just primed from one sample
+    // are four copies of it.
+    float taps[4] {};
     double phase = 0.0;
     bool primed = false;
 
-    // The sample a pull that ran dry had already read but not yet played: it
-    // was only the interpolator's target. Dropping it with the pair lost one
-    // captured sample at every gap; the next prime starts from it instead.
-    // `heldLast` marks a pull that ended on a held sample, which was played.
-    float carrySample = 0.0f;
+    // Where a pull that ran dry stopped: the three samples the taps would
+    // have kept once the next one arrived, and how far past the first of
+    // them the next output lands. Read but not yet played -- the output had
+    // got no further than taps[1] -- so the next prime picks up from them
+    // with the sample that arrives, and the audio after the gap carries on
+    // from exactly where it stopped. Dropping them would lose captured audio
+    // at every gap and bend the curve at the seam.
+    float carryTaps[3] {};
     double carryPhase = 0.0;
     bool carryPending = false;
+
+    // The last output was a held sample (taps[2]), its step still pending.
     bool heldLast = false;
     void resetInterpolator() noexcept;
+
+    // Takes the next sample from the ring into the taps. False, with the
+    // taps untouched, when the ring is dry.
+    bool advanceTaps() noexcept;
+
     // Read by the reporting thread too, to know whether there is anything to
     // measure yet; the consumer alone writes it.
     std::atomic<bool> started { false };

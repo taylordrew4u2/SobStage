@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iterator>
 
 namespace mma {
 
@@ -25,6 +26,28 @@ int64_t nowNs()
 {
     const auto fn = clockOverride.load (std::memory_order_relaxed);
     return fn != nullptr ? fn() : steadyNowNs();
+}
+
+// Four-point cubic Hermite (Catmull-Rom): the value `t` of the way from x[1]
+// to x[2], with the slope at each of them taken from its neighbours either
+// side. Passes through every sample (t = 0 gives x[1] exactly) and follows a
+// straight line or a parabola exactly, so a ramp or a slow curve comes out as
+// it went in wherever between two samples the output lands. See
+// DeviceInputStream::kResamplerDelaySamples for why this and not a line.
+//
+// Built from the steps between the samples, x[1] added last, so a signal far
+// larger than its steps keeps the precision a straight line had: summed from
+// the samples themselves, 2.5 times a ramp at ten million lost several units
+// in the rounding, and the ramp the drift harness plays ran backwards.
+inline float interpolate (const float (&x)[4], float t) noexcept
+{
+    const float d0 = x[0] - x[1];
+    const float d2 = x[2] - x[1];
+    const float d3 = x[3] - x[1];
+    const float c1 = 0.5f * (d2 - d0);
+    const float c2 = d0 + 2.0f * d2 - 0.5f * d3;
+    const float c3 = 0.5f * (d3 - d0) - 1.5f * d2;
+    return x[1] + ((c3 * t + c2) * t + c1) * t;
 }
 
 } // namespace
@@ -91,14 +114,28 @@ void DeviceInputStream::recomputeTarget() noexcept
 
 void DeviceInputStream::resetInterpolator() noexcept
 {
-    previousSample = 0.0f;
-    currentSample = 0.0f;
+    std::fill (std::begin (taps), std::end (taps), 0.0f);
     phase = 0.0;
     primed = false;
-    carrySample = 0.0f;
+    std::fill (std::begin (carryTaps), std::end (carryTaps), 0.0f);
     carryPhase = 0.0;
     carryPending = false;
     heldLast = false;
+}
+
+bool DeviceInputStream::advanceTaps() noexcept
+{
+    float next = 0.0f;
+
+    if (! readOne (next))
+        return false;
+
+    taps[0] = taps[1];
+    taps[1] = taps[2];
+    taps[2] = taps[3];
+    taps[3] = next;
+    heldLast = false;
+    return true;
 }
 
 void DeviceInputStream::countGap (int samples) noexcept
@@ -423,7 +460,7 @@ void DeviceInputStream::skipLateAudio (int numSamples) noexcept
         // arrives; what is still owed after that waits for it.
         silenceOwed = std::max (0.0, silenceOwed - static_cast<double> (skipped));
 
-        // The interpolator's pair predates the gap; the level's average was
+        // The interpolator's taps predate the gap; the level's average was
         // taken while the ring was dry. Both restart from what is there now.
         resetInterpolator();
         fillAverageValid = false;
@@ -477,39 +514,47 @@ void DeviceInputStream::releaseHeldRoom (size_t block, int numSamples) noexcept
         return;
 
     // Never into what this pull is about to play, nor the sample after it
-    // the interpolator leans on.
+    // the interpolator looks ahead to.
     const size_t keep = static_cast<size_t> (numSamples) + 2;
 
     if (ring.availableForRead() < drop + keep)
         return;
 
     // Only at a quiet moment: the last few milliseconds handed on, the
-    // sample the interpolator is heading for, all that the jump passes over,
-    // and what this pull lands on, all below kQuietLevel. Then the jump is
-    // quiet to quiet in the headphones, and what the stem loses is a moment
-    // of quiet room sound. Until then the room stays held and nothing moves.
+    // samples the interpolator holds (what it is playing between, and what
+    // shapes the curve either side), all that the jump passes over, and what
+    // this pull lands on, all below kQuietLevel. Then the jump is quiet to
+    // quiet in the headphones, and what the stem loses is a moment of quiet
+    // room sound. Until then the room stays held and nothing moves.
     const auto lead = static_cast<size_t> (kQuietLeadMs * rate / 1000.0);
+    float tapsPeak = 0.0f;
 
-    if (quietRunSamples < lead || std::abs (currentSample) >= kQuietLevel
+    for (const float sample : taps)
+        tapsPeak = std::max (tapsPeak, std::abs (sample));
+
+    if (quietRunSamples < lead || tapsPeak >= kQuietLevel
         || ring.peekPeak (drop + keep) >= kQuietLevel)
         return;
 
-    // The interpolator's pair moves along by exactly `drop` samples, its
+    // The interpolator's taps move along by exactly `drop` samples, its
     // phase kept, so the channel moves forward by exactly what was dropped
-    // and not a fraction more or less. It works from a held last sample too:
-    // the crossing it was waiting to complete is completed from the new pair.
-    if (drop >= 2)
+    // and not a fraction more or less, with all four of its samples the
+    // ones that now stand there. It works from a held last sample too: the
+    // crossing it was waiting to complete is completed from the new taps.
+    if (drop >= std::size (taps))
     {
-        ring.discard (drop - 2);
-        readOne (previousSample);
+        ring.discard (drop - std::size (taps));
+
+        for (auto& sample : taps)
+            readOne (sample);
+
+        heldLast = false;
     }
     else
     {
-        previousSample = currentSample;
+        for (size_t k = 0; k < drop; ++k)
+            advanceTaps();
     }
-
-    readOne (currentSample);
-    heldLast = false;
 
     seenDeviceBlock = block;
 
@@ -809,37 +854,40 @@ void DeviceInputStream::pullBlock (float* destination, int numSamples) noexcept
 
     if (! primed)
     {
-        // A sample carried over a gap is primed with only once the audio
-        // after it is there too; on its own it would play and the pull run
+        // Taps carried over a gap are primed from only once the audio after
+        // them is there too; on their own they would play and the pull run
         // dry one sample later, a gap split in two.
         const bool primedFromCarry = carryPending && ring.availableForRead() > 0;
 
         if (primedFromCarry)
         {
-            // The pair and the phase the gap interrupted, exactly: the carried
-            // sample and the one after it, the output landing between them
-            // where the next one would have. Priming on the carried sample
-            // alone -- both ends of the pair the same sample, phase zero --
-            // played it twice and dropped the fraction of a sample the
+            // The taps and the phase the gap interrupted, exactly: the
+            // three carried samples and the one after them, the output
+            // landing where the next one would have. Priming on one carried
+            // sample alone -- the taps four copies of it, phase zero --
+            // played it again and dropped the fraction of a sample the
             // resampler had reached, so the channel came back up to two
             // samples later than the silence written for the gap: its stem
             // out of step with every other by that much after each gap.
-            previousSample = carrySample;
-            readOne (currentSample); // there is one: checked above
+            std::copy (std::begin (carryTaps), std::end (carryTaps), taps);
+            readOne (taps[3]); // there is one: checked above
             phase = carryPhase;
             carryPending = false;
         }
-        else if (! readOne (currentSample))
+        else if (float first = 0.0f; readOne (first))
+        {
+            // A fresh start: nothing before this sample belongs to this
+            // stream's audio, so all four taps are copies of it, and the
+            // output starts on it.
+            std::fill (std::begin (taps), std::end (taps), first);
+            phase = 0.0;
+        }
+        else
         {
             std::fill (destination, destination + numSamples, 0.0f);
             countGap (numSamples);
             noteSilence (numSamples);
             return;
-        }
-        else
-        {
-            previousSample = currentSample;
-            phase = 0.0;
         }
 
         primed = true;
@@ -848,35 +896,32 @@ void DeviceInputStream::pullBlock (float* destination, int numSamples) noexcept
 
     for (int i = 0; i < numSamples; ++i)
     {
-        // Advance to the pair this output sample lies between BEFORE writing
-        // it, never after. Reading ahead after the last sample of a block
-        // meant a block that consumed the ring exactly -- every source sample
-        // used, none to spare -- ended in a failed read, and the interpolator
-        // was zeroed and re-primed for a starvation that had not happened:
-        // its fractional phase snapped to zero, a sub-sample step in the
-        // output, once per block in a ring held one block from empty.
+        // Advance to the samples this output lies between BEFORE writing it,
+        // never after. Reading ahead after the last sample of a block meant a
+        // block that consumed the ring exactly -- every source sample used,
+        // none to spare -- ended in a failed read, and the interpolator was
+        // zeroed and re-primed for a starvation that had not happened: its
+        // fractional phase snapped to zero, a sub-sample step in the output,
+        // once per block in a ring held one block from empty.
         while (phase >= 1.0)
         {
-            previousSample = currentSample;
-
-            if (! readOne (currentSample))
+            if (! advanceTaps())
             {
-                // Only the sample this block's LAST output would have leaned
-                // on is missing: the ring held exactly this block's worth,
-                // and the pair the interpolator carries between blocks needs
-                // one more. Hold the sample it has for that one output and
-                // keep the pair, with the crossing still pending, so the next
-                // block's first read completes it. De-priming here was a
-                // trap: the next block primed again, which costs the same
-                // extra sample, ran one short again, and so on -- a sample
-                // of silence and a restart in every block for as long as the
-                // ring sat one block deep, which the loop, at 200 PPM, took
-                // half a minute to lift it out of. One held sample, once,
-                // against a step to zero and a phase reset every block.
+                // Only the sample this block's LAST output would have looked
+                // ahead to is missing: the ring held exactly this block's
+                // worth, and the taps the interpolator carries between
+                // blocks need one more. Hold the sample this output was
+                // leaving and keep the taps, with the step still pending,
+                // so the next block's first read completes it. De-priming
+                // here was a trap: the next block primed again, which costs
+                // the same extra sample, ran one short again, and so on -- a
+                // sample of silence and a restart in every block for as long
+                // as the ring sat one block deep, which the loop, at 200 PPM,
+                // took half a minute to lift it out of. One held sample,
+                // once, against a step to zero and a phase reset every block.
                 if (i == numSamples - 1 && i > 0)
                 {
-                    currentSample = previousSample;
-                    destination[i] = previousSample;
+                    destination[i] = taps[2];
                     holds.fetch_add (1, std::memory_order_relaxed);
                     heldLast = true;
                     inGap = false;
@@ -904,26 +949,27 @@ void DeviceInputStream::pullBlock (float* destination, int numSamples) noexcept
                 // ring, producing one click and under-counting the loss by one
                 // frame per block.
                 //
-                // What was just read and not yet played -- the target the last
-                // output leaned towards -- is not lost with the pair: the next
-                // prime starts from it, so the audio after the gap carries on
-                // from the sample after the last one heard. Unless a held
-                // sample already played it.
-                const bool carry = ! heldLast;
-                const float carried = previousSample;
-
-                // And how far past it this output had got: the resampler's
-                // fraction of a sample, which the output after the gap picks
-                // up from rather than from zero.
-                const double carriedPhase = std::clamp (phase - 1.0, 0.0, 0.999999);
+                // What was read and not yet played is not lost with the
+                // taps: the three samples they would have kept once the next
+                // one arrived, and the fraction of a sample past the first of
+                // them this output had got, which the output after the gap
+                // picks up from rather than from zero. So the audio after the
+                // gap carries on from exactly where it stopped, the curve
+                // either side of it shaped by the samples that really stood
+                // there. After a held sample, from that sample at phase
+                // zero, where the hold stood: the hold played it, and the
+                // step it left pending is taken after the gap instead. That
+                // is the sample of time a hold followed by a gap has always
+                // cost, and it keeps what the stream takes from the ring
+                // exactly what it was; picking up the fraction instead would
+                // take up to a sample more at each such gap.
+                const float carried[3] = { taps[1], taps[2], taps[3] };
+                const double carriedPhase = heldLast ? 0.0 : std::clamp (phase - 1.0, 0.0, 0.999999);
                 resetInterpolator();
 
-                if (carry)
-                {
-                    carrySample = carried;
-                    carryPhase = carriedPhase;
-                    carryPending = true;
-                }
+                std::copy (std::begin (carried), std::end (carried), carryTaps);
+                carryPhase = carriedPhase;
+                carryPending = true;
 
                 const int remaining = numSamples - i;
 
@@ -943,12 +989,10 @@ void DeviceInputStream::pullBlock (float* destination, int numSamples) noexcept
                 return;
             }
 
-            heldLast = false;
             phase -= 1.0;
         }
 
-        destination[i] = previousSample
-                         + static_cast<float> (phase) * (currentSample - previousSample);
+        destination[i] = interpolate (taps, static_cast<float> (phase));
 
         phase += ratio;
     }

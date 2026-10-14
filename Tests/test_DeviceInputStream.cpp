@@ -2066,3 +2066,264 @@ TEST_CASE (DeviceInputStream_AStreamsPlaceInTimeIsItsOwnDevicesBlock)
     REQUIRE_NEAR (middle - small, 448.0, 2.0);
     REQUIRE_NEAR (large - small, 1092.0, 2.0);
 }
+
+namespace {
+
+// A tone at `frequency` through a stream whose device runs `ppm` off the
+// clock that pulls it: its quietest and loudest over 5 ms windows, in dB
+// against what went in, from ten seconds in (the loop tracking the device,
+// so where each output lands between two samples sweeps round and round)
+// to fifteen.
+struct ToneLevel
+{
+    double quietestDb = 1.0e9;
+    double loudestDb = -1.0e9;
+};
+
+ToneLevel toneLevelThroughADriftingStream (double frequency, double ppm)
+{
+    ScopedSimulatedClock clock;
+    constexpr double rate = 48000.0;
+    constexpr int block = 64;
+    constexpr double amplitude = 0.5;
+    constexpr int window = 240; // a whole number of cycles of every tone tried
+
+    DeviceInputStream s (rate);
+    s.prepare (rate, block);
+
+    const double devicePeriod = block / rate / (1.0 + ppm * 1.0e-6);
+    const double outputPeriod = block / rate;
+    double nextIn = devicePeriod * 0.3, nextOut = outputPeriod;
+    long long produced = 0;
+    std::vector<float> in (block), out (block);
+    double energy = 0.0;
+    int count = 0;
+    ToneLevel level;
+
+    while (nextOut < 15.0)
+    {
+        if (nextIn < nextOut)
+        {
+            simulatedNs = static_cast<int64_t> (nextIn * 1.0e9);
+            for (int i = 0; i < block; ++i)
+                in[static_cast<size_t> (i)] = static_cast<float> (
+                    amplitude * std::sin (2.0 * 3.141592653589793 * frequency * static_cast<double> (produced + i) / rate));
+            produced += block;
+            s.pushBlock (in.data(), block);
+            nextIn += devicePeriod;
+            continue;
+        }
+
+        simulatedNs = static_cast<int64_t> (nextOut * 1.0e9);
+        s.pull (out.data(), block);
+        nextOut += outputPeriod;
+
+        if (nextOut < 10.0)
+            continue;
+
+        for (const float x : out)
+        {
+            energy += static_cast<double> (x) * x;
+
+            if (++count == window)
+            {
+                const double db = 20.0 * std::log10 (std::sqrt (2.0 * energy / window) / amplitude);
+                level.quietestDb = std::min (level.quietestDb, db);
+                level.loudestDb = std::max (level.loudestDb, db);
+                energy = 0.0;
+                count = 0;
+            }
+        }
+    }
+
+    REQUIRE (s.getUnderrunSamples() == 0u);
+    return level;
+}
+
+} // namespace
+
+TEST_CASE (DeviceInputStream_HighFrequenciesKeepTheirLevelAsTheResamplerSweepsBetweenSamples)
+{
+    // Every microphone's loop sits a little off 1.0 -- it is tracking that
+    // device's clock -- so where each output lands between two samples
+    // sweeps through a whole sample over and over: five times a second at
+    // 100 PPM, once a second at 20. A straight line between two samples is
+    // a two-sample average half way between them, and nothing at all on a
+    // sample, so a tone at 12 kHz rose and fell by 3 dB at that rate, and
+    // 16 kHz by 6: the top of every voice warbling, in the headphones and
+    // the stems alike. The cubic swings 1.1 dB at 12 kHz, 3.3 at 16 and
+    // 0.2 at 8, and never adds level.
+    for (const double ppm : { 100.0, -50.0 })
+    {
+        const auto at8 = toneLevelThroughADriftingStream (8000.0, ppm);
+        const auto at12 = toneLevelThroughADriftingStream (12000.0, ppm);
+        const auto at16 = toneLevelThroughADriftingStream (16000.0, ppm);
+
+        REQUIRE (at8.loudestDb - at8.quietestDb < 0.3);    // a straight line: 1.25 dB
+        REQUIRE (at12.loudestDb - at12.quietestDb < 1.2);  // 3.0 dB
+        REQUIRE (at16.loudestDb - at16.quietestDb < 3.5);  // 6.0 dB
+
+        // And it did sweep: on a sample the tone comes through whole.
+        for (const auto& level : { at8, at12, at16 })
+        {
+            REQUIRE (level.loudestDb < 0.02);
+            REQUIRE (level.loudestDb > -0.05);
+        }
+    }
+}
+
+TEST_CASE (DeviceInputStream_GivingBackRoomLeavesTheResamplerOnTheSamplesThatStandThere)
+{
+    // Room held for a larger block is given back by dropping exactly that
+    // much from the ring at a quiet moment (see
+    // ...GivingBackRoomMovesTheChannelByExactlyTheRoom). The resampler
+    // works from four samples, so all four must be the ones that stand at
+    // the new place: two left over from before the jump bend the curve
+    // between the new ones towards audio 960 samples older. A quiet ramp
+    // (never above -48 dBFS) shows it: every output says which captured
+    // sample it is, so after the jump each must sit exactly one sample on
+    // from the last -- and the jump itself exactly 960 on.
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    constexpr double slope = 2.0e-8;
+    constexpr double centre = 200000.5; // the ramp crosses zero near the jump, where floats are finest
+    const auto valueAt = [&] (long long n) { return static_cast<float> (slope * (static_cast<double> (n) - centre)); };
+    const auto sampleOf = [&] (float x) { return static_cast<double> (x) / slope + centre; };
+
+    std::vector<float> in (1024), out (64);
+    long long produced = 0;
+    double blockStart = 0.0, nextOut = 0.0005, previous = -1.0;
+    std::vector<double> jumps;
+    int steps = 0;
+
+    while (nextOut < 5.0)
+    {
+        const int block = blockStart >= 1.0 && blockStart < 2.0 ? 1024 : 64;
+
+        if (blockStart + block / 48000.0 <= nextOut)
+        {
+            blockStart += block / 48000.0;
+            simulatedNs = static_cast<int64_t> (blockStart * 1.0e9) + 1;
+            for (int i = 0; i < block; ++i)
+                in[static_cast<size_t> (i)] = valueAt (produced + i);
+            s.pushBlock (in.data(), block);
+            produced += block;
+            continue;
+        }
+
+        simulatedNs = static_cast<int64_t> (nextOut * 1.0e9) + 1;
+        s.pull (out.data(), 64);
+
+        // Well after the growth's own gap, and before the ramp grows coarse.
+        if (nextOut >= 3.0)
+        {
+            for (const float x : out)
+            {
+                const double at = sampleOf (x);
+
+                if (previous >= 0.0)
+                {
+                    ++steps;
+                    if (std::abs (at - previous - 1.0) > 0.05)
+                        jumps.push_back (at - previous);
+                }
+
+                previous = at;
+            }
+        }
+
+        nextOut += 64 / 48000.0;
+    }
+
+    REQUIRE (s.getHeldReleases() == 1u);
+    REQUIRE (s.getReleasedHeldSamples() == 960u);
+    REQUIRE (steps > 90000);
+
+    // One step of 960 and the sample after it; every other step one sample.
+    REQUIRE (jumps.size() == 1u);
+    REQUIRE_NEAR (jumps.front(), 961.0, 0.05);
+}
+
+TEST_CASE (DeviceInputStream_PreparedAgainAStreamStartsFromItsNewAudioAlone)
+{
+    // prepare() is a fresh start: nothing the resampler held before it --
+    // its four samples, or the ones it was carrying over a gap -- may reach
+    // the audio after it.
+    ScopedSimulatedClock clock;
+    simulatedNs = 1'000'000'000;
+
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    // Each start in two deliveries: the level playout starts on discounts
+    // the newest one whole, at the instant it lands.
+    const auto target = static_cast<int> (DeviceInputStream::cushionSamples (64, 48000.0));
+    std::vector<float> loud (static_cast<size_t> (target) + 64, 0.9f), out (64, 0.0f);
+
+    // Running, then starved part way through a pull: the resampler is
+    // carrying the samples it stopped on.
+    s.pushBlock (loud.data(), target + 32);
+    s.pushBlock (loud.data(), 1);
+    for (int i = 0; i < 8 && s.getUnderrunSamples() == 0; ++i)
+        s.pull (out.data(), 64);
+    REQUIRE (s.hasStarted());
+    REQUIRE (s.getUnderrunSamples() > 0u);
+
+    s.prepare (48000.0, 64);
+
+    std::vector<float> fresh (static_cast<size_t> (target) + 64, 0.25f);
+    s.pushBlock (fresh.data(), target + 32);
+    s.pushBlock (fresh.data(), 1);
+    s.pull (out.data(), 64);
+    REQUIRE (s.hasStarted());
+
+    for (const float x : out)
+        REQUIRE (x == 0.25f);
+}
+
+TEST_CASE (DeviceInputStream_AHeldSampleIsTheOneItsOutputWasLeaving)
+{
+    // A ring one sample short of what a pull needs runs out on the pull's
+    // last output, whose step needs the sample beyond it: that output holds
+    // and the next pull completes the step (see the hold in pullBlock). What
+    // it holds is the sample its output was leaving, the start of the step:
+    // the ramp then never runs backwards, the hold costing a sample of time
+    // and nothing else. Holding the sample before it played the ramp back
+    // by up to a sample at every hold -- a backward step in the waveform.
+    //
+    // A device delivering 63 samples for every 64 pulled leaves every pull
+    // one short once the cushion has run down, and the loop, slewing towards
+    // its clamp, moves the resampler between samples meanwhile.
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    RampSource src (64);
+    std::vector<float> out (64, 0.0f);
+    primeAtTarget (s, src, out);
+
+    float last = out[63];
+    float steepest = 0.0f, backwards = 0.0f;
+
+    for (int i = 0; i < 600; ++i)
+    {
+        src.push (s, 63);
+        simulatedNs += kBlockNs64 / 2;
+        s.pull (out.data(), 64);
+        simulatedNs += kBlockNs64 - kBlockNs64 / 2;
+
+        for (const float x : out)
+        {
+            backwards = std::min (backwards, x - last);
+            steepest = std::max (steepest, x - last);
+            last = x;
+        }
+    }
+
+    REQUIRE (s.getHoldCount() > 100u);
+    REQUIRE (s.getUnderrunSamples() == 0u);
+    REQUIRE (backwards >= -0.01f);
+    REQUIRE (steepest <= 1.01f);
+}

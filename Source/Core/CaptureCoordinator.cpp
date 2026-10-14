@@ -1800,12 +1800,19 @@ double CaptureCoordinator::monitorPathMs (double roundTripMs, int bufferSizeFram
     const auto cushion = static_cast<int> (DeviceInputStream::cushionSamples (
         static_cast<size_t> (std::max (size, outputFrames)), sampleRate));
 
+    // And the resampler that puts each microphone on the output's clock
+    // plays a sample up to two samples after the ring gives it up: it works
+    // between the middle two of four (DeviceInputStream::
+    // kResamplerDelaySamples). 0.04 ms, but it is in the path, so it is in
+    // the figure.
+    const int resampler = DeviceInputStream::kResamplerDelaySamples;
+
     // The round trip counts one input block at the size asked for. A
     // microphone's own path adds its device's input latency, and whatever
     // larger block its device runs at.
     const int extra = std::max (0, inputFrames - size);
 
-    return roundTripMs + 1000.0 * static_cast<double> (cushion + extra) / sampleRate;
+    return roundTripMs + 1000.0 * static_cast<double> (cushion + resampler + extra) / sampleRate;
 }
 
 double CaptureCoordinator::getMonitoringLatencyMs() const noexcept

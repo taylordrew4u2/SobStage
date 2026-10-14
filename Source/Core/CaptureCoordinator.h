@@ -869,10 +869,11 @@ private:
     /// worked out -- plus the ring's cushion (DeviceInputStream holds
     /// cushionSamples of a pull -- one pull plus a few milliseconds of late
     /// delivery -- a pull being the output block or the size asked for where
-    /// that is larger, before the output takes a sample), plus
-    /// whatever of the microphone's own input side (`inputFrames`) goes past
-    /// the one input block already counted. Zero stays zero: nothing is
-    /// monitoring.
+    /// that is larger, before the output takes a sample), plus the
+    /// resampler's own two samples (DeviceInputStream::
+    /// kResamplerDelaySamples), plus whatever of the microphone's own input
+    /// side (`inputFrames`) goes past the one input block already counted.
+    /// Zero stays zero: nothing is monitoring.
     double monitorPathMs (double roundTripMs, int bufferSizeFrames, int outputFrames, int inputFrames) const noexcept;
     int channelIndexForDevice (const std::string& deviceId) const noexcept;
 
