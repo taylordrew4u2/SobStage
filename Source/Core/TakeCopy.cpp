@@ -863,7 +863,7 @@ std::string copyingLine (uint64_t done, uint64_t total)
 
 namespace {
 
-std::string describeWholeTake (const Result& result, const std::string& localFolder)
+std::string describeWholeTake (const Result& result, const std::string& localFolder, Wording wording)
 {
     const auto safe = " This take is safe on this computer in " + localFolder + ".";
     const auto kind = PreflightThroughputTest::filesystemKindFromTypeName (result.filesystemType);
@@ -887,17 +887,26 @@ std::string describeWholeTake (const Result& result, const std::string& localFol
         case Outcome::CardFull:
             return "The card is full." + safe;
         case Outcome::CardLocked:
+            // Windows writes NTFS: a drive it will not write is write-protected
+            // whatever its format -- a lock switch, or a policy such as
+            // BitLocker's on removable drives. The Mac's "reformat it in Disk
+            // Utility" would send someone to erase a drive with takes on it.
+            if (wording == Wording::Windows)
+                return "Windows says this card or drive is write-protected, so the take couldn't be copied "
+                       "to it. Slide its lock switch off if it has one. If it doesn't, a Windows setting such "
+                       "as BitLocker may be blocking removable drives; or choose a different place to save."
+                       + safe;
+
             return PreflightThroughputTest::writeFailureReason (EROFS, kind) + safe;
         case Outcome::NotAllowed:
-           #if defined(_WIN32)
             // Not the Mac's privacy settings: Windows refuses with "access
             // denied" for a read-only card and for Controlled folder access.
-            return "SobStage isn't allowed to write to this card. Check the card isn't set to read-only, "
-                   "and that Controlled folder access in Windows Security allows SobStage, or choose a "
-                   "different place to save." + safe;
-           #else
+            if (wording == Wording::Windows)
+                return "SobStage isn't allowed to write to this card. Check the card isn't set to read-only, "
+                       "and that Controlled folder access in Windows Security allows SobStage, or choose a "
+                       "different place to save." + safe;
+
             return PreflightThroughputTest::writeFailureReason (EACCES, kind) + safe;
-           #endif
         case Outcome::FileTooBig:
             return (result.fileName.empty() ? std::string ("A file") : result.fileName)
                    + " is too big for the way this card is formatted, so it wasn't copied. The rest of the "
@@ -918,7 +927,7 @@ std::string describeWholeTake (const Result& result, const std::string& localFol
 
 } // namespace
 
-std::string describe (const Result& result, const std::string& localFolder)
+std::string describe (const Result& result, const std::string& localFolder, Wording wording)
 {
     // The take itself already went: what is missing is only what was added
     // to its folder since. "Only on this computer" would be untrue of it.
@@ -930,10 +939,10 @@ std::string describe (const Result& result, const std::string& localFolder)
                    + ", and will be copied when the card is back.";
 
         return "This take is on the card, but a file added to it since isn't yet. "
-               + describeWholeTake (result, localFolder);
+               + describeWholeTake (result, localFolder, wording);
     }
 
-    return describeWholeTake (result, localFolder);
+    return describeWholeTake (result, localFolder, wording);
 }
 
 } // namespace cardcopy

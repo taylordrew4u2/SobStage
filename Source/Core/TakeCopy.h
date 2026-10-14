@@ -268,9 +268,21 @@ struct Result
 /// point: files already on the card and matching are left alone.
 Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marker& marker, Control& control);
 
+/// Whose words a refusal is put in: a fix on a Mac (Disk Utility, System
+/// Settings) means nothing on Windows, and the other way round. Linux, which
+/// only runs the test gates, has the Mac's.
+enum class Wording { Mac, Windows };
+
+#if defined(_WIN32)
+inline constexpr Wording kThisSystemsWording = Wording::Windows;
+#else
+inline constexpr Wording kThisSystemsWording = Wording::Mac;
+#endif
+
 /// What the user is told about `result`, in one or two plain sentences.
 /// Empty for Yielded and Cancelled, which are not news.
-std::string describe (const Result& result, const std::string& localFolder);
+std::string describe (const Result& result, const std::string& localFolder,
+                      Wording wording = kThisSystemsWording);
 
 /// "Copying to the card: 40%."
 std::string copyingLine (uint64_t done, uint64_t total);

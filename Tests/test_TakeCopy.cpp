@@ -799,7 +799,7 @@ TEST_CASE (TakeCopy_LockedCardAndRefusedPermissionAreToldApart)
     ntfs.failCreate[".sobcopy"] = { FsError::ReadOnly, 30 };
     const auto w = run (ntfs);
     REQUIRE (w.outcome == Outcome::CardLocked);
-    REQUIRE (describe (w, kLocal).find ("NTFS") != std::string::npos);
+    REQUIRE (describe (w, kLocal, Wording::Mac).find ("NTFS") != std::string::npos);
 
     // Mutation: the folder's refusal not asked the card's format. The copy's
     // first write to such a drive is always a folder, and it must say NTFS
@@ -810,8 +810,8 @@ TEST_CASE (TakeCopy_LockedCardAndRefusedPermissionAreToldApart)
     ntfsFolder.failMakeFolder[kCardTake] = { FsError::ReadOnly, 30 };
     const auto f = run (ntfsFolder);
     REQUIRE (f.outcome == Outcome::CardLocked);
-    REQUIRE (describe (f, kLocal).find ("NTFS") != std::string::npos);
-    REQUIRE (describe (f, kLocal).find ("lock switch") == std::string::npos);
+    REQUIRE (describe (f, kLocal, Wording::Mac).find ("NTFS") != std::string::npos);
+    REQUIRE (describe (f, kLocal, Wording::Mac).find ("lock switch") == std::string::npos);
 
     FakeFs ntfsRoot;
     finishedTake (ntfsRoot);
@@ -820,16 +820,45 @@ TEST_CASE (TakeCopy_LockedCardAndRefusedPermissionAreToldApart)
     ntfsRoot.failMakeFolder[kRoot] = { FsError::ReadOnly, 30 };
     const auto rr = run (ntfsRoot);
     REQUIRE (rr.outcome == Outcome::CardLocked);
-    REQUIRE (describe (rr, kLocal).find ("NTFS") != std::string::npos);
+    REQUIRE (describe (rr, kLocal, Wording::Mac).find ("NTFS") != std::string::npos);
 
     // Windows refuses a read-only card or Controlled folder access with
     // "access denied"; it is not sent to a Mac's System Settings.
-   #if defined(_WIN32)
-    REQUIRE (describe (n, kLocal).find ("System Settings") == std::string::npos);
-    REQUIRE (describe (n, kLocal).find ("Windows Security") != std::string::npos);
-   #else
-    REQUIRE (describe (n, kLocal).find ("Privacy & Security") != std::string::npos);
-   #endif
+    REQUIRE (describe (n, kLocal, Wording::Windows).find ("System Settings") == std::string::npos);
+    REQUIRE (describe (n, kLocal, Wording::Windows).find ("Windows Security") != std::string::npos);
+    REQUIRE (describe (n, kLocal, Wording::Mac).find ("Privacy & Security") != std::string::npos);
+}
+
+// Mutation: the NTFS wording given on Windows. Windows writes NTFS; a drive it
+// will not write is write-protected -- a lock switch, or a policy such as
+// BitLocker's on removable drives -- and the Mac's "reformat it in Disk
+// Utility (this erases it)" sent a Windows user to erase a drive that may
+// hold earlier takes instead of turning the protection off.
+TEST_CASE (TakeCopy_AWriteProtectedDriveOnWindowsIsNotCalledAMacProblem)
+{
+    FakeFs ntfs;
+    finishedTake (ntfs);
+    ntfs.cardType = "NTFS";
+    ntfs.failCreate[".sobcopy"] = { FsError::ReadOnly, 19 }; // ERROR_WRITE_PROTECT
+    const auto r = run (ntfs);
+    REQUIRE (r.outcome == Outcome::CardLocked);
+
+    const auto onWindows = describe (r, kLocal, Wording::Windows);
+    REQUIRE (onWindows.find ("macOS") == std::string::npos);
+    REQUIRE (onWindows.find ("Disk Utility") == std::string::npos);
+    REQUIRE (onWindows.find ("reformat") == std::string::npos);
+    REQUIRE (onWindows.find ("write-protected") != std::string::npos);
+    REQUIRE (onWindows.find ("BitLocker") != std::string::npos);
+    REQUIRE (onWindows.find ("safe on this computer in " + std::string (kLocal)) != std::string::npos);
+
+    // Whatever its format.
+    FakeFs exfat;
+    finishedTake (exfat);
+    exfat.failCreate[".sobcopy"] = { FsError::ReadOnly, 19 };
+    REQUIRE (describe (run (exfat), kLocal, Wording::Windows).find ("write-protected") != std::string::npos);
+
+    // A Mac still hears what it can do about a Windows-formatted drive.
+    REQUIRE (describe (r, kLocal, Wording::Mac).find ("NTFS") != std::string::npos);
 }
 
 // Mutation: the 4 GiB check removed, at either point.
