@@ -2313,8 +2313,14 @@ TEST_CASE (CaptureCoordinator_ASlowCardThatIsStillWritingIsWaitedFor)
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
     c.setSoftwareClockEnabled (false);
-    c.setFilesystemDeadline (std::chrono::milliseconds (400));
-    c.setWriterChunkHookForTesting ([] { std::this_thread::sleep_for (std::chrono::milliseconds (40)); });
+    // The deadline is how long the drain may go without progress, and a
+    // single flush can take a few hundred milliseconds on a busy Windows
+    // runner's disk: at 400 ms a release build's run timed out between two
+    // chunks. 1.5 s still sits well under the ~2.9 s this drain takes in all
+    // (24 chunks at 120 ms), so the old rule -- a fixed deadline for the whole
+    // stop -- would still have given up on it.
+    c.setFilesystemDeadline (std::chrono::milliseconds (1500));
+    c.setWriterChunkHookForTesting ([] { std::this_thread::sleep_for (std::chrono::milliseconds (120)); });
 
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     REQUIRE (c.startRecording (dir, 16, "2026-10-01T00:00:00Z"));
@@ -2341,7 +2347,7 @@ TEST_CASE (CaptureCoordinator_ASlowCardThatIsStillWritingIsWaitedFor)
 
     // And it really did take longer than the deadline, so the old rule would
     // have given up on it.
-    if (waited < std::chrono::milliseconds (400))
+    if (waited < std::chrono::milliseconds (1500))
         std::printf ("  note: the drain finished inside the deadline (%lld ms)\n",
                      (long long) std::chrono::duration_cast<std::chrono::milliseconds> (waited).count());
     c.setWriterChunkHookForTesting ({});
