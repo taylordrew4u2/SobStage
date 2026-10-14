@@ -61,6 +61,9 @@ public:
     std::string cardType = "exfat";
     /// Which card is in (cardIdentity()); empty when it cannot be told.
     std::string cardId;
+    /// What this computer's own disk answers as (cardIdentity() of a path
+    /// not under /cards/).
+    std::string computerId;
 
     struct Failure
     {
@@ -216,7 +219,9 @@ public:
     std::string cardIdentity (const std::string& path) override
     {
         calls.push_back ({ "cardIdentity", path });
-        return startsWith (path, "/cards/") ? cardId : std::string();
+        // As cardIdentityOf answers: a card that is out climbs to the disk
+        // its mount point's folder is on, which is this computer's.
+        return startsWith (path, "/cards/") && folders.count ("/cards/SD") > 0 ? cardId : computerId;
     }
 
     FsResult readText (const std::string& path, std::string& text) override
@@ -770,6 +775,72 @@ TEST_CASE (TakeCopy_TheSaveFolderIsMadeOneLevelOnACardThatIsThere)
     REQUIRE (run (fs).outcome == Outcome::Copied);
     REQUIRE (fs.count ("makeFolder", kRoot) == 2); // RECORDINGS, then the take
     REQUIRE (fs.files.count (card ("MIX.wav")) == 1);
+}
+
+// The card is in, but a folder above the save folder was deleted on it --
+// "Shows" of Shows/Fall -- or the card was reformatted under its old name.
+// Mutation: only one level made, or the levels made with no card told apart
+// from this computer's own disk. It was "The card isn't plugged in" with the
+// card in the reader, for ever.
+TEST_CASE (TakeCopy_FoldersAboveTheSaveFolderAreMadeAgainOnTheTakesCard)
+{
+    const std::string fall = joinPath (joinPath ("/cards/SD", "Shows"), "Fall");
+
+    FakeFs fs;
+    finishedTake (fs);
+    fs.cardId = "uuid:SD";
+    fs.computerId = "uuid:STARTUP";
+
+    const auto r = run (fs, { fall, {}, "uuid:SD" });
+    REQUIRE (r.outcome == Outcome::Copied);
+    REQUIRE (fs.folders.count (joinPath ("/cards/SD", "Shows")) == 1);
+    REQUIRE (fs.files.count (joinPath (joinPath (fall, "2026-10-14_2000_Show"), "MIX.wav")) == 1);
+
+    // Top down: Shows, then Fall, then the take's folder.
+    std::vector<std::string> made;
+    for (const auto& c : fs.calls)
+        if (c.op == "makeFolder")
+            made.push_back (c.path);
+    REQUIRE (made.size() == 3u);
+    REQUIRE (made[0] == joinPath ("/cards/SD", "Shows"));
+    REQUIRE (made[1] == fall);
+
+    // A take that never knew its card: made too, on a card that is not this
+    // computer's disk.
+    FakeFs unknown;
+    finishedTake (unknown);
+    unknown.cardId = "uuid:SD";
+    unknown.computerId = "uuid:STARTUP";
+    REQUIRE (run (unknown, { fall, {} }).outcome == Outcome::Copied);
+
+    // Another card in the take's card's place: not made on it. It is another
+    // card, not a card that is out.
+    FakeFs other;
+    finishedTake (other);
+    other.cardId = "uuid:CAMERA";
+    other.computerId = "uuid:STARTUP";
+    REQUIRE (run (other, { fall, {}, "uuid:SD" }).outcome == Outcome::DifferentCard);
+    REQUIRE (other.count ("makeFolder") == 0);
+}
+
+// What answers where a card at a place that is not a known mount point is
+// out is this computer's own disk: nothing is made on it.
+TEST_CASE (TakeCopy_FoldersAboveTheSaveFolderAreNeverMadeOnThisComputer)
+{
+    const std::string fall = joinPath (joinPath ("/cards/SD", "Shows"), "Fall");
+
+    FakeFs fs;
+    finishedTake (fs);
+    fs.cardId = "uuid:STARTUP";
+    fs.computerId = "uuid:STARTUP";
+    REQUIRE (run (fs, { fall, {} }).outcome == Outcome::CardMissing);
+    REQUIRE (fs.count ("makeFolder") == 0);
+
+    // Not known at all: not made either.
+    FakeFs unknown;
+    finishedTake (unknown);
+    REQUIRE (run (unknown, { fall, {} }).outcome == Outcome::CardMissing);
+    REQUIRE (unknown.count ("makeFolder") == 0);
 }
 
 // Mutation: the room check removed, or < and <= swapped.

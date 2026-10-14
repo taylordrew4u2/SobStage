@@ -457,9 +457,29 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
     if (root.empty() || volumecapacity::isUnderMissingMountPoint (root, [&fs] (const std::string& p) { return fs.exists (p); }))
         return finish (result, Outcome::CardMissing);
 
-    const bool rootThere = fs.exists (root);
+    // The save folder, and whichever folders above it are gone too, nearest
+    // first. Nothing of it there at all -- not even a drive's root -- is a
+    // card that is out.
+    std::vector<std::string> missingLevels;
 
-    if (! rootThere && (parentOf (root) == root || ! fs.exists (parentOf (root))))
+    for (auto p = root; ! fs.exists (p); p = parentOf (p))
+    {
+        if (parentOf (p) == p || missingLevels.size() >= 64)
+            return finish (result, Outcome::CardMissing);
+
+        missingLevels.push_back (p);
+    }
+
+    const bool rootThere = missingLevels.empty();
+    const auto here = fs.cardIdentity (root);
+
+    // More than the save folder itself is gone: a folder above it deleted on
+    // the card ("Shows" of Shows/Fall), or the card reformatted under its
+    // old name. Made again only on a card that is there and is not this
+    // computer's own disk -- which is what a card that is out answers for, at
+    // a place that is not a known mount point. It used to be called "The
+    // card isn't plugged in" with the card in the reader, for ever.
+    if (missingLevels.size() > 1 && (here.empty() || here == fs.cardIdentity (localFolder)))
         return finish (result, Outcome::CardMissing);
 
     // A card is there. Which one, before anything is made or written on it:
@@ -469,7 +489,7 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
     // whichever card is in.
     auto cardFolderWanted = marker.cardFolder;
 
-    if (const auto here = fs.cardIdentity (root); ! here.empty() && here != marker.cardIdentity)
+    if (! here.empty() && here != marker.cardIdentity)
     {
         if (! marker.cardIdentity.empty() && ! control.anyCard)
             return finish (result, Outcome::DifferentCard);
@@ -489,13 +509,14 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
 
     if (! rootThere)
     {
-        const auto rootParent = parentOf (root);
-
         // A card is there, without even the save folder: none of the take.
+        // Made from the top down, one level at a time, below a folder that
+        // is there -- never a mount point itself.
         look.looked = true;
 
-        if (const auto r = fs.makeFolder (root); ! r.ok())
-            return refusedOnCard (outcomeForCardError (fs, rootParent, r), {}, r);
+        for (auto level = missingLevels.rbegin(); level != missingLevels.rend(); ++level)
+            if (const auto r = fs.makeFolder (*level); ! r.ok())
+                return refusedOnCard (outcomeForCardError (fs, parentOf (*level), r), {}, r);
     }
 
     // 4. The take's folder on the card, remembered on this computer BEFORE it
