@@ -21,6 +21,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -398,6 +399,27 @@ long residentPages (const std::string& path)
 
 int main()
 {
+    // Every line out as it is printed: a run cut off by ctest's timeout
+    // still shows how far it got.
+    std::setvbuf (stdout, nullptr, _IONBF, 0);
+
+    // An exception nothing caught -- a folder Windows would not rename, say --
+    // is printed and ends the run, rather than an error dialog that nobody on
+    // a CI runner will ever answer holding the run until it times out.
+    std::set_terminate ([]
+    {
+        try
+        {
+            if (const auto e = std::current_exception())
+                std::rethrow_exception (e);
+            std::printf ("\nTERMINATED (no exception)\n");
+        }
+        catch (const std::exception& e) { std::printf ("\nUNCAUGHT: %s\n", e.what()); }
+        catch (...)                     { std::printf ("\nUNCAUGHT: (not a std::exception)\n"); }
+        std::fflush (stdout);
+        std::_Exit (3);
+    });
+
    #if ! defined(_WIN32)
     // RLIMIT_FSIZE below: the write that crosses it gets EFBIG, not a signal.
     std::signal (SIGXFSZ, SIG_IGN);

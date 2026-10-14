@@ -627,7 +627,9 @@ if (MMA_BUILD_APP)
         ${CMAKE_CURRENT_SOURCE_DIR}/Source)
     target_link_libraries(sim_card_copy PRIVATE mma_core mma_warnings)
     add_test(NAME sim_card_copy COMMAND sim_card_copy)
-    set_tests_properties(sim_card_copy PROPERTIES TIMEOUT 30)
+    # Its waits are up to 20 s each: a scenario that never finishes on one
+    # platform fails its own check with what it saw, inside this limit.
+    set_tests_properties(sim_card_copy PROPERTIES TIMEOUT 120)
 
     # Its Windows branches, compiled here for syntax: the Windows runner is
     # otherwise the first place a name scoped inside `#if ! defined(_WIN32)`
