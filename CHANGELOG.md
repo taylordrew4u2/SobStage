@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v1.13.28 -- 2026-10-14 (release candidate)
+
+Takes for an SD card are recorded on this computer and copied to the card after Stop; a stricter power warning.
 
 ### Changed
 

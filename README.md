@@ -25,7 +25,7 @@
   <a href="docs/images/demo.mp4"><img src="docs/images/demo.gif" alt="A 20-second screen recording: two microphone meters moving, Start recording pressed, the take clock counting while the file count grows, then Stop and a Saved card listing every file with its size" width="680"></a>
 </p>
 
-> **Status:** v1.13.27 release candidate. CI passes on macOS, Windows and Linux against simulated devices; the physical-microphone validation matrix is still open ([details](docs/VERIFICATION.md)).
+> **Status:** v1.13.28 release candidate. CI passes on macOS, Windows and Linux against simulated devices; the physical-microphone validation matrix is still open ([details](docs/VERIFICATION.md)).
 
 ## Why I built it
 
@@ -162,7 +162,7 @@ Build options, packaging and every harness: [docs/BUILDING.md](docs/BUILDING.md)
 
 ## Testing
 
-A default build registers **13 CTest targets, all passing**, including **1000 engine unit tests**:
+A default build registers **13 CTest targets, all passing**, including **1112 engine unit tests**:
 
 - **Unit tests** (`mma_core_tests`): drift loop, ring buffers, monitor bus, metering, loudness, session writer, crash recovery and more.
 - **Drift harnesses:** `soak_drift` (four-hour, four-clock alignment gate) and `sim_drift_loop` at four buffer-jitter rungs.
