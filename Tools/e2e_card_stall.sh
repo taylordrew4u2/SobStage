@@ -373,6 +373,60 @@ fi
 [ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
 stop_app
 
+# -------------------------------------------------------------------------
+echo
+echo "=== This computer's backup drive stops answering, and then Stop is pressed ==="
+# The take goes straight to the card; its backup copy is on this computer, and
+# that drive stops answering. Each backup step at Stop is bounded, and once
+# one has timed out the ones after it must not wait again: each waiting its
+# own deadline was 40 s of frozen window. (The take's writer feeds the card
+# and the backup on one thread, so its stop timing out cannot say which drive
+# stopped, and the card's record is skipped as for a stuck card. That is the
+# writer's to tell apart; this scenario holds the window to account.)
+BEFORE_FAIL=$FAILED
+BACKUP_ROOT="$WORK/backupdead/RECORDINGS-MIRROR"
+launch backupdead MMA_STALL_PREFIX="$BACKUP_ROOT" MMA_KEEP_SAME_DISK_BACKUP=1
+dismiss_cards
+press_record
+
+TAKE=""
+BACKUP_TAKE=""
+for _ in {1..15}; do
+  sleep 1
+  TAKE=$(find "$CARD" -mindepth 1 -maxdepth 1 -type d | head -1)
+  BACKUP_TAKE=$(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1 || true)
+  [ -n "$TAKE" ] && [ -n "$BACKUP_TAKE" ] && break
+done
+if [ -z "$TAKE" ] || [ -z "$BACKUP_TAKE" ]; then
+  fail "backupdead: no take with a backup copy started"
+else
+  pass "backupdead: take started in $(basename "$TAKE"), backed up to $(basename "$BACKUP_TAKE")"
+  sleep 3
+
+  kill_card
+  sleep 1
+  DISPLAY="$DISPLAY_NUM" xdotool key Escape
+  click 973 178
+
+  if wait_for_log "Recording stopped\|Recording was stopped" 45; then
+    pass "backupdead: the stop finished"
+  else
+    fail "backupdead: the stop was never logged within 45 s"
+  fi
+
+  sleep 3
+  check_responsive backupdead
+  rm -f "$DEAD"
+  sleep 3
+  if kill -0 "$APP_PID" 2>/dev/null; then
+    pass "backupdead: app still running after the backup drive came back"
+  else
+    fail "backupdead: app exited after the backup drive came back"
+  fi
+fi
+[ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
+stop_app
+
 echo
 if [ "$FAILED" = "0" ]; then
   echo "Card-stall gate passed."

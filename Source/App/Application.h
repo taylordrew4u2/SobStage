@@ -867,6 +867,13 @@ private:
     // steps after it skip the card instead of each waiting out the deadline.
     // Cleared when the next take starts. mutable: writeActivityLog is const.
     mutable bool takeCardUnresponsive = false;
+    // The same for the take's backup copy on this computer: a backup drive
+    // that timed out once is not waited on again by the steps after it.
+    mutable bool takeBackupUnresponsive = false;
+    // This take's own stop timed out. Its writer feeds the card and the
+    // backup alike, so either drive may be the one that stopped: a backup
+    // write after it waits only as long as a backup that answers needs.
+    bool takeStopTimedOut = false;
     // One export at a time; the flag is shared with its detached worker.
     std::shared_ptr<std::atomic<bool>> diagnosticsExportRunning
         = std::make_shared<std::atomic<bool>> (false);

@@ -130,6 +130,9 @@ std::optional<Result> runWithDeadline (Work work, std::chrono::milliseconds limi
 // Matches the production input-open deadline: long enough for a slow card to
 // wake, short enough that nobody reaches for Force Quit.
 constexpr std::chrono::milliseconds kRemovableVolumeDeadline { 5000 };
+// The backup's stop-time record after the take's own stop timed out: long
+// enough for a backup that is answering, short of another full deadline.
+constexpr std::chrono::milliseconds kBackupWaitAfterStopTimedOut { 1000 };
 
 // §6.3: said when the backup copy is stopped because its disk is nearly full.
 constexpr const char* kMirrorLowSpaceLine =
@@ -158,10 +161,10 @@ juce::String appVersionString()
 // card pulled mid-write can hold the write forever; past the deadline this
 // gives up, leaving the write to finish (or not) on its own worker. Empty means
 // the deadline passed, which is different from a write that answered "failed".
-std::optional<bool> replaceWithTextWithin (const juce::File& file, const juce::String& text)
+std::optional<bool> replaceWithTextWithin (const juce::File& file, const juce::String& text,
+                                          std::chrono::milliseconds deadline = kRemovableVolumeDeadline)
 {
-    return runWithDeadline<bool> ([file, text] { return replaceWithTextChecked (file, text); },
-                                  kRemovableVolumeDeadline);
+    return runWithDeadline<bool> ([file, text] { return replaceWithTextChecked (file, text); }, deadline);
 }
 
 std::vector<juce::File> directChildDirectories (const juce::File& root)
@@ -2956,6 +2959,8 @@ void Application::toggleRecording()
 
                 recordStartProblem.clear();
                 takeCardUnresponsive = false;
+                takeBackupUnresponsive = false;
+                takeStopTimedOut = false;
                 lastTakeFinishedWhileQuitting = false;
                 mirrorMissingReported = false;
                 mirrorFinalizeFailureReported = false;
@@ -3232,6 +3237,7 @@ void Application::toggleRecording()
                 // this computer never touched it: its drive is this one's.
                 const bool recordedHere = currentTakeRoute == TakeRoute::ComputerThenCard;
                 takeCardUnresponsive = true;
+                takeStopTimedOut = true;
                 noteActivity (ActivityLevel::Failed, recordedHere ? "Recording" : "Card",
                               juce::String (cardcopy::stopTimedOutAccount (recordedHere,
                                                                            capture->getCardWriteProblem())));
@@ -5859,11 +5865,32 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
         // writer's worker -- not here -- if it is inside its rename now. The
         // same deadline as any other write here; past it this record still
         // lands, and still lands last.
-        const bool mirrorWritten =
-            sessionHasStopped && sessionRecordMirror != nullptr
-                ? sessionRecordMirror->writeLast (mirrorRecord.getFullPathName().toStdString(), json,
-                                                  kRemovableVolumeDeadline).value_or (false)
-                : writeTakeText (mirrorRecord, juce::String (json));
+        // A backup drive that already timed out this take is not waited on
+        // again: the record is still handed to its writer, to land if the
+        // drive comes back, but Stop does not sit through another deadline.
+        // Nor a full one after the stop itself timed out: the take's writer
+        // feeds the card and the backup alike, so either may be the drive
+        // that stopped, and a backup that is answering lands this record in
+        // milliseconds. A stuck backup at Stop was 40 s of frozen window, one
+        // deadline per step (e2e_card_stall backupdead).
+        bool mirrorWritten = false;
+
+        if (sessionHasStopped && sessionRecordMirror != nullptr)
+        {
+            const auto wait = takeBackupUnresponsive ? std::chrono::milliseconds (0)
+                            : takeStopTimedOut           ? kBackupWaitAfterStopTimedOut
+                                                         : kRemovableVolumeDeadline;
+            const auto landed = sessionRecordMirror->writeLast (mirrorRecord.getFullPathName().toStdString(), json,
+                                                                wait);
+            if (! landed.has_value())
+                takeBackupUnresponsive = true;
+
+            mirrorWritten = landed.value_or (false);
+        }
+        else
+        {
+            mirrorWritten = writeTakeText (mirrorRecord, juce::String (json));
+        }
 
         if (! mirrorWritten)
             noteActivity (ActivityLevel::Warning, "Local backup",
@@ -6070,23 +6097,24 @@ bool Application::isOnTheTakesDrive (const juce::File& file) const
 bool Application::writeTakeText (const juce::File& file, const juce::String& text) const
 {
     // The backup copy lives on this computer, not the card, so a card that has
-    // stopped answering is no reason to skip it.
+    // stopped answering is no reason to skip it -- nor the other way round.
     const bool onTakesDrive = isOnTheTakesDrive (file);
+    auto& driveUnresponsive = onTakesDrive ? takeCardUnresponsive : takeBackupUnresponsive;
 
     // Each step is bounded, but they run one after another. Once one has
     // timed out, waiting the full deadline again on every later step turned a
     // dead drive at Stop into half a minute of frozen window. The drive has
     // already said it is gone; believe it for the rest of the take.
-    if (onTakesDrive && takeCardUnresponsive)
+    if (driveUnresponsive)
         return false;
 
-    const auto written = replaceWithTextWithin (file, text);
+    const auto written = replaceWithTextWithin (file, text,
+                                                ! onTakesDrive && takeStopTimedOut ? kBackupWaitAfterStopTimedOut
+                                                                                   : kRemovableVolumeDeadline);
 
     if (! written.has_value())
     {
-        if (onTakesDrive)
-            takeCardUnresponsive = true;
-
+        driveUnresponsive = true;
         return false;
     }
 
@@ -6118,7 +6146,7 @@ void Application::writeActivityLog (const juce::File& folder) const
     // Checked like everything else here. A log that failed to write is exactly
     // the sort of thing this file exists to stop happening quietly.
     if (! writeTakeText (folder.getChildFile ("activity.log"), text)
-        && ! (takeCardUnresponsive && isOnTheTakesDrive (folder)))
+        && ! (isOnTheTakesDrive (folder) ? takeCardUnresponsive : takeBackupUnresponsive))
         noteActivity (ActivityLevel::Warning, "Recording",
                       "Couldn't write the activity log into " + folder.getFileName()
                       + ". The audio itself is saved.");
