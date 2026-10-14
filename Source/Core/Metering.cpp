@@ -47,14 +47,14 @@ void Metering::processAudioBlock (const float* samples, int numSamples) noexcept
     publishPeak (linearToDb (maxAbs));
 }
 
-void Metering::processLevelOnly (const float* samples, int numSamples) noexcept
+void Metering::processLevelOnly (const float* samples, int numSamples, float gain) noexcept
 {
     float maxAbs = 0.0f;
 
     for (int i = 0; i < numSamples; ++i)
         maxAbs = std::max (maxAbs, std::abs (samples[i]));
 
-    publishPeak (linearToDb (maxAbs));
+    publishPeak (linearToDb (maxAbs * std::abs (gain)));
 }
 
 void Metering::noteClipEvents (int events) noexcept

@@ -312,10 +312,10 @@ Keep future app-facing outputs behind a swappable interface:
 ---
 ## 8. Metering
 ### 8.1 Behavior
-- One meter per microphone, plus one for the shared mix. The mix meter shows the summed headphone bus **before** the master volume, so it reads the same at any listening level; its clip latch counts each time §5.5's safety limiter starts turning the headphones down, not the −0.1 dBFS rule below (the bus can run past full scale harmlessly when the volume is below 100). Reading the signal after the volume, as it did, a bus being squared off at −3 dBFS showed as about −21 dBFS at the default volume, and its CLIP could never light.
+- One meter per microphone, plus one for the shared mix. The mix meter shows the summed headphone bus **at the master volume, before §5.5's safety limiter** — exactly the signal that limiter judges. Its red zone starts at the limiter's −3 dBFS ceiling, and its clip latch counts each time the limiter starts turning the headphones down (not the −0.1 dBFS rule below), so red and CLIP mean the same thing at every volume: the headphones are at their safety limit. Turning the volume down moves the bar down with what is heard. It has read two other signals, and both misled: the signal after a clip that came ahead of the volume (a bus being squared off at −3 dBFS showed as about −21 dBFS at the default volume, and its CLIP could never light), then the bus before the volume (at the default volume six microphones talking at once sat in the red a third of the time and pinned at 0 dBFS with the limiter 18 dB away and CLIP dark; at volume 40 it looked the same).
 - **Meters run from launch, not from record.** No visual mode change when recording starts.
 - Each shows instantaneous level, peak hold, clip state, and an always-visible numeric dBFS readout.
-- Scale −60 to 0 dBFS, logarithmic.
+- Scale −60 to 0 dBFS, logarithmic. The mix meter only goes past 0 dBFS when the limiter is turning the headphones down by more than 3 dB, which its CLIP already says.
 - Ballistics: 10 ms attack, 1.5 s decay, peak hold 2 s then decay at 20 dB/s. Raw sample values strobe and are unreadable.
 - Clip latches with a running count until tapped. Threshold: 3 consecutive samples at or above −0.1 dBFS.
 - **Dead-channel detection:** a channel below −60 dBFS for 20 continuous seconds while at least one other channel has exceeded −40 dBFS during the same window. Flag it and name the likely cause.

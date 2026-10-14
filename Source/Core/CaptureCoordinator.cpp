@@ -2263,14 +2263,17 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     // preallocated ring; the analysis runs on the guard's own thread (§11).
     feedbackGuard.push (busScratch.data(), numSamples);
 
-    // §8.1: the mix bar shows that same bus, before the volume. It used to
-    // read the signal after it, so at the default volume a bus being
-    // squared off at -3 dBFS read about -21 dBFS -- plenty of headroom, to
-    // look at -- and its CLIP, at -0.1 dBFS, could never be reached under a
-    // -3 dBFS ceiling. Its CLIP now latches from the safety limiter: each
-    // time it starts turning the headphones down, the bar says so, and the
-    // user can see why the mix sounds squashed and turn the trims down.
-    mixMeter.processLevelOnly (busScratch.data(), numSamples);
+    // §8.1: the mix bar shows that bus at the listener's volume, before the
+    // limiter -- exactly the signal the -3 dBFS safety limiter judges -- and
+    // its CLIP latches from that limiter. So the bar's red zone (from -3
+    // dBFS) and CLIP mean the same thing at every volume: the headphones are
+    // at their safety limit. It briefly showed the bus before the volume
+    // instead, which at the default volume (-18 dB) put a mix the limiter
+    // was nowhere near in the red, pinned at 0 dBFS, while CLIP stayed dark;
+    // and before that it showed the signal after a clip that came ahead of
+    // the volume, so a bus being squared off read about -21 dBFS. Applied to
+    // each block's loudest sample: no scratch buffer, one atomic load.
+    mixMeter.processLevelOnly (busScratch.data(), numSamples, monitorBus.getMasterGain());
 
     if (const auto engagements = monitorBus.getLimiterEngagementCount();
         engagements != meteredLimiterEngagements)

@@ -54,11 +54,12 @@ One strip per microphone: a little crying face that fills with the level (it
 sheds a tear when you get loud, two when you clip), the name, a level track with
 a peak tick, and the number. The summed **MIX** sits on the same row in its own
 lighter cell, because §9.1 requires the bus to be distinguishable from a channel
-at a glance rather than by reading the label. MIX shows the headphone mix before
-your monitor volume, so it reads the same however loud you listen. If it says
-**CLIP**, the headphones' safety limit has had to turn the mix down: everyone
-together is too loud for it. Turn the trims or the microphones down (the knob
-on the mic, if it has one), or the monitor volume; click MIX to clear it.
+at a glance rather than by reading the label. MIX shows the headphone mix as
+loud as your monitor volume makes it, so turning the volume down moves it down
+too. It turns red when the mix gets near the headphones' safety limit, and if it
+says **CLIP**, that limit has had to turn the mix down: everyone together is too
+loud for it at this volume. Turn the monitor volume down, or the trims or the
+microphones (the knob on the mic, if it has one); click MIX to clear it.
 Under them the take name and the one button worth pressing; everything else —
 how much room is left, where the files are going, the monitor level — sits
 quietly in the footer.

@@ -36,7 +36,7 @@ and Windows. The table below lists the largest areas rather than every file:
 | `AlsaInputPolicy` — fail-closed removable-hardware selection | §2 | 13 |
 | `DeviceManager` — 8-mic cap, 9th exclusion, master selection and failover | §1, §3.1, §3.3 | 18 |
 | `RingBuffer` — lock-free SPSC, 30s / 64 MB minimum sizing | §6.3 | 9 |
-| `Metering` — ballistics, peak hold, clip latch, the mix bar's limiter-driven CLIP | §8.1 | 14 |
+| `Metering` — ballistics, peak hold, clip latch, the mix bar's level at the headphone volume and limiter-driven CLIP | §8.1 | 15 |
 | `SessionWriter` — RIFF/WAVE headers, auto-split, periodic header rewrite | §6.1, §6.6 | 16 |
 | `SampleRateNegotiator` — highest common rate capped at 48 kHz | §2.2 | 14 |
 | `PolarPatternDetector` — non-cardioid detection | §14.4 | 5 |

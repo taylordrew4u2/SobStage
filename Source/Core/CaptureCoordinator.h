@@ -937,7 +937,8 @@ private:
     std::vector<float> mixScratch;
 
     // The summed bus before master volume and the limiter, per sample of the
-    // block, for the feedback guard and the mix meter. Sized with mixScratch.
+    // block, for the feedback guard and (at the volume) the mix meter. Sized
+    // with mixScratch.
     std::vector<float> busScratch;
 
     // The app's own sounds alone (AlarmTone), for an output channel switched

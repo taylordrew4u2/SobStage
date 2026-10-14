@@ -3291,14 +3291,20 @@ TEST_CASE (CaptureCoordinator_APairWithOneSideLeftOutIsNotTurnedDown)
     c.stopMonitoring();
 }
 
-TEST_CASE (CaptureCoordinator_TheMixBarShowsTheBusAndItsClipIsTheLimiter)
+TEST_CASE (CaptureCoordinator_TheMixBarShowsWhatTheLimiterJudgesAndItsClipIsTheLimiter)
 {
-    // The mix bar read the headphone signal after the volume, so at the
-    // default volume a bus squared off at -3 dBFS showed as about -21 dBFS,
-    // and its CLIP (three samples at -0.1 dBFS) could never be reached under
-    // a -3 dBFS ceiling: the crackle had no visible cause. It now shows the
-    // bus before the volume, and CLIP whenever the safety limiter has had to
-    // turn the headphones down.
+    // The mix bar once read the headphone signal after a clip that came ahead
+    // of the volume, so at the default volume a bus squared off at -3 dBFS
+    // showed as about -21 dBFS, and its CLIP (three samples at -0.1 dBFS)
+    // could never be reached under a -3 dBFS ceiling: the crackle had no
+    // visible cause. It now shows the bus at the volume, before the limiter
+    // -- the very signal the limiter judges -- and CLIP whenever that limiter
+    // has had to turn the headphones down.
+    //
+    // Changed deliberately from "the bar reads the bus before the volume"
+    // (-4.4 dBFS here): read that way, at the default volume the bar sat in
+    // its red zone and pinned at 0 dBFS on mixes the limiter was 18 dB away
+    // from, with CLIP dark. See TheMixBarIsRedOnlyWhereTheLimiterActs.
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
     c.setSoftwareClockEnabled (false);
@@ -3308,11 +3314,23 @@ TEST_CASE (CaptureCoordinator_TheMixBarShowsTheBusAndItsClipIsTheLimiter)
     const float* ins[] = { a.data(), b.data() };
     float* outs[] = { out.data() };
 
-    // Default volume: a 0.6 bus (-4.4 dBFS) reaches the ears at -22.4 dBFS.
+    // Default volume: a 0.6 bus (-4.4 dBFS) reaches the ears at -22.4 dBFS,
+    // and that is what the bar shows.
     c.processAudioBlock (ins, 2, outs, 1, 64);
     for (int i = 0; i < 30; ++i)
         c.getMixMetering().tick (1.0 / 60.0);
 
+    const float defaultGainDb = 20.0f * std::log10 (MonitorBus::monitorVolumeToLinearGain (MonitorBus::kDefaultMonitorVolume));
+    REQUIRE_NEAR (c.getMixMetering().getDisplayedLevelDb(), 20.0f * std::log10 (0.6f) + defaultGainDb, 0.1f);
+    REQUIRE_NEAR (c.getMixMetering().getDisplayedLevelDb(), 20.0f * std::log10 (std::abs (out[63])), 0.1f);
+    REQUIRE_FALSE (c.getMixMetering().isClipped());
+
+    // At full volume the same bus is what reaches the ears, and the bar
+    // reads it unchanged.
+    c.getMonitorBus().setMasterVolume (100.0);
+    c.processAudioBlock (ins, 2, outs, 1, 64);
+    for (int i = 0; i < 30; ++i)
+        c.getMixMetering().tick (1.0 / 60.0);
     REQUIRE_NEAR (c.getMixMetering().getDisplayedLevelDb(), 20.0f * std::log10 (0.6f), 0.1f);
     REQUIRE_FALSE (c.getMixMetering().isClipped());
 
@@ -3337,6 +3355,62 @@ TEST_CASE (CaptureCoordinator_TheMixBarShowsTheBusAndItsClipIsTheLimiter)
     c.processAudioBlock (ins, 2, outs, 1, 64);
     REQUIRE_FALSE (c.getMixMetering().isClipped());
     c.stopMonitoring();
+}
+
+TEST_CASE (CaptureCoordinator_TheMixBarIsRedOnlyWhereTheLimiterActs)
+{
+    // The bar turns red from -3 dBFS, the safety limiter's ceiling, and its
+    // CLIP is that limiter acting. Those must agree at every volume: a mix
+    // just under the limit at the ears is short of red with CLIP dark, and
+    // one just over it is in the red with CLIP lit. Read before the volume,
+    // the bar showed a mix 0.4 dB short of the limit at the default volume as
+    // 0 dBFS -- pinned, red -- with CLIP dark; at volume 40, 36 dB of room
+    // looked the same.
+    const float ceiling = std::pow (10.0f, MonitorBus::kLimiterCeilingDb / 20.0f);
+
+    for (const double volume : { 40.0, MonitorBus::kDefaultMonitorVolume, 85.0, 100.0 })
+    {
+        for (const float overCeiling : { 0.95f, 1.2f })
+        {
+            FakeBackend backend;
+            CaptureCoordinator c (backend, 48000.0, 64);
+            c.setSoftwareClockEnabled (false);
+            REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+            c.getMonitorBus().setMasterVolume (volume);
+
+            // Two microphones whose sum, at this volume, lands at
+            // overCeiling times the limiter's ceiling.
+            const float gain = MonitorBus::monitorVolumeToLinearGain (volume);
+            const float each = 0.5f * overCeiling * ceiling / gain;
+            std::vector<float> a (64, each), b (64, each), out (64, 0.0f);
+            const float* ins[] = { a.data(), b.data() };
+            float* outs[] = { out.data() };
+
+            for (int block = 0; block < 20; ++block)
+                c.processAudioBlock (ins, 2, outs, 1, 64);
+            for (int i = 0; i < 30; ++i)
+                c.getMixMetering().tick (1.0 / 60.0);
+
+            const float shown = c.getMixMetering().getDisplayedLevelDb();
+            const bool red = shown >= MonitorBus::kLimiterCeilingDb;
+            const bool clip = c.getMixMetering().isClipped();
+
+            if (overCeiling < 1.0f)
+            {
+                REQUIRE (! red);
+                REQUIRE (! clip);
+                REQUIRE_NEAR (shown, MonitorBus::kLimiterCeilingDb + 20.0f * std::log10 (overCeiling), 0.1f);
+            }
+            else
+            {
+                REQUIRE (red);
+                REQUIRE (clip);
+                REQUIRE_NEAR (shown, MonitorBus::kLimiterCeilingDb + 20.0f * std::log10 (overCeiling), 0.1f);
+            }
+
+            c.stopMonitoring();
+        }
+    }
 }
 
 TEST_CASE (CaptureCoordinator_ExplicitStereoMicVerdictStillUsesItsLiveSide)

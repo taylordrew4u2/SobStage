@@ -184,9 +184,8 @@ TEST_CASE (Metering_ALongStepOnlyDecaysThePartPastTheHold)
 
 TEST_CASE (Metering_ALevelOnlyMeterShowsTheLevelButNeverLatchesItsOwnClip)
 {
-    // The mix bar: the bus before the headphone volume, which can run past
-    // full scale with nothing clipping anywhere. Its level is shown as ever;
-    // its CLIP is not the -0.1 dBFS rule.
+    // The mix bar: its CLIP is the headphone limiter's, not the -0.1 dBFS
+    // rule, so its own samples running past full scale do not latch it.
     Metering m (48000.0);
     const std::vector<float> hot (64, 1.5f);
     m.processLevelOnly (hot.data(), static_cast<int> (hot.size()));
@@ -196,6 +195,21 @@ TEST_CASE (Metering_ALevelOnlyMeterShowsTheLevelButNeverLatchesItsOwnClip)
     REQUIRE_NEAR (m.getDisplayedLevelDb(), Metering::kMaxDb, 0.01);
     REQUIRE_FALSE (m.isClipped());
     REQUIRE (m.getClipCount() == 0);
+}
+
+TEST_CASE (Metering_ALevelOnlyMeterShowsTheSamplesAtTheGainItIsGiven)
+{
+    // The mix bar is handed the bus and the headphone volume's gain, and
+    // shows the bus at that volume: what the safety limiter judges.
+    Metering m (48000.0);
+    const std::vector<float> bus (64, 1.5f);
+    m.processLevelOnly (bus.data(), static_cast<int> (bus.size()), 0.25f);
+    for (int i = 0; i < 30; ++i)
+        m.tick (1.0 / 60.0);
+
+    REQUIRE_NEAR (m.getDisplayedLevelDb(), 20.0f * std::log10 (1.5f * 0.25f), 0.05);
+    REQUIRE_NEAR (m.getPeakHoldDb(), 20.0f * std::log10 (1.5f * 0.25f), 0.05);
+    REQUIRE_FALSE (m.isClipped());
 }
 
 TEST_CASE (Metering_AClipNotedFromOutsideLatchesAndCounts)

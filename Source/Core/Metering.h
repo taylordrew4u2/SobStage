@@ -31,12 +31,14 @@ public:
     void processAudioBlock (const float* samples, int numSamples) noexcept;
 
     /// Audio-thread call for a meter whose CLIP is not about its own samples:
-    /// the level and peak exactly as processAudioBlock, without the -0.1 dBFS
-    /// latch. The mix bar shows the summed bus before the headphone volume,
-    /// which can sit above full scale without anything clipping -- the volume
-    /// and the safety limiter come after it -- so its CLIP comes from the
-    /// limiter instead (noteClipEvents). No allocation, locking or logging.
-    void processLevelOnly (const float* samples, int numSamples) noexcept;
+    /// the level and peak exactly as processAudioBlock, of the samples times
+    /// `gain`, without the -0.1 dBFS latch. The mix bar shows the summed bus
+    /// at the headphone volume -- the signal the safety limiter judges -- and
+    /// its CLIP comes from that limiter (noteClipEvents), not from its own
+    /// samples. The gain is applied to the block's loudest sample, so the
+    /// caller needs no scratch buffer for it. No allocation, locking or
+    /// logging.
+    void processLevelOnly (const float* samples, int numSamples, float gain = 1.0f) noexcept;
 
     /// Latches CLIP and adds `events` to its count, from a clip the caller
     /// detected itself (the headphone limiter turning the mix down). Any
