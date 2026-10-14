@@ -2954,7 +2954,8 @@ void Application::toggleRecording()
                     // copy is still to go.
                     const auto copies = cardCopier.summary();
                     const int stillToCopy = (copies.copyingFolder.empty() ? 0 : 1) + copies.waiting
-                                          + copies.onlyOnComputer + copies.addedFilesWaiting;
+                                          + copies.onlyOnComputer + copies.partlyOnCard
+                                          + copies.addedFilesWaiting;
                     lastTakeRouteNote = juce::String (cardcopy::computerFullNote (
                         backupRootFolder().getFullPathName().toStdString(), stillToCopy));
                 }
@@ -4035,21 +4036,7 @@ juce::String Application::getCardCopySummary() const
             ? juce::String (cardcopy::notAnsweringLine (s.waiting, backupRootFolder().getFullPathName().toStdString()))
             : juce::String (cardcopy::waitingLine (s.waiting));
 
-    if (s.onlyOnComputer == 0)
-        return s.addedFilesWaiting == 0 ? juce::String()
-             : s.addedFilesWaiting == 1 ? juce::String ("1 take has a file still to copy to the card.")
-                                        : juce::String (s.addedFilesWaiting) + " takes have files still to copy to the card.";
-
-    const auto count = s.onlyOnComputer == 1 ? juce::String ("1 take is")
-                                              : juce::String (s.onlyOnComputer) + " takes are";
-
-    // "When it is back" only when that is the reason: a full or locked card
-    // is not coming back by itself, and its saved-take card says what to do.
-    if (s.cardMissing == s.onlyOnComputer)
-        return count + " only on this computer. "
-             + (s.onlyOnComputer == 1 ? "It" : "They") + " will be copied to the card when it is back.";
-
-    return count + " only on this computer for now.";
+    return juce::String (cardcopy::tallyLine (s));
 }
 
 void Application::copyAgain (const juce::String& localFolder)

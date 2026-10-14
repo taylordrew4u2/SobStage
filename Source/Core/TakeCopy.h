@@ -316,5 +316,25 @@ std::string computerFullNote (const std::string& computerFolder, int takesStillT
 /// Whether an outcome is one of the copy's failures, reported to the user.
 bool isFailure (Outcome outcome) noexcept;
 
+/// The takes whose copy did not finish, as the line under Record counts them.
+struct Tally
+{
+    /// Not on the card at all: only on this computer.
+    int onlyOnComputer = 0;
+    /// How many of those because the card was not plugged in.
+    int cardMissing = 0;
+    /// On the card but for a file too big for the card's format (FAT32's
+    /// 4 GB), which stays on this computer. Not counted above.
+    int partlyOnCard = 0;
+    /// On the card but for a file added since that has not gone yet. Not
+    /// counted above.
+    int addedFilesWaiting = 0;
+};
+
+/// The line under Record once nothing is copying or waiting; empty when every
+/// take is on the card. Never says a take is only on this computer when the
+/// rest of it is on the card, which its saved-take card says.
+std::string tallyLine (const Tally& tally);
+
 } // namespace cardcopy
 } // namespace mma

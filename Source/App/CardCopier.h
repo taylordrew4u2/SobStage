@@ -141,19 +141,15 @@ public:
     /// How many takes resumePendingIn() found, once, after it has looked.
     std::optional<int> takeResumedCount();
 
-    struct Summary
+    /// The takes whose last attempt failed, counted as cardcopy::Tally says:
+    /// only on this computer, on the card but for a file too big for it, or
+    /// on the card but for a file added since.
+    struct Summary : cardcopy::Tally
     {
         /// The take being copied, and how far along.
         std::string copyingFolder;
         uint64_t done = 0, total = 0;
         int waiting = 0;
-        /// Takes whose last attempt failed: they are only on this computer.
-        int onlyOnComputer = 0;
-        /// How many of those failed because the card was not plugged in.
-        int cardMissing = 0;
-        /// Takes already on the card whose added file (a combined video, a
-        /// podcast copy) could not be copied yet. Not counted above.
-        int addedFilesWaiting = 0;
     };
     Summary summary() const;
 

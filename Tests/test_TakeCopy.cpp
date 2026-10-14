@@ -1432,6 +1432,37 @@ TEST_CASE (TakeCopy_OnlyAnAddedFileIsSaidOfTheCardInTheReaderNow)
     REQUIRE_FALSE (run (never, toTheCard(), &fresh).addedFilesOnly);
 }
 
+// Mutation: a take whose file was too big for the card counted as only on
+// this computer, while its saved-take card says the rest of it was copied.
+TEST_CASE (TakeCopyWording_TheLineUnderRecordAgreesWithTheSavedTakeCard)
+{
+    Tally none;
+    REQUIRE (tallyLine (none).empty());
+
+    Tally tooBig;
+    tooBig.partlyOnCard = 1;
+    const auto line = tallyLine (tooBig);
+    REQUIRE (line.find ("only on this computer") == std::string::npos);
+    REQUIRE (line.find ("too big for this card") != std::string::npos);
+    REQUIRE (line.find ("The rest is on the card") != std::string::npos);
+
+    tooBig.partlyOnCard = 2;
+    REQUIRE (tallyLine (tooBig).find ("2 takes have files too big") == 0);
+
+    Tally out;
+    out.onlyOnComputer = out.cardMissing = 2;
+    REQUIRE (tallyLine (out) == "2 takes are only on this computer. They will be copied to the card when it is back.");
+
+    Tally full;
+    full.onlyOnComputer = 1;
+    full.partlyOnCard = 1;
+    REQUIRE (tallyLine (full) == "1 take is only on this computer for now.");
+
+    Tally added;
+    added.addedFilesWaiting = 1;
+    REQUIRE (tallyLine (added) == "1 take has a file still to copy to the card.");
+}
+
 TEST_CASE (TakeCopy_TheComputerCopyGoneIsSaid)
 {
     FakeFs fs;

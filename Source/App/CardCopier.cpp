@@ -370,6 +370,14 @@ CardCopier::Summary CardCopier::summary() const
         else if (record.phase == Phase::StillOnComputer && record.last.has_value()
                  && record.last->outcome != cardcopy::Outcome::ComputerCopyMissing)
         {
+            // Everything else checked on the card: the saved-take card says
+            // "The rest of the take was", and this agrees.
+            if (record.last->outcome == cardcopy::Outcome::FileTooBig)
+            {
+                ++s.partlyOnCard;
+                continue;
+            }
+
             if (record.last->addedFilesOnly)
             {
                 ++s.addedFilesWaiting;

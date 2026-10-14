@@ -851,6 +851,35 @@ Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marke
     return result;
 }
 
+std::string tallyLine (const Tally& tally)
+{
+    const auto takes = [] (int n, const char* one, const char* many)
+    {
+        return n == 1 ? std::string ("1 take ") + one : std::to_string (n) + " takes " + many;
+    };
+
+    if (tally.onlyOnComputer > 0)
+    {
+        // "When it is back" only when that is the reason: a full or locked
+        // card is not coming back by itself, and its saved-take card says
+        // what to do.
+        if (tally.cardMissing == tally.onlyOnComputer)
+            return takes (tally.onlyOnComputer, "is", "are") + " only on this computer. "
+                 + (tally.onlyOnComputer == 1 ? "It" : "They") + " will be copied to the card when it is back.";
+
+        return takes (tally.onlyOnComputer, "is", "are") + " only on this computer for now.";
+    }
+
+    if (tally.partlyOnCard > 0)
+        return takes (tally.partlyOnCard, "has a file", "have files")
+             + " too big for this card, kept on this computer. The rest is on the card.";
+
+    if (tally.addedFilesWaiting > 0)
+        return takes (tally.addedFilesWaiting, "has a file", "have files") + " still to copy to the card.";
+
+    return {};
+}
+
 std::string computerFullNote (const std::string& computerFolder, int takesStillToCopy)
 {
     auto note = "This computer is nearly full, so this take is going straight to the card. To make room, "

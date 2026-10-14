@@ -689,6 +689,22 @@ int main()
                    != std::string::npos,
                "and the user is told so in plain words");
 
+        // Through the copier: the line under Record agrees with the saved-take
+        // card that the rest of the take was copied.
+        {
+            const auto big = f.take ("2026-10-14_2335_BigToo");
+            CardCopier copier (f.factory());
+            setrlimit (RLIMIT_FSIZE, &small);
+            copier.start (f.job (big));
+            const auto done = waitForResult (copier, 15s);
+            setrlimit (RLIMIT_FSIZE, &old);
+
+            check (done.has_value() && done->result.outcome == cardcopy::Outcome::FileTooBig,
+                   "7b. the copier's take has a file too big for the card");
+            const auto summary = copier.summary();
+            check (summary.onlyOnComputer == 0,
+                   "and it is not counted as only on this computer: the rest of it is on the card");
+        }
        #else
         check (true, "(RLIMIT_FSIZE is POSIX)");
        #endif
