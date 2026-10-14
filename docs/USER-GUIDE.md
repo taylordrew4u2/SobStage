@@ -159,7 +159,7 @@ files really are empty and the card says so instead of calling it saved.
 
 > The screenshots are historical UI checkpoints from several earlier binaries;
 > the version visible in each masthead identifies the build. They are retained
-> to show the implemented flows, not as proof of the v1.13.26 release candidate.
+> to show the implemented flows, not as proof of the v1.13.27 release candidate.
 > They were rendered headless on Linux by
 > [`Tools/screenshot_app.sh`](../Tools/screenshot_app.sh) against the virtual ALSA microphones
 > [`Tools/setup_alsa_fixture.sh`](../Tools/setup_alsa_fixture.sh) creates — the
