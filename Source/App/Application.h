@@ -375,6 +375,10 @@ public:
     {
         juce::String line;
         bool canCopyAgain = false;
+        /// What that button says: "Copy to this card" for a take waiting for
+        /// its own card while another is in -- the button the line names --
+        /// and "Copy again" otherwise.
+        juce::String copyAgainLabel { "Copy again" };
         juce::String cardFolderIfCopied;
     };
     CardCopyView getCardCopyView (const juce::String& localFolder) const;
@@ -385,6 +389,15 @@ public:
 
     /// The saved-take card's "Copy again".
     void copyAgain (const juce::String& localFolder);
+
+    /// Takes waiting for their own card at the save location while another
+    /// card is in its place, the card in now being seen there: "Copy to this
+    /// card" goes under the record button while there are any. 0 otherwise.
+    int getTakesWaitingForAnotherCard() const;
+
+    /// "Copy to this card", under the record button: every such take goes to
+    /// the card in now, as "Copy again" sends the take on the saved-take card.
+    void copyWaitingTakesToCardInNow();
 
     /// §4 per-microphone trim, -20..+20 dB in 0.5 dB steps. Persisted against
     /// the physical port so it follows the mic across a replug, and applied

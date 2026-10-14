@@ -331,6 +331,12 @@ inline constexpr Wording kThisSystemsWording = Wording::Windows;
 inline constexpr Wording kThisSystemsWording = Wording::Mac;
 #endif
 
+/// The button that copies a take waiting for its own card to the card in
+/// the reader now instead: under Record, for every such take, and on the
+/// saved-take card for its own. Named in describe()'s words, so the words
+/// point at a button that is there.
+inline constexpr const char* kCopyToThisCard = "Copy to this card";
+
 /// When the words are read. While SobStage stays open, a take waiting for
 /// its card is copied once the card is back; read by someone quitting, only
 /// the next time SobStage is opened with the card in. "Will be copied when

@@ -4179,6 +4179,8 @@ Application::CardCopyView Application::getCardCopyView (const juce::String& loca
         case CardCopier::Phase::StillOnComputer:
             out.line = juce::String (cardcopy::describe (v.result, where));
             out.canCopyAgain = v.result.outcome != cardcopy::Outcome::ComputerCopyMissing;
+            if (v.result.outcome == cardcopy::Outcome::DifferentCard)
+                out.copyAgainLabel = cardcopy::kCopyToThisCard;
             break;
     }
 
@@ -4220,6 +4222,27 @@ void Application::copyAgain (const juce::String& localFolder)
 {
     if (cardCopier.copyAgain (localFolder.toStdString()))
         stallReportedFor.erase (localFolder);
+}
+
+int Application::getTakesWaitingForAnotherCard() const
+{
+    // Only with a card seen in the take's card's place: "this card" is the
+    // one in the reader.
+    if (destinationFolder.empty() || cardSeenAtDestination() != true)
+        return 0;
+
+    return cardCopier.takesForAnotherCard (destinationFolder, cardIdentityAtDestination());
+}
+
+void Application::copyWaitingTakesToCardInNow()
+{
+    if (destinationFolder.empty() || isRecording())
+        return;
+
+    if (const int going = cardCopier.copyToCardInNow (destinationFolder); going > 0)
+        noteActivity (ActivityLevel::Started, "Card copy",
+                      going == 1 ? juce::String ("Copying 1 take to the card that's in now.")
+                                 : "Copying " + juce::String (going) + " takes to the card that's in now.");
 }
 
 void Application::setRecordOnComputerThenCopy (bool enabled)

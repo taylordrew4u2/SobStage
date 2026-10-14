@@ -412,7 +412,10 @@ copies it to the card when you press Stop.
   card is in when the copy runs, nothing is written to it: the saved-take
   card says the card in now isn't this take's, that the take is safe on this
   computer, and that it will be copied when its own card is back. To copy it
-  to the card that is in now instead, press **Copy again**. A take recorded
+  to the card that is in now instead, press **Copy to this card** — on the
+  saved-take card, or under the record button, where it copies every take
+  waiting for its own card (earlier takes, and ones found when SobStage
+  started, included). A take recorded
   with the card out is for the card last seen at that save location. If
   SobStage has never seen a card there, the take goes to the first card put
   in, and says so: "Copied to the card that's in now: …. SobStage didn't know

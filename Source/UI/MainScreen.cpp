@@ -98,6 +98,10 @@ MainScreen::MainScreen()
     filesSavingLabel.setColour (juce::Label::textColourId, AppLookAndFeel::meterLow);
     addAndMakeVisible (filesSavingLabel);
 
+    copyToThisCardButton.setColour (juce::TextButton::buttonColourId, AppLookAndFeel::surfaceHigh);
+    copyToThisCardButton.onClick = [this] { if (onCopyToThisCardClicked) onCopyToThisCardClicked(); };
+    addChildComponent (copyToThisCardButton);
+
     noMicsLabel.setText ("Plug in a USB microphone or audio interface to get started.",
                          juce::dontSendNotification);
     noMicsLabel.setJustificationType (juce::Justification::centred);
@@ -434,7 +438,8 @@ int MainScreen::nonCameraHeight() const noexcept
     // measured rather than assumed: they grow to fit their sentence, and a band
     // reserved at one line while three are drawn is content spilling past the
     // bottom of the window.
-    const int kStatusLines = 18 + monitorProblemHeight() + adviceHeight();
+    const int kStatusLines = (copyToThisCardButton.isVisible() ? kCopyToThisCardRow : 18)
+                           + monitorProblemHeight() + adviceHeight();
     constexpr int kFooter      = 40;
 
     // MIX is laid out with the microphones, so it counts towards the wrap.
@@ -854,6 +859,16 @@ void MainScreen::setMonitorProblemText (const juce::String& text)
         requiredHeightChanged();
 }
 
+void MainScreen::setCopyToThisCardVisible (bool visible)
+{
+    // Arrives on every status tick: only a change lays the screen out again.
+    if (copyToThisCardButton.isVisible() == visible)
+        return;
+
+    copyToThisCardButton.setVisible (visible);
+    requiredHeightChanged();
+}
+
 void MainScreen::setNoMicsMessage (bool show)
 {
     if (noMicsLabel.isVisible() == show)
@@ -1139,7 +1154,20 @@ void MainScreen::resized()
     // Elapsed, remaining and the destination all live in the footer now, so
     // nothing is placed here -- the record button is followed straight by the
     // lines that qualify it.
-    filesSavingLabel.setBounds (area.removeFromTop (18));
+    // "Copy to this card" beside the line that says which takes it is for,
+    // in a row tall enough for a button, only while it is shown.
+    if (copyToThisCardButton.isVisible())
+    {
+        auto row = area.removeFromTop (kCopyToThisCardRow);
+        copyToThisCardButton.setBounds (row.removeFromRight (juce::jmin (160, row.getWidth() / 2)));
+        row.removeFromRight (8);
+        filesSavingLabel.setBounds (row);
+    }
+    else
+    {
+        copyToThisCardButton.setBounds ({});
+        filesSavingLabel.setBounds (area.removeFromTop (18));
+    }
 
     // Sized to the message, not to one line. This label carries the reason a
     // microphone would not open -- which rate the interface is running at, that

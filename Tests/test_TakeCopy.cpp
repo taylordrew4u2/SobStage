@@ -1650,6 +1650,9 @@ TEST_CASE (TakeCopyWording_AnAddedFileRefusedByAnotherCardNamesTheTakesOwnCard)
     const auto atQuit = describe (refused, kLocal, kThisSystemsWording, Moment::Quitting);
     REQUIRE (atQuit.find ("the next time you open SobStage with that card in") != std::string::npos);
     REQUIRE (atQuit.find ("Copy again") == std::string::npos);
+    REQUIRE (atQuit.find (kCopyToThisCard) == std::string::npos);
+    REQUIRE (line.find ("To copy the whole take to the card that's in now, choose Copy to this card.")
+             != std::string::npos);
 }
 
 // The bug: a take stopped because this computer's disk filled could not have
@@ -1808,6 +1811,7 @@ TEST_CASE (TakeCopyWording_AFailedCopyAskedAboutAtQuitSaysWhenItReallyGoes)
     REQUIRE (swapped.find (later + " with its own card in") != std::string::npos);
     REQUIRE (swapped.find ("when its own card is back") == std::string::npos);
     REQUIRE (swapped.find ("Copy again") == std::string::npos);
+    REQUIRE (swapped.find (kCopyToThisCard) == std::string::npos);
 
     Result added = pulled;
     added.addedFilesOnly = true;
@@ -1822,7 +1826,7 @@ TEST_CASE (TakeCopyWording_AFailedCopyAskedAboutAtQuitSaysWhenItReallyGoes)
 
     // While SobStage stays open, the saved-take card's words are unchanged.
     REQUIRE (describe (pulled, kLocal).find ("will be copied when the card is back") != std::string::npos);
-    REQUIRE (describe (other, kLocal).find ("choose Copy again") != std::string::npos);
+    REQUIRE (describe (other, kLocal).find ("choose Copy to this card") != std::string::npos);
 }
 
 // The bug: "Quit When Done" waited for a retry of a card put back, the reader
@@ -1931,7 +1935,10 @@ TEST_CASE (TakeCopy_AnotherCardAtTheSamePlaceIsNotWrittenTo)
     const auto line = describe (refused, kLocal);
     REQUIRE (line.find ("isn't the one this take is for") != std::string::npos);
     REQUIRE (line.find ("safe on this computer in " + std::string (kLocal)) != std::string::npos);
-    REQUIRE (line.find ("Copy again") != std::string::npos);
+    // The button it names is the one there is for every such take, under
+    // Record, and on this take's saved-take card.
+    REQUIRE (line.find ("choose Copy to this card.") != std::string::npos);
+    REQUIRE (line.find ("Copy again") == std::string::npos);
 
     // Its own card: copied.
     FakeFs own;

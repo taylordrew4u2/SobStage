@@ -15,6 +15,7 @@
 #include "App/CardCopier.h"
 #include "Platform/NativeCopyFileSystem.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -1089,6 +1090,64 @@ int main()
         check (taken.has_value() && taken->result.outcome == cardcopy::Outcome::Copied,
                "and copies it to the card that is in");
         check (sameOnCard (second, f.card / "2026-10-14_2358_ForCardA"), "every file is on it");
+    }
+
+    // Card A pulled at the interval, the second half recorded for it, and
+    // card B put in. Every take's line said "To copy it to the card that's in
+    // now, choose Copy again" -- a button only the last take's saved-take
+    // card had, and none at all for a take found at launch. "Copy to this
+    // card", under Record, copies every one of them.
+    std::printf ("\n13b. Every take waiting for its own card, copied to the card in now\n");
+    {
+        Fixture f;
+        const auto earlier = f.take ("2026-10-14_2100_Found");
+        std::ofstream (earlier / cardcopy::kMarkerFileName)
+            << cardcopy::markerToJson ({ f.card.string(), {}, "uuid:CARD-A" });
+        const auto first = f.take ("2026-10-14_2200_Second-half");
+        const auto second = f.take ("2026-10-14_2230_Encore");
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:CARD-B";
+        }
+
+        CardCopier copier (f.factory());
+        copier.expect (first.string());
+        copier.expect (second.string());
+        copier.resumePendingIn (f.staging.string()); // found at launch: no saved-take card
+        for (const auto& t : { first, second })
+        {
+            auto job = f.job (t);
+            job.marker.cardIdentity = "uuid:CARD-A";
+            job.stoppedHere = true;
+            copier.start (job);
+        }
+
+        const auto refused = collectResults (copier, 3, 20s);
+        check (refused.size() == 3u
+                   && std::all_of (refused.begin(), refused.end(), [] (const CardCopier::Finished& d)
+                                   { return d.result.outcome == cardcopy::Outcome::DifferentCard; }),
+               "three takes wait for card A, card B in");
+        check (! refused.empty()
+                   && cardcopy::describe (refused.front().result, earlier.string()).find (
+                          std::string ("choose ") + cardcopy::kCopyToThisCard) != std::string::npos,
+               "each is told to choose Copy to this card");
+        check (copier.takesForAnotherCard (f.card.string(), "uuid:CARD-B") == 3,
+               "the button under Record is for all three, the one found at launch too");
+        check (copier.takesForAnotherCard (f.card.string(), "uuid:CARD-A") == 0,
+               "and not offered once their own card is in");
+
+        check (copier.copyToCardInNow (f.card.string()) == 3, "Copy to this card takes all three");
+        check (copier.hasWorkToFinish(), "which a quit waits for");
+        const auto copied = collectResults (copier, 3, 30s);
+        check (copied.size() == 3u
+                   && std::all_of (copied.begin(), copied.end(), [] (const CardCopier::Finished& d)
+                                   { return d.result.outcome == cardcopy::Outcome::Copied; }),
+               "and copies them to the card in now");
+        for (const auto& t : { earlier, first, second })
+            check (sameOnCard (t, f.card / t.filename()), t.filename().string() + " is on card B");
+        check (copier.takesForAnotherCard (f.card.string(), "uuid:CARD-B") == 0
+                   && copier.summary().differentCard == 0,
+               "and none is left waiting for card A");
     }
 
     // The line under Record says a take will be copied when its card is back.

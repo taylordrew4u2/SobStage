@@ -166,6 +166,20 @@ public:
     /// the take was for another (cardcopy::Control::anyCard).
     bool copyAgain (const std::string& localFolder);
 
+    /// Takes for `destinationRoot` waiting for their own card while another
+    /// card is in its place (their last attempt DifferentCard), and not being
+    /// copied now: what "Copy to this card" under Record would copy. Not a
+    /// take whose own card is `identitySeen`, the card in now, when that can
+    /// be told: the next retry copies that one by itself.
+    int takesForAnotherCard (const std::string& destinationRoot, const std::string& identitySeen) const;
+
+    /// "Copy to this card", under Record: every such take goes to the card in
+    /// the reader now, which becomes its card, as "Copy again" makes it for
+    /// the take on the saved-take card. Every take, not only the last one
+    /// stopped: earlier ones, ones found at launch, and the last one once its
+    /// saved-take card is closed have no other way to it. How many go.
+    int copyToCardInNow (const std::string& destinationRoot);
+
     /// The combined videos and podcast copies being made are all finished:
     /// every take started with moreFilesComing goes again, to copy what was
     /// added to its folder and let go of its marker. Only those takes; files

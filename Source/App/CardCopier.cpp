@@ -408,6 +408,64 @@ bool CardCopier::copyAgain (const std::string& localFolder)
     return true;
 }
 
+namespace {
+
+bool waitingForAnotherCard (const cardcopy::Result& last)
+{
+    return last.outcome == cardcopy::Outcome::DifferentCard;
+}
+
+} // namespace
+
+int CardCopier::takesForAnotherCard (const std::string& destinationRoot, const std::string& identitySeen) const
+{
+    const std::lock_guard<std::mutex> lock (state->lock);
+    int takes = 0;
+
+    for (const auto& [id, record] : state->records)
+        if (id != state->inFlight && record.job.marker.destinationRoot == destinationRoot
+            && (record.phase == Phase::StillOnComputer || record.phase == Phase::Waiting)
+            && record.last.has_value() && waitingForAnotherCard (*record.last) && ! record.anyCard
+            && (identitySeen.empty() || record.job.marker.cardIdentity != identitySeen))
+            ++takes;
+
+    return takes;
+}
+
+int CardCopier::copyToCardInNow (const std::string& destinationRoot)
+{
+    int queuedNow = 0;
+    bool needed = false;
+
+    {
+        const std::lock_guard<std::mutex> lock (state->lock);
+
+        if (state->cancelling.load (std::memory_order_acquire) || destinationRoot.empty())
+            return 0;
+
+        for (auto& [id, record] : state->records)
+        {
+            if (id == state->inFlight || record.job.marker.destinationRoot != destinationRoot
+                || ! record.last.has_value() || ! waitingForAnotherCard (*record.last))
+                continue;
+
+            if (record.phase == Phase::StillOnComputer)
+                needed = enqueueLocked (*state, id) || needed;
+            else if (record.phase != Phase::Waiting)
+                continue;
+
+            // Queued already -- by a timed retry -- it takes the card in when
+            // it runs. Asked for, a quit waits for it.
+            record.anyCard = true;
+            record.countsAsWork = true;
+            ++queuedNow;
+        }
+    }
+
+    startWorkerIfNeeded (needed);
+    return queuedNow;
+}
+
 int CardCopier::followUpsFinished()
 {
     int queuedNow = 0;

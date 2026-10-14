@@ -46,7 +46,8 @@ public:
     /// 40%.", "Copied to the card: ..."), and "Copy again" when a copy that
     /// failed can be tried again. Empty `line` hides it. Cheap to call on a
     /// timer: nothing moves unless the line or the button changed.
-    void setCardCopy (const juce::String& line, bool canCopyAgain);
+    void setCardCopy (const juce::String& line, bool canCopyAgain,
+                      const juce::String& buttonText = "Copy again");
 
     /// Why the take went where it did, when the user should hear it ("This
     /// computer is nearly full, so this take is going straight to the

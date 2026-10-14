@@ -153,10 +153,11 @@ void SavedTakePanel::setProblem (const juce::String& text)
     resized();
 }
 
-void SavedTakePanel::setCardCopy (const juce::String& line, bool canCopyAgain)
+void SavedTakePanel::setCardCopy (const juce::String& line, bool canCopyAgain, const juce::String& buttonText)
 {
     const bool lineChanged = mirrorValue.getText() != line || mirrorValue.isVisible() != line.isNotEmpty();
-    const bool buttonChanged = copyAgainButton.isVisible() != canCopyAgain;
+    const bool buttonChanged = copyAgainButton.isVisible() != canCopyAgain
+                            || copyAgainButton.getButtonText() != buttonText;
 
     if (! lineChanged && ! buttonChanged)
         return;
@@ -164,6 +165,9 @@ void SavedTakePanel::setCardCopy (const juce::String& line, bool canCopyAgain)
     mirrorValue.setText (line, juce::dontSendNotification);
     mirrorValue.setVisible (line.isNotEmpty());
     mirrorIsCardCopy = true;
+    // Named as the line names it: "Copy to this card" for a take waiting for
+    // its own card while another is in.
+    copyAgainButton.setButtonText (buttonText);
     copyAgainButton.setVisible (canCopyAgain);
     resized();
 }

@@ -329,6 +329,10 @@ MainComponent::MainComponent (Application& app)
         application.copyAgain (savedTakeFolder);
         refreshSavedTakeCardCopy();
     };
+    mainScreen.onCopyToThisCardClicked = [this] {
+        application.copyWaitingTakesToCardInNow();
+        mainScreen.setCopyToThisCardVisible (false);
+    };
     savedTakePanel.onDone = [this] {
         savedTakePanel.setVisible (false);
         grabKeyboardFocus();
@@ -917,7 +921,7 @@ void MainComponent::refreshSavedTakeCardCopy()
         return;
 
     const auto view = application.getCardCopyView (savedTakeFolder);
-    savedTakePanel.setCardCopy (view.line, view.canCopyAgain);
+    savedTakePanel.setCardCopy (view.line, view.canCopyAgain, view.copyAgainLabel);
 }
 
 void MainComponent::chooseDestinationFolder (std::function<void()> onChosen)
@@ -1184,6 +1188,12 @@ void MainComponent::refreshStatus()
             lastSavingLine = savingLine;
             mainScreen.setFilesBeingSavedText (savingLine);
         }
+
+        // Takes waiting for their own card while another is in: the line
+        // says so, and "Copy to this card" beside it copies every one of them
+        // to the card in now -- not only the take whose saved-take card is up.
+        mainScreen.setCopyToThisCardVisible (! isRecording && quitPendingNote.isEmpty()
+                                             && application.getTakesWaitingForAnotherCard() > 0);
 
         watchTake (isRecording);
 

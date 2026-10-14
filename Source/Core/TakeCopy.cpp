@@ -1227,7 +1227,8 @@ std::string describeWholeTake (const Result& result, const std::string& localFol
 
             return "The card in now isn't the one this take is for, so nothing was copied to it. This take "
                    "is safe on this computer in " + localFolder + ", and will be copied when its own card "
-                   "is back. To copy it to the card that's in now, choose Copy again.";
+                   "is back. To copy it to the card that's in now, choose " + std::string (kCopyToThisCard)
+                 + ".";
         case Outcome::CardFull:
             return "The card is full." + safe;
         case Outcome::CardLocked:
@@ -1292,8 +1293,8 @@ std::string describe (const Result& result, const std::string& localFolder, Word
                    + std::string (quitting ? "the next time you open SobStage with that card in."
                                            : "when that card is back.")
                    + " It's safe on this computer in " + localFolder + "."
-                   + (quitting ? std::string() : std::string (" To copy the whole take to the card that's in "
-                                                              "now, choose Copy again."));
+                   + (quitting ? std::string() : " To copy the whole take to the card that's in now, choose "
+                                                     + std::string (kCopyToThisCard) + ".");
 
         if (result.outcome == Outcome::CardMissing)
             return "This take is on the card, but a file added to it since isn't yet: the card isn't "

@@ -35,6 +35,9 @@
 #            same name, a different size, as a camera card is -- goes in
 #            first: nothing is written to it, and the take waits for the card
 #            last seen at the save location, which it then reaches
+#   copyhere as othercard, with the saved-take card closed: "Copy to this
+#            card" under the record button -- the button the take's line
+#            names -- copies it to the card that is in
 #
 # MMA_E2E_ONLY="quit requit" runs only the scenarios named.
 #
@@ -876,6 +879,65 @@ else
     check_copy_matches othercard "$TAKE"
   else
     fail "othercard: the take did not reach its own card within 40 s"
+  fi
+fi
+[ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
+stop_app
+fi
+
+if want copyhere; then
+# -------------------------------------------------------------------------
+echo
+echo "=== A take waiting for its own card, copied to the one in from under Record ==="
+# The take's line says "To copy it to the card that's in now, choose Copy to
+# this card." That button was only ever on the saved-take card of the take
+# just stopped: closed, or for any earlier take, it was nowhere.
+BEFORE_FAIL=$FAILED
+FATMB="$WORK/copyhere.fatmb"
+echo 7600 > "$FATMB"
+launch copyhere fresh MMA_STALL_CARD_FAT_MB_FILE="$FATMB"
+dismiss_cards
+sleep 2   # the card seen, and remembered, at its save location
+
+mv "$CARD_ROOT" "$CARD_ROOT.users"
+sleep 2
+press_record
+
+if ! TAKE=$(wait_for_new_take "$STAGING"); then
+  fail "copyhere: no take started with the card out"
+else
+  sleep 4
+  press_stop
+  wait_for_log "Saved on this computer" 20 || fail "copyhere: the take was not saved"
+  dismiss_saved
+  wait_for_log "The card isn't plugged in" 20 || fail "copyhere: the copy with the card out was not reported"
+
+  echo 3800 > "$FATMB"
+  mkdir -p "$CARD"
+
+  if wait_for_log "choose Copy to this card" 30; then
+    pass "copyhere: the take waits for its own card, and its line names Copy to this card"
+  else
+    fail "copyhere: the take's line does not name Copy to this card"
+  fi
+
+  # Under the record button, right of the line under it: the record button's
+  # right edge, 28 px below its row.
+  sleep 3
+  click 1083 232
+  if wait_for_log "Copying 1 take to the card that's in now" 10; then
+    pass "copyhere: Copy to this card is under the record button, with the saved-take card closed"
+  else
+    fail "copyhere: no Copy to this card under the record button"
+    command -v import >/dev/null && DISPLAY="$DISPLAY_NUM" import -window root "$WORK/copyhere.png" 2>/dev/null \
+      && echo "        (screen: $WORK/copyhere.png)"
+  fi
+
+  if wait_for_log "Copied .* to the card" 40; then
+    pass "copyhere: the take is copied to the card that is in"
+    check_copy_matches copyhere "$TAKE"
+  else
+    fail "copyhere: the take was not copied to the card that is in within 40 s"
   fi
 fi
 [ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
