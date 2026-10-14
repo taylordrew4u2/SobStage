@@ -32,6 +32,10 @@
  *
  *   MMA_STALL_CARD_FREE_MB  the card reports no more free space than this
  *
+ *   MMA_STALL_CARD_PREFIX  the card, for the two below, when it is not the
+ *                          stalled prefix: a gate that stalls this computer's
+ *                          own folder still has a card that reports itself one
+ *
  *   MMA_STALL_CARD_FAT_MB_FILE  a file holding a size in MB: the card reports
  *                               itself a FAT card of that size, which is what
  *                               tells one card from another (cardIdentityOf).
@@ -96,9 +100,25 @@ const char* trigger()
     return t;
 }
 
-bool underPrefix (const char* path)
+// The card, for its size and room (MMA_STALL_CARD_FREE_MB and
+// MMA_STALL_CARD_FAT_MB_FILE): MMA_STALL_CARD_PREFIX when set, so a gate can
+// stall this computer's own folder (MMA_STALL_PREFIX) while the card still
+// reports itself a card; MMA_STALL_PREFIX otherwise.
+const std::string& cardPrefix()
 {
-    if (path == nullptr || prefix().empty())
+    static const std::string p = [] {
+        const char* v = std::getenv ("MMA_STALL_CARD_PREFIX");
+        std::string s = v != nullptr && *v != 0 ? v : prefix();
+        while (s.size() > 1 && s.back() == '/')
+            s.pop_back();
+        return s;
+    }();
+    return p;
+}
+
+bool underGivenPrefix (const char* path, const std::string& given)
+{
+    if (path == nullptr || given.empty())
         return false;
 
     std::string p (path);
@@ -113,8 +133,11 @@ bool underPrefix (const char* path)
 
     // The exact directory, or something inside it. "RECORDINGS-MIRROR" beside
     // "RECORDINGS" is the local backup and must never be caught by this.
-    return p == prefix() || p.compare (0, prefix().size() + 1, prefix() + "/") == 0;
+    return p == given || p.compare (0, given.size() + 1, given + "/") == 0;
 }
+
+bool underPrefix (const char* path) { return underGivenPrefix (path, prefix()); }
+bool underCardPrefix (const char* path) { return underGivenPrefix (path, cardPrefix()); }
 
 std::mutex& fdMutex() { static std::mutex m; return m; }
 std::set<int>& cardFds() { static std::set<int> s; return s; }
@@ -229,7 +252,7 @@ int capCardFree (int result, const char* path, Stat* out, unsigned long blockSiz
         return v != nullptr && *v != 0 ? std::atoll (v) : -1LL;
     }();
 
-    if (result != 0 || out == nullptr || capMb < 0 || blockSize == 0 || ! underPrefix (path))
+    if (result != 0 || out == nullptr || capMb < 0 || blockSize == 0 || ! underCardPrefix (path))
         return result;
 
     const auto capBlocks = static_cast<unsigned long long> (capMb) * 1024ull * 1024ull / blockSize;
@@ -255,7 +278,7 @@ void fakeFatCard (const char* path, Stat* out)
         return v != nullptr && *v != 0 ? v : nullptr;
     }();
 
-    if (file == nullptr || out == nullptr || out->f_bsize <= 0 || ! underPrefix (path))
+    if (file == nullptr || out == nullptr || out->f_bsize <= 0 || ! underCardPrefix (path))
         return;
 
     static const auto realOpen = real<int (*) (const char*, int, ...)> ("open");

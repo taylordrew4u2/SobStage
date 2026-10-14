@@ -3210,9 +3210,13 @@ void Application::toggleRecording()
             // could not finish the files must not read like a clean one.
             if (capture->didLastStopTimeOut())
             {
+                // The writer's account is about the card. A take recorded on
+                // this computer never touched it: its drive is this one's.
+                const bool recordedHere = currentTakeRoute == TakeRoute::ComputerThenCard;
                 takeCardUnresponsive = true;
-                noteActivity (ActivityLevel::Failed, "Card",
-                              juce::String (capture->getCardWriteProblem()));
+                noteActivity (ActivityLevel::Failed, recordedHere ? "Recording" : "Card",
+                              juce::String (cardcopy::stopTimedOutAccount (recordedHere,
+                                                                           capture->getCardWriteProblem())));
             }
         }
 
@@ -3333,8 +3337,8 @@ void Application::toggleRecording()
                 // combine queued behind it and silently never ran, and
                 // quitting asked to wait for it.
                 noteActivity (ActivityLevel::Warning, "Combined video",
-                              "No combined video was made: the card stopped answering. "
-                              "Whatever reached the card is still in its separate files.");
+                              juce::String (cardcopy::notMadeAfterStopTimedOut (
+                                  currentTakeRoute == TakeRoute::ComputerThenCard, false)));
             }
             else if (plan.hasWork())
             {
@@ -3368,7 +3372,8 @@ void Application::toggleRecording()
         {
             if (takeCardUnresponsive)
                 noteActivity (ActivityLevel::Warning, "Podcast copy",
-                              "No podcast-ready copy was made: the card stopped answering.");
+                              juce::String (cardcopy::notMadeAfterStopTimedOut (
+                                  currentTakeRoute == TakeRoute::ComputerThenCard, true)));
             else if (podcastExporter.start (juce::File (currentSessionFolder), "MIX.wav",
                                             deliveryTarget.toStdString(),
                                             followTakeFolderAfterTheTake()))
@@ -3744,7 +3749,7 @@ void Application::tickCardCopies()
 
         if (! copying.empty() && stallReportedFor.insert (juce::String (copying)).second)
             noteActivity (ActivityLevel::Warning, "Card copy",
-                          juce::String (cardcopy::stalledLine (copying)), true);
+                          juce::String (cardcopy::copyStalledLine (copying)), true);
     }
 }
 
@@ -4167,7 +4172,7 @@ Application::CardCopyView Application::getCardCopyView (const juce::String& loca
 
         case CardCopier::Phase::Copying:
             out.line = cardCopier.msSinceProgress() > CardCopier::kStalledAfterMs
-                ? juce::String (cardcopy::stalledLine (where))
+                ? juce::String (cardcopy::copyStalledLine (where))
                 : juce::String (cardcopy::copyingLine (v.done, v.total));
             break;
 
@@ -4204,7 +4209,7 @@ juce::String Application::getCardCopySummary() const
 
     if (! s.copyingFolder.empty())
         return cardCopier.msSinceProgress() > CardCopier::kStalledAfterMs
-            ? juce::String (cardcopy::stalledLine (s.copyingFolder))
+            ? juce::String (cardcopy::copyStalledLine (s.copyingFolder))
             : "Copying " + juce::File (juce::String (s.copyingFolder)).getFileName() + " to the card: "
                   + juce::String (s.total > 0 ? std::min<uint64_t> (100, s.done * 100 / s.total) : 0) + "%.";
 
@@ -6556,16 +6561,20 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         && isRecording())
     {
         // Built before the take is torn down, while the mirror's path and
-        // whether it was still running are both still known.
-        cardRemovalNotice = CardRemovalNotice::build (currentMirrorFolder.toStdString(),
-                                                      capture->isMirroring());
+        // whether it was still running are both still known. A take recorded
+        // on this computer for a card was refused by this computer's drive:
+        // the card was never written, and there is no backup to point at.
+        const bool recordedHere = currentTakeRoute == TakeRoute::ComputerThenCard;
+        cardRemovalNotice = recordedHere
+            ? CardRemovalNotice::buildForTakeRecordedHere (currentSessionFolder.toStdString())
+            : CardRemovalNotice::build (currentMirrorFolder.toStdString(), capture->isMirroring());
         cardRemovalPending = true;
 
 
         // The ordinary stop path: it finalizes every open file (§6.5 "finalize
         // every open file"), writes session.json and raises the saved-take
         // notice, which is what shows the user whatever did survive.
-        stopReason = "the card stopped accepting writes";
+        stopReason = juce::String (cardcopy::stoppedAcceptingWritesReason (recordedHere));
         toggleRecording();
 
         // The writer's own account when it has one -- a roll-over past 3.9 GB
@@ -6598,7 +6607,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                           + juce::String (cardRemovalNotice.survivingFolder);
         }
 
-        noteActivity (ActivityLevel::Failed, "Card", headline);
+        noteActivity (ActivityLevel::Failed, recordedHere ? "Recording" : "Card", headline);
         return headline;
     }
 
@@ -7512,12 +7521,12 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
             return "Recording stopped, but the files in " + lastSessionFolder
                    + " are empty -- no audio reached the drive.";
 
+        // As the saved-take card beside it says: a take recorded on this
+        // computer for a card is this computer's drive, never "check the card".
         if (takeCardUnresponsive)
-            return "Recording stopped, but the card stopped answering, so the end of the take "
-                   "may be missing from " + lastSessionFolder
-                   + (lastMirrorFolder.isNotEmpty()
-                          ? ". The backup copy is at " + lastMirrorFolder + "."
-                          : juce::String (". Check the card before recording again."));
+            return juce::String (cardcopy::stoppedAnsweringStatusLine (lastTakeCopiesToCard,
+                                                                       lastSessionFolder.toStdString(),
+                                                                       lastMirrorFolder.toStdString()));
 
         if (lastTakeCopiesToCard)
             return "Saved on this computer. Copying to the card.";

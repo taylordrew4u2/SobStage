@@ -470,5 +470,32 @@ bool isOnTheSaveLocationWhileRecording (const std::string& path, TakeRoute route
 /// with its backup copy on this computer (`backupFolder`, when one was kept).
 std::string stoppedAnsweringAtStop (bool recordedHere, const std::string& takeFolder, const std::string& backupFolder);
 
+/// The status line for the moments after such a Stop, as stoppedAnsweringAtStop
+/// says it: for a take recorded here, this computer's drive and where the
+/// take's files are, never "check the card", which it never touched.
+std::string stoppedAnsweringStatusLine (bool recordedHere, const std::string& takeFolder,
+                                        const std::string& backupFolder);
+
+/// The activity list's account of a Stop that could not finish the files in
+/// time. `coordinatorAccount` is the writer's, about the card: kept for a take
+/// recorded straight to it, replaced for one recorded here.
+std::string stopTimedOutAccount (bool recordedHere, const std::string& coordinatorAccount);
+
+/// Why the combined video, or the podcast-ready copy (`podcast`), was not
+/// made after such a Stop: the drive the take was on stopped answering.
+std::string notMadeAfterStopTimedOut (bool recordedHere, bool podcast);
+
+/// Why a take was stopped when the drive it was being written to refused
+/// writes: "the card stopped accepting writes", or for a take recorded here
+/// "this computer's drive stopped accepting writes".
+std::string stoppedAcceptingWritesReason (bool recordedHere);
+
+/// A copy to the card that has not moved for a while (CardCopier::
+/// kStalledAfterMs). Either side may be the one not answering -- the card
+/// being written, or, far less often, this computer's drive being read --
+/// so the card is not blamed outright. stalledLine() is for a card known to
+/// be the one not answering.
+std::string copyStalledLine (const std::string& localFolder);
+
 } // namespace cardcopy
 } // namespace mma

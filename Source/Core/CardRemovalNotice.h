@@ -32,6 +32,12 @@ struct CardRemovalNotice
     /// offered as one -- a copy with a hole in it is worse than no copy,
     /// because the user will trust it.
     static CardRemovalNotice build (const std::string& mirrorFolder, bool mirrorWasRunning);
+
+    /// The same, for a take recorded on this computer to be copied to a card
+    /// afterwards: it is this computer's drive that refused, the card was never
+    /// written, and there is no backup copy to keep switched on. Says where the
+    /// take's files are (`takeFolder`).
+    static CardRemovalNotice buildForTakeRecordedHere (const std::string& takeFolder);
 };
 
 } // namespace mma

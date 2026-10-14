@@ -3,6 +3,7 @@
 #include "Core/MirrorPolicy.h"
 
 #include <algorithm>
+#include <cctype>
 #include <map>
 #include <optional>
 #include <set>
@@ -1712,6 +1713,60 @@ TEST_CASE (TakeCopy_ATakeRecordedHereIsNotOnTheCard)
              != std::string::npos);
     REQUIRE (stoppedAnsweringAtStop (false, onCard, backup).find ("may be missing the same part: " + backup)
              != std::string::npos);
+}
+
+// The bug: only the stop log line and the saved-take card above were made to
+// tell a take recorded here from one on the card. The status line beside the
+// saved-take card, the activity entry from the writer, the combined video and
+// podcast notes, and the reason a take stopped when its drive refused writes
+// all still blamed the card -- which a take recorded here never touched --
+// and sent the user to check it while the drive that failed took the next
+// take. Mutation: any of them worded without the route.
+TEST_CASE (TakeCopyWording_ATakeRecordedHereIsNeverBlamedOnTheCard)
+{
+    const std::string take = "/Users/me/RECORDINGS-MIRROR/2026-10-14_2000_Show";
+    const std::string coordinator = "The card stopped answering while the take was being finished, so the end of "
+                                    "the recording may not have been saved to it.";
+
+    const auto lowered = [] (std::string text)
+    {
+        for (auto& c : text)
+            c = static_cast<char> (std::tolower (static_cast<unsigned char> (c)));
+        return text;
+    };
+
+    for (const auto& line : { stoppedAnsweringStatusLine (true, take, {}),
+                              stopTimedOutAccount (true, coordinator),
+                              notMadeAfterStopTimedOut (true, false),
+                              notMadeAfterStopTimedOut (true, true),
+                              stoppedAcceptingWritesReason (true) })
+    {
+        REQUIRE (line.find ("this computer's drive") != std::string::npos
+                 || line.find ("This computer's drive") != std::string::npos);
+        REQUIRE (lowered (line).find ("card") == std::string::npos);
+    }
+
+    REQUIRE (stoppedAnsweringStatusLine (true, take, {}).find (take) != std::string::npos);
+
+    // Recorded straight to the card, as before.
+    REQUIRE (stoppedAnsweringStatusLine (false, take, {}).find ("Check the card before recording again.")
+             != std::string::npos);
+    REQUIRE (stoppedAnsweringStatusLine (false, take, "/backup/x").find ("The backup copy is at /backup/x.")
+             != std::string::npos);
+    REQUIRE (stopTimedOutAccount (false, coordinator) == coordinator);
+    REQUIRE (notMadeAfterStopTimedOut (false, false).find ("the card stopped answering") != std::string::npos);
+    REQUIRE (stoppedAcceptingWritesReason (false) == "the card stopped accepting writes");
+}
+
+// A copy that stopped moving may be stuck reading this computer's drive as
+// well as writing the card: the card is not blamed outright.
+TEST_CASE (TakeCopyWording_ACopyThatStoppedMovingDoesNotBlameTheCardOutright)
+{
+    const std::string take = "/Users/me/RECORDINGS-MIRROR/2026-10-14_2000_Show";
+    const auto line = copyStalledLine (take);
+    REQUIRE (line.find ("The card stopped answering") == std::string::npos);
+    REQUIRE (line.find ("may have stopped answering") != std::string::npos);
+    REQUIRE (line.find ("safe on this computer in " + take) != std::string::npos);
 }
 
 // Mutation: a take whose file was too big for the card counted as only on

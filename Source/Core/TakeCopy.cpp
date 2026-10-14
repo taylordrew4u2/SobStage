@@ -1047,6 +1047,47 @@ std::string stoppedAnsweringAtStop (bool recordedHere, const std::string& takeFo
                                    : std::string (" Check the card before recording again."));
 }
 
+std::string stoppedAnsweringStatusLine (bool recordedHere, const std::string& takeFolder,
+                                        const std::string& backupFolder)
+{
+    // The card's line sends the user to check the card; a take recorded here
+    // never touched it, and the drive that failed would take the next take.
+    if (recordedHere)
+        return "Recording stopped, but this computer's drive stopped answering, so the end of the take may be "
+               "missing from " + takeFolder + ".";
+
+    return "Recording stopped, but the card stopped answering, so the end of the take may be missing from "
+         + takeFolder
+         + (! backupFolder.empty() ? ". The backup copy is at " + backupFolder + "."
+                                   : std::string (". Check the card before recording again."));
+}
+
+std::string stopTimedOutAccount (bool recordedHere, const std::string& coordinatorAccount)
+{
+    if (recordedHere)
+        return "This computer's drive stopped answering while the take was being finished, so the end of the "
+               "recording may not have been saved.";
+
+    return coordinatorAccount;
+}
+
+std::string notMadeAfterStopTimedOut (bool recordedHere, bool podcast)
+{
+    const std::string what = podcast ? "No podcast-ready copy was made: " : "No combined video was made: ";
+
+    if (recordedHere)
+        return what + "this computer's drive stopped answering."
+             + (podcast ? std::string() : std::string (" Whatever was saved is still in the take's separate files."));
+
+    return what + "the card stopped answering."
+         + (podcast ? std::string() : std::string (" Whatever reached the card is still in its separate files."));
+}
+
+std::string stoppedAcceptingWritesReason (bool recordedHere)
+{
+    return recordedHere ? "this computer's drive stopped accepting writes" : "the card stopped accepting writes";
+}
+
 std::string copyFailedBeforeQuitting (const std::vector<std::pair<Result, std::string>>& failures, Wording wording)
 {
     if (failures.empty())
@@ -1157,6 +1198,12 @@ bool isFailure (Outcome outcome) noexcept
 std::string stalledLine (const std::string& localFolder)
 {
     return "The card stopped answering. This take is safe on this computer in " + localFolder + ".";
+}
+
+std::string copyStalledLine (const std::string& localFolder)
+{
+    return "The copy to the card has stopped moving: the card may have stopped answering. This take is safe "
+           "on this computer in " + localFolder + ".";
 }
 
 std::string waitingLine (int takes)

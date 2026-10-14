@@ -35,6 +35,9 @@
 #            same name, a different size, as a camera card is -- goes in
 #            first: nothing is written to it, and the take waits for the card
 #            last seen at the save location, which it then reaches
+#   herestall this computer's drive stops answering as a take recorded here
+#            is stopped: what is said names this computer's drive, never the
+#            card the take never touched
 #   copyhere as othercard, with the saved-take card closed: "Copy to this
 #            card" under the record button -- the button the take's line
 #            names -- copies it to the card that is in
@@ -880,6 +883,49 @@ else
   else
     fail "othercard: the take did not reach its own card within 40 s"
   fi
+fi
+[ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
+stop_app
+fi
+
+if want herestall; then
+# -------------------------------------------------------------------------
+echo
+echo "=== This computer's drive stops answering at Stop, for a take recorded here ==="
+# The shim's prefix is the take's folder on this computer, not the card: the
+# take's last writes, and its finishing, wait on a drive that has stopped.
+BEFORE_FAIL=$FAILED
+launch herestall fresh MMA_STALL_PREFIX="$WORK/herestall/RECORDINGS-MIRROR" \
+  MMA_STALL_CARD_PREFIX="$WORK/herestall/CARD/RECORDINGS"
+dismiss_cards
+press_record
+
+if ! TAKE=$(wait_for_new_take "$STAGING"); then
+  fail "herestall: no take started in $STAGING"
+else
+  pass "herestall: take started on this computer in $(basename "$TAKE")"
+  sleep 5
+
+  touch "$DEAD"
+  press_stop
+
+  if wait_for_log "This computer's drive stopped answering while the take was being finished" 45; then
+    pass "herestall: the take's finishing is said to have stopped on this computer's drive"
+  else
+    fail "herestall: no 'This computer's drive stopped answering while the take was being finished' within 45 s"
+  fi
+
+  # The stop's own line comes once the take is finished: everything said by
+  # then is looked at.
+  wait_for_log "Recording was stopped\|Recording stopped" 60 || fail "herestall: the stop was never logged"
+  sleep 2
+  if grep -q "The card stopped answering\|the card stopped answering\|the card stopped accepting" "$LOG"; then
+    fail "herestall: the card was blamed for a take that never touched it:"
+    grep "card stopped" "$LOG" | tail -3 | sed 's/^/        /'
+  else
+    pass "herestall: nothing blames the card"
+  fi
+  rm -f "$DEAD"
 fi
 [ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
 stop_app
