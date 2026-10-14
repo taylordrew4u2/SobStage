@@ -1,6 +1,7 @@
 #include "App/TakeCombiner.h"
 #include "Core/SessionWriter.h"
 #include "Core/TakeCopy.h"
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <cstdio>
@@ -397,6 +398,44 @@ int main (int argc, char** argv)
     if (! root.getChildFile ("successful-output.mov").existsAsFile())
         return fail ("a zero ffmpeg exit lost its completed output");
 
+    // Windows refuses a rename while an antivirus or indexing service has the
+    // just-closed file open -- straight after ffmpeg exits. One refusal threw
+    // the finished movie away and reported the camera as not combined.
+    {
+        mma::CombinedTakePlan busyPlan;
+        busyPlan.jobs.push_back ({ "success-input.mov", "MIX.wav", "busy-output.mov", 24, 0.0 });
+
+        auto refusals = std::make_shared<std::atomic<int>> (0);
+        mma::TakeCombiner busyCombiner;
+        busyCombiner.setFfmpegOverride (executable);
+        busyCombiner.setRenameForTesting ([refusals] (const juce::File& from, const juce::File& to)
+        {
+            // A scanner holding the file for the first two looks.
+            if (refusals->fetch_add (1) < 2)
+                return false;
+            return from.moveFileTo (to);
+        });
+
+        if (! busyCombiner.start (root, busyPlan))
+            return fail ("the combine whose file is briefly held did not start");
+
+        const auto busyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds (5);
+        while (busyCombiner.isRunning() && std::chrono::steady_clock::now() < busyDeadline)
+            std::this_thread::sleep_for (std::chrono::milliseconds (10));
+
+        const auto busyStatus = busyCombiner.getStatus();
+        if (busyCombiner.isRunning() || busyStatus.problem.isNotEmpty()
+            || ! busyStatus.written.contains ("busy-output.mov"))
+            return fail ("a finished combine whose rename was refused for a moment was reported as failed");
+
+        if (! root.getChildFile ("busy-output.mov").existsAsFile()
+            || root.getChildFile (".busy-output.mov").exists())
+            return fail ("a finished combine whose rename was refused for a moment was thrown away");
+
+        if (refusals->load() != 3)
+            return fail ("the rename was not tried again until it went");
+    }
+
     // A take stopped while the previous take is still being combined must get
     // its combined file too. start() used to refuse it while a run was in
     // flight, the app ignored the refusal, and nothing retried: the second
@@ -613,6 +652,6 @@ int main (int argc, char** argv)
     if (checkSplitMixReachesTheCombinedFile (root) != 0)
         return 1;
 
-    std::printf ("ALL CHECKS PASSED (35 checks, 0 failing)\n");
+    std::printf ("ALL CHECKS PASSED (36 checks, 0 failing)\n");
     return 0;
 }

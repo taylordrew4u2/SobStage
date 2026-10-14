@@ -157,6 +157,9 @@ bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePla
     next->availableBytes = availableBytesQuery != nullptr
         ? availableBytesQuery
         : [] (const std::string& path) { return availableBytesForRecording (path); };
+    next->rename = renameForTesting != nullptr
+        ? renameForTesting
+        : [] (const juce::File& from, const juce::File& to) { return from.moveFileTo (to); };
 
     {
         const std::lock_guard<std::mutex> lock (next->statusLock);
@@ -487,14 +490,29 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
         return Attempt::Failed;
     }
 
-    if (const auto finishedFile = workingNow(); ! finishedFile.moveFileTo (outputNow()))
+    // A finished movie is minutes of work: its rename is tried again for a
+    // few seconds before it is given up on. Windows refuses a rename while an
+    // antivirus or indexing service has the just-closed file open, which is
+    // straight after ffmpeg exits; one refusal used to throw the movie away
+    // and report the camera as not combined. Quitting still wins.
+    for (int attempt = 0;; ++attempt)
     {
-        finishedFile.deleteFile();
-        problem = "The combined file couldn't be given its name.";
-        return Attempt::Failed;
+        if (state.rename (workingNow(), outputNow()))
+            return Attempt::Written;
+
+        if (attempt + 1 >= kRenameAttempts || state.cancelling.load (std::memory_order_acquire))
+            break;
+
+        std::this_thread::sleep_for (std::chrono::milliseconds (kRenameRetryMs));
     }
 
-    return Attempt::Written;
+    workingNow().deleteFile();
+
+    if (state.cancelling.load (std::memory_order_acquire))
+        return Attempt::Cancelled;
+
+    problem = "The combined file couldn't be given its name.";
+    return Attempt::Failed;
 }
 
 void TakeCombiner::run (std::shared_ptr<RunState> state,

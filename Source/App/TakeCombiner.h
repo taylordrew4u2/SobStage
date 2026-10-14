@@ -92,6 +92,19 @@ public:
         availableBytesQuery = std::move (query);
     }
 
+    /// Test seam: how the finished file is given its name (File::moveFileTo).
+    void setRenameForTesting (std::function<bool (const juce::File& from, const juce::File& to)> rename)
+    {
+        renameForTesting = std::move (rename);
+    }
+
+    /// How many times, and how far apart, the finished file's rename from its
+    /// hidden working name is tried. Antivirus and indexing services open a
+    /// file for a moment as it is closed, and Windows refuses a rename in
+    /// that moment -- straight after ffmpeg exits, which is exactly when.
+    static constexpr int kRenameAttempts = 20;
+    static constexpr int kRenameRetryMs = 250;
+
     /// Requests that any ffmpeg child stop. Returns immediately; the detached
     /// worker owns its remaining cleanup and cannot refer back to this object.
     void cancel() noexcept;
@@ -130,6 +143,7 @@ private:
     juce::uint64 lastRun = 0;
     bool heldForRecording = false;
     std::function<std::optional<uint64_t> (const std::string&)> availableBytesQuery;
+    std::function<bool (const juce::File&, const juce::File&)> renameForTesting;
 
     juce::String probeFfmpeg();
 
@@ -152,6 +166,9 @@ private:
 
         /// Free space where a combine would write, asked before each one.
         std::function<std::optional<uint64_t> (const std::string&)> availableBytes;
+
+        /// Gives the finished file its name.
+        std::function<bool (const juce::File&, const juce::File&)> rename;
 
         mutable std::mutex statusLock;
         Status status;
