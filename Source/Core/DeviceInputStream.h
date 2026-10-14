@@ -173,7 +173,9 @@ public:
     ///
     /// Held room is given back once the device has run at a block at most
     /// half of it for kHeldRoomReleaseSeconds: the headphones should not
-    /// carry latency held for a size that may never come back. Kept for good,
+    /// carry latency held for a size that may never come back. Only once:
+    /// a device that grows again after that keeps its room from then on
+    /// (see kHeldRoomReleaseSeconds). Kept for good from the first growth,
     /// as it was, one excursion to 1024 frames and back left that microphone
     /// 20 ms later than the rest in the headphones for the rest of the
     /// session: the talker heard themselves late, and their voice reached
@@ -220,12 +222,17 @@ public:
     /// at most -34 dBFS, about -52 dBFS at the ears at the default headphone
     /// volume.
     ///
-    /// A device that goes back to a block whose room was given back pays a
-    /// gap for it, as any growth does, so each time it does, its room is
-    /// kept twice as long before it goes again, up to
-    /// kHeldRoomReleaseMaxSeconds.
+    /// Given back once. A device that grows again after its room was given
+    /// back pays a gap for it, as any growth past the room held does (about
+    /// 23 ms for 64 to 1156, in the headphones and, where it is the slowest
+    /// device, in its track; counted as lost audio either way), and it has
+    /// shown that it does come back to a larger block: from then on its room
+    /// is kept for as long as the stream is open, and the channel stays that
+    /// much later in the headphones (the slowest-microphone figure says
+    /// so). A device another app moves between two sizes every few minutes
+    /// therefore pays two gaps in all -- its first growth and its first
+    /// return -- rather than one at every return.
     static constexpr double kHeldRoomReleaseSeconds = 2.0;
-    static constexpr double kHeldRoomReleaseMaxSeconds = 64.0;
     static constexpr float kQuietLevel = 0.01f;
     static constexpr double kQuietLeadMs = 5.0;
 
@@ -390,16 +397,17 @@ private:
     std::atomic<size_t> deviceBlockSamples { 0 };
 
     // Producer-owned: samples delivered since a pair of deliveries last
-    // reached the device's recent block, the largest pair among them, and
-    // how many it takes before the room goes (kHeldRoomReleaseSeconds,
-    // doubled each time the device goes back to a block whose room was
-    // given back); and, published, that recent block -- the device block
-    // the consumer holds room for. It rises with deviceBlockSamples, and
-    // falls to the smaller size once the device has delivered at most half
-    // of it for that long.
+    // reached the device's recent block, the largest pair among them, how
+    // many it takes before the room goes (kHeldRoomReleaseSeconds), and
+    // whether it never goes again (the device grew after its room was given
+    // back); and, published, that recent block -- the device block the
+    // consumer holds room for. It rises with deviceBlockSamples, and falls
+    // to the smaller size once the device has delivered at most half of it
+    // for that long, unless the room is kept.
     uint64_t smallerRunSamples = 0;
     size_t smallerRunLargest = 0;
     uint64_t releaseAfterSamples = 96000;
+    bool keepHeldRoom = false;
     std::atomic<size_t> recentBlockSamples { 0 };
     std::atomic<size_t> largestPullSamples { 0 };
     size_t usableCapacity() const noexcept;

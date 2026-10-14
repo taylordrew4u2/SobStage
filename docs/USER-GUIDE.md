@@ -241,11 +241,16 @@ files really are empty and the card says so instead of calling it saved.
   first quiet moment, it catches up with the others, and the delay shown
   follows it. Its track gets the same few milliseconds of silence in that
   quiet moment, never in the middle of what someone is saying, so the
-  tracks stay lined up. The figure includes a small safety margin, the same
-  for every microphone: about 5 ms at the smallest buffer. It lets a
-  computer that is busy for a moment hand a microphone's sound over a few
-  milliseconds late without a click or a gap in your headphones or the
-  recording.
+  tracks stay lined up. That happens once: if something moves the
+  microphone to the larger buffer again after that, the move costs a short
+  gap of about 20 ms in your headphones, and usually in that microphone's
+  track too, which the app counts as a dropout; from then on the microphone
+  keeps the larger delay for as long as the app has it open, so later moves
+  cost nothing. The delay shown stays up with it. The figure includes a small
+  safety margin, the same for every microphone: about 5 ms at the smallest
+  buffer. It lets a computer that is busy for a moment hand a microphone's
+  sound over a few milliseconds late without a click or a gap in your
+  headphones or the recording.
 
   `session.json` records how each device was lined up: its delay
   (`inputLatencyFrames`), the buffer it really ran at (`ioBlockFrames`), how

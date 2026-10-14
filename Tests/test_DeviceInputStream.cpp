@@ -1538,7 +1538,8 @@ TEST_CASE (DeviceInputStream_AnIoSizeTheDeviceRanAtBeforeIsAbsorbedWithoutAGap)
     // the room is never given back in that time either (it is only given back
     // at a quiet moment: see ...RoomHeldForALargerBlockIsGivenBackAtAQuietMoment,
     // where the cost of a later growth is the one gap or shift any growth
-    // has).
+    // has, and ...ADeviceMovedEveryFewMinutesPaysTwoGapsInAll, where a quiet
+    // device pays that once and then keeps its room).
     const auto r = runBlockSwitches ({ { 0.0, 64 }, { 5.0, 1156 }, { 10.0, 64 }, { 135.0, 1156 },
                                        { 140.0, 512 }, { 145.0, 1156 } },
                                      150.0, 6.0, { 7.0, 12.0, 70.0, 134.0, 137.0, 142.0, 149.0 });
@@ -1990,16 +1991,16 @@ TEST_CASE (DeviceInputStream_RoomIsKeptForABlockOnlyALittleLarger)
     REQUIRE (brief.heldAtEnd == 1156u);
 }
 
-TEST_CASE (DeviceInputStream_ADeviceThatKeepsGoingBackToALargerBlockKeepsItsRoomLonger)
+TEST_CASE (DeviceInputStream_ADeviceThatGoesBackToALargerBlockKeepsItsRoomForGood)
 {
     // A growth past the room held costs a gap (the device holds its audio
     // that much longer), and giving the room back means the next growth
     // costs one again. A device switching between 1156 and 64 every three
     // seconds -- another app opening and closing it -- had its room given
     // back two seconds into every spell at 64 and paid a gap every six
-    // seconds, enough to step the buffer ladder. Each return to a block
-    // whose room was given back doubles how long it is kept next time, so
-    // it pays twice: the first growth, and the first return.
+    // seconds, enough to step the buffer ladder. Once it has grown again
+    // after its room was given back, the room is kept, so it pays twice:
+    // the first growth, and the first return.
     std::vector<std::pair<double, int>> toggling;
     for (int i = 0; i < 10; ++i)
         toggling.push_back ({ 1.0 + 3.0 * i, i % 2 == 0 ? 1156 : 64 });
@@ -2008,6 +2009,35 @@ TEST_CASE (DeviceInputStream_ADeviceThatKeepsGoingBackToALargerBlockKeepsItsRoom
 
     REQUIRE (r.releases == 1u);
     REQUIRE (r.lossEvents == 2u);
+    REQUIRE (r.heldAtEnd == 1156u);
+}
+
+TEST_CASE (DeviceInputStream_ADeviceMovedEveryFewMinutesPaysTwoGapsInAll)
+{
+    // The same, slower: a call app moves the device to 1156 for two seconds
+    // every 30 s, or every two minutes, in a quiet room. Keeping the room
+    // twice as long at each return, up to 64 s, still gave it back between
+    // every pair of moves, and every return cost a counted gap of about
+    // 23 ms in the headphones and in the track: 5 gaps in five minutes at
+    // 30 s, 10 in twenty minutes at two minutes (1, when room was never
+    // given back at all). Now 2: the first growth and the first return.
+    for (const double period : { 30.0, 120.0 })
+    {
+        const double total = period * 10.0;
+        std::vector<std::pair<double, int>> moves;
+
+        for (int i = 0; i < 10; ++i)
+        {
+            moves.push_back ({ 1.0 + period * i, 1156 });
+            moves.push_back ({ 3.0 + period * i, 64 });
+        }
+
+        const auto r = runIoSizeSchedule (moves, 0.0, total);
+
+        REQUIRE (r.releases == 1u);
+        REQUIRE (r.lossEvents == 2u);
+        REQUIRE (r.heldAtEnd == 1156u);
+    }
 }
 
 TEST_CASE (DeviceInputStream_AStreamsPlaceInTimeIsItsOwnDevicesBlock)

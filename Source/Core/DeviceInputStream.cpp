@@ -175,6 +175,7 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
     largestPullSamples.store (0, std::memory_order_relaxed);
     rate = sampleRate > 0.0 ? sampleRate : 48000.0;
     releaseAfterSamples = static_cast<uint64_t> (rate * kHeldRoomReleaseSeconds);
+    keepHeldRoom = false;
 
     // §5.4: this is monitor latency, so it is one pull and a few milliseconds
     // of late delivery rather than a fraction of the ring. The remaining
@@ -265,8 +266,8 @@ void DeviceInputStream::pushBlock (const float* samples, int numSamples) noexcep
 
     // And the block it runs at now, which is what the consumer holds room
     // for: the same, except that it comes back down once the device has run
-    // at no more than half of it for a while (kHeldRoomReleaseSeconds at
-    // first). Half, so a device whose deliveries merely vary a little -- 470
+    // at no more than half of it for kHeldRoomReleaseSeconds -- the first
+    // time. Half, so a device whose deliveries merely vary a little -- 470
     // and 471, say -- never has its room taken back and grown again by a
     // sample at a time. A single large delivery is a pair with the smaller
     // one either side of it, so a backlog handed over in one piece neither
@@ -275,16 +276,17 @@ void DeviceInputStream::pushBlock (const float* samples, int numSamples) noexcep
     {
         if (pair > recent)
         {
-            // Back up to a block whose room it had stopped holding: this
-            // device does come back to it, and each time it does, the growth
-            // costs a gap, as any growth past the room held does. So the room
-            // is kept twice as long before it goes next time. Without this a
-            // device another app switched between 1156 and 64 every three
-            // seconds paid a gap every six, ten a minute, which steps the
-            // buffer ladder; now it pays twice, and then never again.
+            // Back up after its room was given back: this device does come
+            // back to a larger block, and the growth has just cost a gap, as
+            // any growth past the room held does -- in the headphones, and in
+            // its track where it is the slowest device, counted as lost
+            // audio. Giving the room back again would charge that gap at
+            // every return, so from here on it is kept for as long as the
+            // stream is open. Kept twice as long each time instead, up to
+            // 64 s, a device another app moved every two minutes still paid
+            // a gap every time: ten in twenty minutes.
             if (recent > 0 && recent < largestBlock)
-                releaseAfterSamples = std::min (releaseAfterSamples * 2,
-                                                static_cast<uint64_t> (rate * kHeldRoomReleaseMaxSeconds));
+                keepHeldRoom = true;
 
             recentBlockSamples.store (pair, std::memory_order_relaxed);
         }
@@ -292,7 +294,7 @@ void DeviceInputStream::pushBlock (const float* samples, int numSamples) noexcep
         smallerRunSamples = 0;
         smallerRunLargest = 0;
     }
-    else
+    else if (! keepHeldRoom)
     {
         smallerRunSamples += static_cast<uint64_t> (numSamples);
         smallerRunLargest = std::max (smallerRunLargest, pair);
@@ -622,8 +624,8 @@ void DeviceInputStream::pullBlock (float* destination, int numSamples) noexcept
     // for late audio, so none of the block is skipped. A block no larger than
     // what is held (a device going back to a size it ran at before) changes
     // nothing at all: the headroom was kept for it -- until the device has
-    // run at no more than half of it for a while (kHeldRoomReleaseSeconds at
-    // first), when it is given back (releaseHeldRoom).
+    // run at no more than half of it for kHeldRoomReleaseSeconds, when it is
+    // given back (releaseHeldRoom), once.
     const auto lastPush = static_cast<size_t> (std::max (0, lastPushSamples.load (std::memory_order_acquire)));
     {
         const auto block = recentBlockSamples.load (std::memory_order_relaxed);
