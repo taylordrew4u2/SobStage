@@ -294,7 +294,6 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
                                                  juce::String& problem)
 {
     const auto video = sessionFolder.getChildFile (juce::String (job.videoFile));
-    const auto output = sessionFolder.getChildFile (juce::String (job.outputFile));
 
     // The combined file where the folder is now, for clearing away a file
     // that must not be left: a folder renamed mid-copy has it under its new
@@ -359,6 +358,7 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
    #if defined (MMA_NATIVE_MOVIE_COMBINER)
     if (ffmpeg == kBuiltInCombiner)
     {
+        const auto output = sessionFolder.getChildFile (juce::String (job.outputFile));
         const auto why = combineMovieWithSound (video.getFullPathName().toStdString(),
                                                 audioPaths,
                                                 output.getFullPathName().toStdString(),
@@ -409,11 +409,22 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
         return Attempt::Failed;
     }
 
+    // Written under a hidden working name and renamed into place only once
+    // ffmpeg has finished, as the Mac's own combine does. A copy to the card
+    // that lists the folder meanwhile never sees half a movie: on Windows it
+    // could not even open one ffmpeg is still writing, and called the take's
+    // folder gone.
+    const auto workingName = "." + juce::String (job.outputFile);
+    const auto workingNow = [followedFolder, &sessionFolder, &workingName]
+    {
+        return folderNow (followedFolder, sessionFolder).getChildFile (workingName);
+    };
+
     const auto args = buildFfmpegArguments (ffmpeg.toStdString(),
                                             video.getFullPathName().toStdString(),
                                             audioPaths,
                                             concatList.getFullPathName().toStdString(),
-                                            output.getFullPathName().toStdString(),
+                                            sessionFolder.getChildFile (workingName).getFullPathName().toStdString(),
                                             job.audioLeadSeconds,
                                             job.audioBitDepth);
 
@@ -433,7 +444,7 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
     // can poll the child in bounded steps and honour shutdown promptly.
     if (! process.start (argv, 0))
     {
-        outputNow().deleteFile();
+        workingNow().deleteFile();
         problem = "ffmpeg wouldn't start.";
         return Attempt::Failed;
     }
@@ -461,7 +472,7 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
             (void) process.waitForProcessToFinish (1000);
         }
 
-        outputNow().deleteFile();
+        workingNow().deleteFile();
         return state.cancelling.load (std::memory_order_acquire) ? Attempt::Cancelled
                                                                  : Attempt::Yielded;
     }
@@ -471,8 +482,15 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
     // already-reaped child and make JUCE replace the real status.
     if (process.getExitCode() != 0)
     {
-        outputNow().deleteFile();
+        workingNow().deleteFile();
         problem = "ffmpeg stopped before it made a complete file.";
+        return Attempt::Failed;
+    }
+
+    if (const auto finishedFile = workingNow(); ! finishedFile.moveFileTo (outputNow()))
+    {
+        finishedFile.deleteFile();
+        problem = "The combined file couldn't be given its name.";
         return Attempt::Failed;
     }
 
