@@ -257,6 +257,17 @@ bool CardCopier::hasWorkToFinish() const
 
 bool CardCopier::isAddingFilesOnlyLocked (const Record& record)
 {
+    // A copy that takes the card in the reader now -- "Copy to this card",
+    // "Copy again", or the next card after a file too big -- copies the whole
+    // take into a fresh folder there, whatever its last attempt found on the
+    // take's own card. So does anything after "another card is in": the take
+    // is on a card, but not on the one in hand. Said as a file added since,
+    // a quit then read "That take is on the card already" about a card that
+    // held none of it yet.
+    if (record.anyCard || record.job.marker.takeNextCard
+        || (record.last.has_value() && record.last->outcome == cardcopy::Outcome::DifferentCard))
+        return false;
+
     return record.resync
         || (record.last.has_value() && cardcopy::isFailure (record.last->outcome) && record.last->addedFilesOnly);
 }

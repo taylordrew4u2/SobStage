@@ -1033,6 +1033,58 @@ int main()
                "and the status line says so");
     }
 
+    // A take on card A whose combined video then finds card B in: "Copy to
+    // this card" copies the whole take to B. While that copy runs, a quit was
+    // told "That take is on the card already" -- of B, which held none of it.
+    std::printf ("\n12b. Copy to this card, for a take already on another card\n");
+    {
+        Fixture f;
+        const auto local = f.take ("2026-10-14_2352_Moved");
+        const auto cardRoot = f.card.parent_path();
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:CARD-A";
+        }
+
+        CardCopier copier (f.factory());
+        auto job = f.job (local, true);
+        job.marker.cardIdentity = "uuid:CARD-A";
+        copier.start (job);
+        const auto first = waitForResult (copier, 15s);
+        check (first.has_value() && first->result.outcome == cardcopy::Outcome::Copied, "the take is copied to card A");
+
+        writeBytes (local / "V01_Cam_with-sound.mov", 1u << 20, 12);
+        fs::rename (cardRoot, f.base / "CARD-A");
+        fs::create_directories (f.card);
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:CARD-B";
+        }
+
+        copier.followUpsFinished();
+        const auto r = waitForResult (copier, 15s);
+        check (r.has_value() && r->result.outcome == cardcopy::Outcome::DifferentCard,
+               "its combined video finds card B in, not its own");
+
+        // The whole take goes to B, held part way through its first file.
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->blockWritesTo = "01_Alice.wav";
+            f.gate->afterWrites = 0;
+            f.gate->writesSoFar = 0;
+            f.gate->open = false;
+        }
+        check (copier.copyToCardInNow (job.marker.destinationRoot) == 1, "Copy to this card takes it");
+        check (f.gate->waitUntilBlocked (15s), "and the whole take is being copied to card B");
+        check (copier.takesToFinish() == 1 && copier.takesAddingFilesToFinish() == 0,
+               "a quit now counts it as a take still being copied, not as a file added to one on the card");
+
+        f.gate->release();
+        const auto done = waitForResult (copier, 20s);
+        check (done.has_value() && done->result.outcome == cardcopy::Outcome::Copied, "card B then holds the take");
+        check (sameOnCard (local, f.card / "2026-10-14_2352_Moved"), "every file of it");
+    }
+
     // The place a card mounts is not the card. A take armed for one card,
     // stopped with another at the same place -- a USB stick given the card
     // reader's drive letter -- waits for its own, and goes to it when it is
