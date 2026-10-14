@@ -595,8 +595,8 @@ int main()
 
     std::printf ("\n7. A file-size refusal from the system itself\n");
     {
-       #if ! defined(_WIN32)
         Fixture f;
+       #if ! defined(_WIN32)
         const auto local = f.take ("2026-10-14_2330_Big");
 
         rlimit old {};
