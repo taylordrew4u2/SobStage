@@ -15,6 +15,7 @@
 #else
  #include <dirent.h>
  #include <fcntl.h>
+ #include <sys/mman.h>
  #include <sys/stat.h>
  #include <sys/types.h>
  #include <unistd.h>
@@ -238,6 +239,26 @@ bool fullSync (int fd)
    #endif
     return ::fsync (fd) == 0;
 }
+
+#if defined(__APPLE__)
+// The file's pages dropped from memory. msync with MS_INVALIDATE on a
+// mapping of the whole file is how a Mac lets a process do that; the file
+// was flushed before this, so nothing unwritten is lost.
+void evictFromMemory (int fd)
+{
+    struct stat info {};
+    if (::fstat (fd, &info) != 0 || info.st_size <= 0)
+        return;
+
+    const auto length = static_cast<size_t> (info.st_size);
+    void* mapped = ::mmap (nullptr, length, PROT_READ, MAP_SHARED, fd, 0);
+    if (mapped == MAP_FAILED)
+        return;
+
+    (void) ::msync (mapped, length, MS_INVALIDATE);
+    ::munmap (mapped, length);
+}
+#endif
 
 struct PosixReader : cardcopy::CopyFileSystem::Reader
 {
@@ -609,6 +630,12 @@ std::unique_ptr<cardcopy::CopyFileSystem::Reader> NativeCopyFileSystem::openRead
     if (bypassCache)
     {
        #if defined(__APPLE__)
+        // F_NOCACHE alone is not enough: a Mac serves an uncached read from
+        // any page it still holds, for coherency, and the pages just written
+        // are still held after the flush. Those are thrown away first, so the
+        // read has to come from the card itself and a card that dropped or
+        // garbled the write is caught.
+        evictFromMemory (fd);
         (void) ::fcntl (fd, F_NOCACHE, 1);
        #elif defined(POSIX_FADV_DONTNEED)
         // The file was flushed before this, so its pages here are clean and
@@ -647,6 +674,12 @@ std::unique_ptr<cardcopy::CopyFileSystem::Writer> NativeCopyFileSystem::createNe
         result = fromErrno (errno);
         return nullptr;
     }
+
+   #if defined(__APPLE__)
+    // Written past this computer's memory, so what the read-back finds is
+    // not a copy of this write still held here.
+    (void) ::fcntl (fd, F_NOCACHE, 1);
+   #endif
 
     auto writer = std::make_unique<PosixWriter>();
     writer->fd = fd;

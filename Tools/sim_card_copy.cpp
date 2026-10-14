@@ -30,7 +30,11 @@
 #include <vector>
 
 #if ! defined(_WIN32)
+ #include <fcntl.h>
+ #include <sys/mman.h>
  #include <sys/resource.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
 #endif
 
 using namespace mma;
@@ -310,6 +314,48 @@ bool workingFilesOn (const fs::path& folder)
             return true;
     return false;
 }
+
+#if ! defined(_WIN32)
+/// How many of the file's pages this computer holds in memory right now
+/// (mincore), or -1 when it cannot be told.
+long residentPages (const std::string& path)
+{
+    const int fd = ::open (path.c_str(), O_RDONLY);
+    if (fd < 0)
+        return -1;
+
+    struct stat info {};
+    if (::fstat (fd, &info) != 0 || info.st_size <= 0)
+    {
+        ::close (fd);
+        return -1;
+    }
+
+    const auto length = static_cast<size_t> (info.st_size);
+    void* mapped = ::mmap (nullptr, length, PROT_READ, MAP_SHARED, fd, 0);
+    ::close (fd);
+    if (mapped == MAP_FAILED)
+        return -1;
+
+    const auto page = static_cast<size_t> (::sysconf (_SC_PAGESIZE));
+   #if defined(__APPLE__)
+    std::vector<char> held ((length + page - 1) / page);
+   #else
+    std::vector<unsigned char> held ((length + page - 1) / page);
+   #endif
+
+    long count = -1;
+    if (::mincore (mapped, length, held.data()) == 0)
+    {
+        count = 0;
+        for (auto h : held)
+            count += (h & 1) != 0 ? 1 : 0;
+    }
+
+    ::munmap (mapped, length);
+    return count;
+}
+#endif
 
 } // namespace
 
@@ -659,6 +705,42 @@ int main()
                    && done[1].result.outcome == cardcopy::Outcome::Copied,
                "both reach the card");
         check (! fs::exists (f.card / "2026-10-14_1800_AlreadyCopied"), "a take with no marker is left alone");
+    }
+
+    std::printf ("\n10. The read-back reads the card, not this computer's memory\n");
+    {
+       #if ! defined(_WIN32)
+        // A card that dropped or garbled a write is caught only if the
+        // read-back reaches it. Pages of the file still held in memory from
+        // writing it are what an uncached read on a Mac is served instead,
+        // so none may be held by the time the read-back starts.
+        Fixture f;
+        NativeCopyFileSystem disk;
+        const auto path = (f.card / ".readback.bin.sobcopy").string();
+
+        cardcopy::FsResult r;
+        auto writer = disk.createNew (path, r);
+        std::string block (8u << 20, '\0');
+        std::mt19937 rng (5);
+        for (auto& c : block)
+            c = static_cast<char> (rng());
+        check (writer != nullptr && writer->write (block.data(), block.size()).ok()
+                   && writer->syncAndClose().ok(), "8 MB written and flushed");
+        writer.reset();
+
+        auto reader = disk.openRead (path, true, r);
+        const auto held = residentPages (path);
+        std::printf ("  [measured] pages of it held in memory as the read-back starts: %ld\n", held);
+        check (reader != nullptr && held == 0, "none of it is held in memory when the read-back starts");
+
+        std::string back (block.size(), '\0');
+        size_t got = 0, total = 0;
+        while (reader != nullptr && reader->read (back.data() + total, back.size() - total, got).ok() && got > 0)
+            total += got;
+        check (total == block.size() && back == block, "and what is read back is what was written");
+       #else
+        check (true, "(Windows reads back with FILE_FLAG_NO_BUFFERING, which never reads its cache)");
+       #endif
     }
 
     std::printf ("\n%s (%d checks, %d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILED", checks, failures);
