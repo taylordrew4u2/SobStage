@@ -1491,6 +1491,45 @@ TEST_CASE (TakeCopyWording_ACopyThatFailedBeforeQuittingSaysWhereTheTakeIs)
     REQUIRE (two.find ("Late: The card isn't plugged in.") != std::string::npos);
 }
 
+// The bug: asked beside "Quit Anyway", a take waiting for its card "will be
+// copied when the card is back" -- which, once the app has quit, it is not:
+// only the next time SobStage is opened with the card in. Mutation: the quit
+// question worded as the saved-take card is while the app stays open.
+TEST_CASE (TakeCopyWording_AFailedCopyAskedAboutAtQuitSaysWhenItReallyGoes)
+{
+    const std::string later = "the next time you open SobStage";
+
+    Result pulled;
+    pulled.outcome = Outcome::CardMissing;
+    const auto missing = copyFailedBeforeQuitting ({ { pulled, kLocal } });
+    REQUIRE (missing.find ("The card isn't plugged in.") != std::string::npos);
+    REQUIRE (missing.find ("safe on this computer in " + std::string (kLocal)) != std::string::npos);
+    REQUIRE (missing.find (later + " with the card in") != std::string::npos);
+    REQUIRE (missing.find ("when the card is back") == std::string::npos);
+
+    Result other;
+    other.outcome = Outcome::DifferentCard;
+    const auto swapped = copyFailedBeforeQuitting ({ { other, kLocal } });
+    REQUIRE (swapped.find (later + " with its own card in") != std::string::npos);
+    REQUIRE (swapped.find ("when its own card is back") == std::string::npos);
+    REQUIRE (swapped.find ("Copy again") == std::string::npos);
+
+    Result added = pulled;
+    added.addedFilesOnly = true;
+    const auto addedLater = copyFailedBeforeQuitting ({ { added, kLocal } });
+    REQUIRE (addedLater.find (later + " with the card in") != std::string::npos);
+    REQUIRE (addedLater.find ("when the card is back") == std::string::npos);
+
+    Result busy;
+    busy.outcome = Outcome::ComputerReadFailed;
+    busy.fileName = "MIX.wav";
+    REQUIRE (copyFailedBeforeQuitting ({ { busy, kLocal } }).find ("tried again " + later) != std::string::npos);
+
+    // While SobStage stays open, the saved-take card's words are unchanged.
+    REQUIRE (describe (pulled, kLocal).find ("will be copied when the card is back") != std::string::npos);
+    REQUIRE (describe (other, kLocal).find ("choose Copy again") != std::string::npos);
+}
+
 // The bug: "Quit When Done" waited for a retry of a card put back, the reader
 // dropped out again, and the retry failed exactly as the attempt before it.
 // That repeat was left out of the activity log -- rightly -- and out of the

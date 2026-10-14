@@ -27,6 +27,10 @@
 #            tried again once the card is back, and that retry -- the one
 #            "Quit When Done" waits for -- fails just as the first did. Not
 #            news to the activity log, but still asked about before quitting
+#   cardback the card is out at Stop and put back in: the copy goes at once,
+#            not at the next timed retry, and closing the window straight
+#            after asks to wait for it; "Quit When Done" quits once the take
+#            is on the card
 #
 # MMA_E2E_ONLY="quit requit" runs only the scenarios named.
 #
@@ -610,7 +614,9 @@ BEFORE_FAIL=$FAILED
 if [ -z "$WINMSG" ]; then
   fail "requit: no x11_window_message (needs X11 headers at build time)"
 else
-launch requit fresh MMA_STALL_RENAME_ONTO=session.json
+# The timed retry far off: the retry after the card is back is the one its
+# being seen back starts, so the first copy's failure is the last before it.
+launch requit fresh MMA_STALL_RENAME_ONTO=session.json MMA_CARD_RETRY_SECONDS=600
 dismiss_cards
 press_record
 
@@ -708,6 +714,92 @@ else
         fail "requit: the take on this computer lost its mark or its sound"
       fi
     fi
+  fi
+fi
+fi
+[ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
+stop_app
+fi
+
+if want cardback; then
+# -------------------------------------------------------------------------
+echo
+echo "=== The card is out at Stop, and put back in ==="
+# The line under Record says the take will be copied when the card is back.
+# Put back, it goes at once -- the timed retry is set far off here, so only
+# the card being seen can start it -- and a quit straight after waits for it.
+# The copy is held at its last step, so the question is there to be found.
+BEFORE_FAIL=$FAILED
+if [ -z "$WINMSG" ]; then
+  fail "cardback: no x11_window_message (needs X11 headers at build time)"
+else
+launch cardback fresh MMA_STALL_RENAME_ONTO=session.json MMA_CARD_RETRY_SECONDS=600
+dismiss_cards
+press_record
+
+if ! TAKE=$(wait_for_new_take "$STAGING"); then
+  fail "cardback: no take started"
+else
+  sleep 4
+  mv "$CARD_ROOT" "$CARD_ROOT.out"
+  sleep 1
+  press_stop
+  wait_for_log "Saved on this computer" 20 || fail "cardback: the take was not saved"
+  dismiss_saved
+
+  if wait_for_log "The card isn't plugged in" 20; then
+    pass "cardback: with the card out, the take is safe on this computer"
+  else
+    fail "cardback: the copy with the card out was not reported"
+  fi
+  sleep 3   # seen out between takes
+
+  touch "$DEAD"
+  mv "$CARD_ROOT.out" "$CARD_ROOT"
+
+  if wait_for_file "$DEAD.caught" 20; then
+    pass "cardback: the card back in, the copy goes at once"
+  else
+    fail "cardback: the card back in, nothing was copied within 20 s"
+  fi
+
+  MAIN_WIN=$(DISPLAY="$DISPLAY_NUM" xdotool search --name '^SobStage$' | head -1 || true)
+  DISPLAY="$DISPLAY_NUM" "./$WINMSG" "$MAIN_WIN" close
+
+  ASK=""
+  for _ in {1..20}; do
+    kill -0 "$APP_PID" 2>/dev/null || break
+    ASK=$(DISPLAY="$DISPLAY_NUM" xdotool search --name 'Still saving the copy to the card' 2>/dev/null | head -1 || true)
+    [ -n "$ASK" ] && break
+    sleep 0.5
+  done
+
+  if ! kill -0 "$APP_PID" 2>/dev/null; then
+    fail "cardback: closing the window quit at once, with the card in and its take not on it"
+    APP_PID=""
+  elif [ -z "$ASK" ]; then
+    fail "cardback: closing the window did not ask about the copy to the card"
+  else
+    pass "cardback: closing the window asked to wait for the copy to the card"
+    DISPLAY="$DISPLAY_NUM" "./$WINMSG" "$ASK" focus
+    sleep 0.5
+    DISPLAY="$DISPLAY_NUM" xdotool key Return   # Quit When Done
+    sleep 2
+    kill -0 "$APP_PID" 2>/dev/null || fail "cardback: the app quit at once instead of waiting for the copy"
+    rm -f "$DEAD"
+
+    GONE=""
+    for _ in {1..40}; do
+      kill -0 "$APP_PID" 2>/dev/null || { GONE=yes; break; }
+      sleep 0.5
+    done
+    if [ -n "$GONE" ]; then
+      APP_PID=""
+      pass "cardback: once the copy finished, the app quit by itself"
+    else
+      fail "cardback: the app did not quit within 20 s of the copy being let go"
+    fi
+    check_copy_matches cardback "$TAKE"
   fi
 fi
 fi

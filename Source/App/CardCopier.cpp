@@ -165,6 +165,15 @@ bool CardCopier::isCopying() const
     return state->inFlight != 0 && ! state->held.load (std::memory_order_acquire);
 }
 
+bool CardCopier::isWorkLocked (const Record& record)
+{
+    // A retry of a card that was out, full or locked is not work a quit cuts
+    // short: the marker keeps it for the next launch either way, and asking
+    // would hold every quit while the card stays out. One queued because its
+    // card was seen back in is: the user put it in for this.
+    return ! record.last.has_value() || ! cardcopy::isFailure (record.last->outcome) || record.countsAsWork;
+}
+
 bool CardCopier::hasWorkToFinish() const
 {
     const std::lock_guard<std::mutex> lock (state->lock);
@@ -176,15 +185,50 @@ bool CardCopier::hasWorkToFinish() const
     {
         const auto found = state->records.find (id);
 
-        // A retry of a card that was out, full or locked is not work a quit
-        // cuts short: the marker keeps it for the next launch either way, and
-        // asking would hold every quit while the card stays out.
-        if (found == state->records.end() || ! found->second.last.has_value()
-            || ! cardcopy::isFailure (found->second.last->outcome))
+        if (found == state->records.end() || isWorkLocked (found->second))
             return true;
     }
 
     return false;
+}
+
+int CardCopier::takesToFinish() const
+{
+    const std::lock_guard<std::mutex> lock (state->lock);
+    int takes = state->inFlight != 0 ? 1 : 0;
+
+    for (const auto id : state->queued)
+    {
+        if (id == state->inFlight)
+            continue;
+
+        const auto found = state->records.find (id);
+
+        if (found == state->records.end() || isWorkLocked (found->second))
+            ++takes;
+    }
+
+    return takes;
+}
+
+int CardCopier::takesNotOnCard() const
+{
+    const std::lock_guard<std::mutex> lock (state->lock);
+    int takes = 0;
+
+    for (const auto& [id, record] : state->records)
+    {
+        if (id == state->inFlight || ! record.last.has_value() || ! cardcopy::isFailure (record.last->outcome)
+            || record.last->outcome == cardcopy::Outcome::ComputerCopyMissing
+            || record.last->outcome == cardcopy::Outcome::FileTooBig || record.last->addedFilesOnly)
+            continue;
+
+        if (record.phase == Phase::StillOnComputer
+            || (record.phase == Phase::Waiting && ! isWorkLocked (record)))
+            ++takes;
+    }
+
+    return takes;
 }
 
 double CardCopier::msHeld() const
@@ -244,6 +288,51 @@ int CardCopier::retry (const std::function<bool (const cardcopy::Result&)>& shou
                 continue;
 
             needed = enqueueLocked (*state, id) || needed;
+            ++queuedNow;
+        }
+    }
+
+    startWorkerIfNeeded (needed);
+    return queuedNow;
+}
+
+int CardCopier::retryWithCardIn (const std::string& destinationRoot, const std::string& identitySeen,
+                                 bool onlyWaitingForCard)
+{
+    int queuedNow = 0;
+    bool needed = false;
+
+    {
+        const std::lock_guard<std::mutex> lock (state->lock);
+
+        if (state->cancelling.load (std::memory_order_acquire) || destinationRoot.empty())
+            return 0;
+
+        for (auto& [id, record] : state->records)
+        {
+            if (record.job.marker.destinationRoot != destinationRoot || ! record.last.has_value()
+                || ! cardcopy::isFailure (record.last->outcome)
+                || record.last->outcome == cardcopy::Outcome::ComputerCopyMissing)
+                continue;
+
+            const auto outcome = record.last->outcome;
+            const bool waitingForCard = outcome == cardcopy::Outcome::CardMissing
+                                     || outcome == cardcopy::Outcome::DifferentCard;
+
+            if (onlyWaitingForCard && ! waitingForCard)
+                continue;
+
+            // Another card than its own, still: nothing would go.
+            if (outcome == cardcopy::Outcome::DifferentCard && ! identitySeen.empty()
+                && ! record.job.marker.cardIdentity.empty() && identitySeen != record.job.marker.cardIdentity)
+                continue;
+
+            if (record.phase == Phase::StillOnComputer)
+                needed = enqueueLocked (*state, id) || needed;
+            else if (record.phase != Phase::Waiting)
+                continue;
+
+            record.countsAsWork = true;
             ++queuedNow;
         }
     }
@@ -616,9 +705,13 @@ void CardCopier::run (std::shared_ptr<State> s)
             record.job.marker.cardIdentity = result.cardIdentity;
         }
 
-        // Taken or not, "Copy again" was for this attempt only.
+        // Taken or not, "Copy again" was for this attempt only, and so was
+        // the card seen back in.
         if (result.outcome != cardcopy::Outcome::Yielded)
+        {
             record.anyCard = false;
+            record.countsAsWork = false;
+        }
 
         if (result.outcome == cardcopy::Outcome::Yielded)
         {

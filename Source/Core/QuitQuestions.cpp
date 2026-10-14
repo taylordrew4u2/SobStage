@@ -151,6 +151,42 @@ std::string QuitQuestions::pendingQuitLine (const std::string& work)
     return "SobStage will quit once it has finished " + work + ".";
 }
 
+std::string describeStillSaving (const StillSaving& work)
+{
+    std::string text;
+
+    if (! work.copyingToCard)
+    {
+        text = "SobStage is still making " + work.otherWork + " from the last take. Quitting now cancels it; "
+               "the recording itself is already saved.";
+    }
+    else
+    {
+        const int n = work.takesCopying;
+        const bool one = n == 1;
+        const auto takes = one ? std::string ("1 take") : n > 1 ? std::to_string (n) + " takes" : std::string ("takes");
+
+        text = "SobStage is still copying " + takes + " to the card. " + (one ? "It isn't" : "They aren't")
+             + " on the card yet: quitting now leaves " + (one ? "it" : "them") + " only on this computer, in "
+             + work.computerFolder + ", to be copied the next time you open SobStage with the card in.";
+
+        if (! work.otherWork.empty())
+            text += " It is also still making " + work.otherWork + ", which quitting now cancels.";
+    }
+
+    if (work.takesNotOnCard > 0)
+    {
+        const bool one = work.takesNotOnCard == 1;
+        const auto other = work.copyingToCard ? std::string ("other ") : std::string();
+
+        text += " " + (one ? "1 " + other + "take isn't" : std::to_string (work.takesNotOnCard) + " " + other + "takes aren't")
+              + " on the card yet. " + (one ? "It's" : "They're") + " safe on this computer in "
+              + work.computerFolder + ".";
+    }
+
+    return text;
+}
+
 std::string describeUnseenTakeProblem (const StoppedTakeOutcome& outcome)
 {
     if (outcome.alreadyShown)

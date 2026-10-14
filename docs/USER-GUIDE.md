@@ -364,11 +364,14 @@ files really are empty and the card says so instead of calling it saved.
   — and at the foot of any card covering that line, such as the saved-take
   card.
   Quitting again while it waits asks again; only *Quit Now* cancels that file.
-  A copy to the card that *Quit Now* cuts off is finished at the next launch:
-  the take stays on this computer meanwhile. If the copy to the card it was
-  waiting for fails instead — the card is full, or was pulled out — the app
-  does not close as though the take were on the card: it says the copy didn't
-  finish and where the take is safe, and *Don't Quit* keeps it open.
+  When a take is being copied to the card, the question says the take isn't
+  on the card yet and where it stays on this computer. A copy to the card that
+  *Quit Now* cuts off is finished the next time you open SobStage with the
+  card in: the take stays on this computer meanwhile. If the copy to the card
+  it was waiting for fails instead — the card is full, or was pulled out —
+  the app does not close as though the take were on the card: it says the
+  copy didn't finish and where the take is safe, and *Don't Quit* keeps it
+  open.
   If SobStage is hidden or behind another app when you quit it from the Dock,
   it comes to the front (or its Dock icon bounces) to ask. On a Mac, a Shut
   Down, Restart or Log Out stops when SobStage asks a question: once SobStage
@@ -398,9 +401,11 @@ copies it to the card when you press Stop.
   safe on this computer — "The card isn't plugged in. This take is safe on
   this computer in …, and will be copied when the card is back." A **Copy
   again** button tries once more.
-- **A card that is out is copied when it comes back**, by itself. So is a
-  file this computer couldn't read for a moment. A card that is full or
-  locked is tried again at the next Stop, or when you press **Copy again**.
+- **A card that is out is copied when it comes back**, by itself, as soon as
+  SobStage sees it — and if you quit then, SobStage asks to wait for that
+  copy. So is a file this computer couldn't read for a moment. A card that is
+  full or locked is tried again at the next Stop, when a card is put back in,
+  or when you press **Copy again**.
 - **A take goes to its own card, not just any card in the same place.** Cards
   formatted the same way often share a name ("NO NAME" on a Mac), and Windows
   can give a card reader's drive letter to the next USB stick. If another

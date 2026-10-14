@@ -1049,6 +1049,64 @@ int main()
         check (sameOnCard (second, f.card / "2026-10-14_2358_ForCardA"), "every file is on it");
     }
 
+    // The line under Record says a take will be copied when its card is back.
+    // Plugged back in, the copy went only at the next timed retry, or after
+    // the card's own check for interrupted takes -- and a quit meanwhile
+    // found no copy to wait for and went without a word.
+    std::printf ("\n14. The card seen back in\n");
+    {
+        Fixture f;
+        const auto local = f.take ("2026-10-15_0010_Back");
+        const auto cardRoot = f.card.parent_path();
+
+        CardCopier copier (f.factory());
+        fs::rename (cardRoot, f.base / "CARD-out");
+        copier.start (f.job (local));
+        const auto out = waitForResult (copier, 15s);
+        check (out.has_value() && out->result.outcome == cardcopy::Outcome::CardMissing, "the card is out at Stop");
+        check (! copier.hasWorkToFinish(), "and a quit then has nothing to wait for: the card may stay out");
+        check (copier.takesNotOnCard() == 1, "the take is counted as not on the card");
+
+        // Back in, while the copier is held -- by the card's own check for
+        // interrupted takes, at launch.
+        fs::rename (f.base / "CARD-out", cardRoot);
+        copier.setHeld (true);
+        check (copier.retryWithCardIn ("/elsewhere/RECORDINGS", {}, false) == 0,
+               "a card at another save location does not send it");
+        check (copier.retryWithCardIn (f.card.string(), {}, false) == 1, "its card seen back in sends it at once");
+        check (copier.hasWorkToFinish() && copier.takesToFinish() == 1,
+               "and a quit now waits for that copy, though it has not begun");
+        check (copier.takesNotOnCard() == 0, "it is not counted as left behind meanwhile");
+
+        copier.setHeld (false);
+        const auto back = waitForResult (copier, 15s);
+        check (back.has_value() && back->result.outcome == cardcopy::Outcome::Copied, "and it is copied");
+        check (! copier.hasWorkToFinish(), "with nothing left to wait for");
+
+        // Another card than the take's own: not sent, so not waited for.
+        const auto forA = f.take ("2026-10-15_0020_ForCardA");
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:STICK";
+        }
+        auto job = f.job (forA);
+        job.marker.cardIdentity = "uuid:CARD-A";
+        copier.start (job);
+        const auto refused = waitForResult (copier, 15s);
+        check (refused.has_value() && refused->result.outcome == cardcopy::Outcome::DifferentCard,
+               "a take for card A finds another card");
+        check (copier.retryWithCardIn (f.card.string(), "uuid:STICK", true) == 0,
+               "that card seen in its place does not send it, nor hold a quit");
+        check (! copier.hasWorkToFinish(), "nothing to wait for");
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:CARD-A";
+        }
+        check (copier.retryWithCardIn (f.card.string(), "uuid:CARD-A", true) == 1, "card A seen back sends it");
+        const auto own = waitForResult (copier, 15s);
+        check (own.has_value() && own->result.outcome == cardcopy::Outcome::Copied, "and it reaches card A");
+    }
+
     std::printf ("\n%s (%d checks, %d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILED", checks, failures);
     return failures == 0 ? 0 : 1;
 }

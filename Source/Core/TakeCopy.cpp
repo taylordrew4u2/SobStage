@@ -919,12 +919,13 @@ std::string copyFailedBeforeQuitting (const std::vector<std::pair<Result, std::s
         return {};
 
     if (failures.size() == 1)
-        return "The copy to the card didn't finish. " + describe (failures.front().first, failures.front().second, wording);
+        return "The copy to the card didn't finish. "
+             + describe (failures.front().first, failures.front().second, wording, Moment::Quitting);
 
     std::string text = "The copies of " + std::to_string (failures.size()) + " takes to the card didn't finish.";
 
     for (const auto& [result, folder] : failures)
-        text += "\n\n" + lastPartOf (folder) + ": " + describe (result, folder, wording);
+        text += "\n\n" + lastPartOf (folder) + ": " + describe (result, folder, wording, Moment::Quitting);
 
     return text;
 }
@@ -1036,10 +1037,12 @@ std::string copyingLine (uint64_t done, uint64_t total)
 
 namespace {
 
-std::string describeWholeTake (const Result& result, const std::string& localFolder, Wording wording)
+std::string describeWholeTake (const Result& result, const std::string& localFolder, Wording wording,
+                               Moment moment)
 {
     const auto safe = " This take is safe on this computer in " + localFolder + ".";
     const auto kind = PreflightThroughputTest::filesystemKindFromTypeName (result.filesystemType);
+    const bool quitting = moment == Moment::Quitting;
 
     switch (result.outcome)
     {
@@ -1053,11 +1056,21 @@ std::string describeWholeTake (const Result& result, const std::string& localFol
         case Outcome::ComputerReadFailed:
             return (result.fileName.empty() ? std::string ("A file") : result.fileName)
                    + " couldn't be read on this computer just now, so the copy to the card stopped. "
-                     "It will be tried again." + safe;
+                   + (quitting ? "It will be tried again the next time you open SobStage."
+                               : "It will be tried again.")
+                   + safe;
         case Outcome::CardMissing:
+            if (quitting)
+                return "The card isn't plugged in." + safe
+                     + " It will be copied the next time you open SobStage with the card in.";
+
             return "The card isn't plugged in. This take is safe on this computer in " + localFolder
                    + ", and will be copied when the card is back.";
         case Outcome::DifferentCard:
+            if (quitting)
+                return "The card in now isn't the one this take is for, so nothing was copied to it." + safe
+                     + " It will be copied the next time you open SobStage with its own card in.";
+
             return "The card in now isn't the one this take is for, so nothing was copied to it. This take "
                    "is safe on this computer in " + localFolder + ", and will be copied when its own card "
                    "is back. To copy it to the card that's in now, choose Copy again.";
@@ -1104,8 +1117,10 @@ std::string describeWholeTake (const Result& result, const std::string& localFol
 
 } // namespace
 
-std::string describe (const Result& result, const std::string& localFolder, Wording wording)
+std::string describe (const Result& result, const std::string& localFolder, Wording wording, Moment moment)
 {
+    const bool quitting = moment == Moment::Quitting;
+
     // The take itself already went: what is missing is only what was added
     // to its folder since. "Only on this computer" would be untrue of it.
     if (result.addedFilesOnly && isFailure (result.outcome))
@@ -1113,13 +1128,14 @@ std::string describe (const Result& result, const std::string& localFolder, Word
         if (result.outcome == Outcome::CardMissing)
             return "This take is on the card, but a file added to it since isn't yet: the card isn't "
                    "plugged in. It's safe on this computer in " + localFolder
-                   + ", and will be copied when the card is back.";
+                   + (quitting ? ", and will be copied the next time you open SobStage with the card in."
+                               : ", and will be copied when the card is back.");
 
         return "This take is on the card, but a file added to it since isn't yet. "
-               + describeWholeTake (result, localFolder, wording);
+               + describeWholeTake (result, localFolder, wording, moment);
     }
 
-    return describeWholeTake (result, localFolder, wording);
+    return describeWholeTake (result, localFolder, wording, moment);
 }
 
 } // namespace cardcopy

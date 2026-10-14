@@ -106,9 +106,19 @@ public:
 
     /// Copying still to do that quitting would cut off: a copy in flight, held
     /// or not, or a take queued that is not merely waiting to retry a failure
-    /// (a card that is out, full or locked). A take queued a moment ago at
-    /// Stop counts, before the worker has picked it up.
+    /// (a card that is out, full or locked) -- unless it was queued again
+    /// because its card was seen back in (retryWithCardIn). A take queued a
+    /// moment ago at Stop counts, before the worker has picked it up.
     bool hasWorkToFinish() const;
+
+    /// How many takes hasWorkToFinish() is for. 0 with work to finish while
+    /// the takes left at the last quit are still being looked for.
+    int takesToFinish() const;
+
+    /// Takes not on the card at all, and not being copied now: their last
+    /// attempt failed, and not only for a file too big for the card or one
+    /// added since.
+    int takesNotOnCard() const;
 
     /// How long copying has been held, or 0 when it is not.
     double msHeld() const;
@@ -121,6 +131,17 @@ public:
 
     /// Queues again every take whose last attempt failed and matches.
     int retry (const std::function<bool (const cardcopy::Result&)>& shouldRetry);
+
+    /// A card has been seen in place at `destinationRoot`, and is the card
+    /// `identitySeen` (empty when that cannot be told). Every take for that
+    /// save location whose last attempt failed goes again now, as at a Stop
+    /// -- not at the next timed retry -- and counts as work a quit would cut
+    /// off (hasWorkToFinish) until that attempt ends: with the card in, the
+    /// copy is expected to go. A take waiting for its own card only when this
+    /// could be it. `onlyWaitingForCard`: only takes whose card was out or
+    /// another card (CardMissing, DifferentCard). How many go.
+    int retryWithCardIn (const std::string& destinationRoot, const std::string& identitySeen,
+                         bool onlyWaitingForCard);
 
     /// The user's "Copy again", for the newest take at `localFolder`. False
     /// when the take is not one this copier knows, or it is already queued or
@@ -189,7 +210,13 @@ private:
         /// Gone again after following the folder through a rename: a bound,
         /// so a folder renamed over and over cannot keep the worker busy.
         int movedFolderRetries = 0;
+        /// Queued again because its card was seen back in: work a quit would
+        /// cut off, though its last attempt failed. Until that attempt ends.
+        bool countsAsWork = false;
     };
+
+    /// Under the lock: whether a queued take is work a quit would cut off.
+    static bool isWorkLocked (const Record& record);
 
     struct State
     {

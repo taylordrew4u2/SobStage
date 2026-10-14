@@ -147,6 +147,11 @@ public:
     /// asked before it is thrown away.
     juce::String unfinishedAfterTakeWork();
 
+    /// The words of the "Still saving ..." question about that work
+    /// (describeStillSaving): for the copy to the card, that the take is not
+    /// on the card yet, where it stays and when it goes.
+    juce::String stillSavingMessage() const;
+
     /// What went wrong with the take that just stopped, in words for a quit
     /// question: the card stopped answering, the files hold no sound, a
     /// camera could not finish its movie. Empty when nothing did, or when the
@@ -1001,6 +1006,16 @@ private:
     bool pendingCopiesResumed = false;
     /// When "card missing" and "not finished yet" are next tried again.
     double nextCopyRetryMs = 0.0;
+    /// How often that is: every 10 s. Test builds' MMA_CARD_RETRY_SECONDS
+    /// sets it, so a gate can tell a card seen back in from the timed retry.
+    static double cardCopyRetryIntervalMs();
+    /// Whether the probe's last look between takes found a card -- or the save
+    /// location's folder -- at the destination: nothing when it has not
+    /// looked between takes at this destination.
+    std::optional<bool> cardSeenAtDestination() const;
+    /// Its last answer. A card seen back in after being seen out has the
+    /// takes waiting for it copied at once (CardCopier::retryWithCardIn).
+    std::optional<bool> cardWasSeenAtDestination;
     /// Takes whose copy has been said to have stopped answering, so it is
     /// said once per stall.
     std::set<juce::String> stallReportedFor;

@@ -373,10 +373,16 @@ public:
     {
         bringQuitQuestionForward();
 
+        // For the copy to the card, the take is not on the card yet: said,
+        // with where it stays and when it goes. "The recording itself is
+        // already saved" read as the take being safe on the card.
+        const auto message = application != nullptr
+            ? application->stillSavingMessage()
+            : "SobStage is still making " + work + " from the last take. Quitting now cancels it; "
+              "the recording itself is already saved.";
+
         auto* window = new juce::AlertWindow ("Still saving " + work,
-                                              "SobStage is still making " + work + " from the last "
-                                              "take. Quitting now cancels it; the recording itself "
-                                              "is already saved.",
+                                              message,
                                               juce::MessageBoxIconType::QuestionIcon,
                                               mainWindow != nullptr ? mainWindow->getContentComponent() : nullptr);
         window->addButton ("Quit When Done", 1, juce::KeyPress (juce::KeyPress::returnKey));

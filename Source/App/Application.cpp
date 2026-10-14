@@ -3637,9 +3637,21 @@ void Application::tickCardCopies()
     // Every other failure waits for the next Stop or "Copy again".
     const auto now = juce::Time::getMillisecondCounterHiRes();
 
+    // A card seen back in, where it was seen out: the takes waiting for it
+    // go now, not at the next timed retry, and a quit meanwhile waits for
+    // them. Someone who plugs the card in as the line under Record asks, and
+    // quits, otherwise left with a card that did not hold the take.
+    if (const auto seen = cardSeenAtDestination(); seen.has_value())
+    {
+        if (*seen && cardWasSeenAtDestination == false)
+            cardCopier.retryWithCardIn (destinationFolder, cardIdentityAtDestination(), false);
+
+        cardWasSeenAtDestination = *seen;
+    }
+
     if (now >= nextCopyRetryMs)
     {
-        nextCopyRetryMs = now + 10000.0;
+        nextCopyRetryMs = now + cardCopyRetryIntervalMs();
 
         if (recordingEngine.getState() == RecordingState::Idle && ! cardCopier.isRunning())
             cardCopier.retry ([] (const cardcopy::Result& r)
@@ -3727,6 +3739,12 @@ bool Application::prepareToQuit()
     {
         reportFinishedCardCopies();
         copyFailuresWhileQuitting.startWatching();
+
+        // A take waiting for its card, with the card seen in its place now:
+        // copied now, and waited for, rather than left for the next timed
+        // retry the quit would cut off.
+        if (cardSeenAtDestination() == true)
+            cardCopier.retryWithCardIn (destinationFolder, cardIdentityAtDestination(), true);
     }
 
     if (isRecording())
@@ -3751,6 +3769,21 @@ void Application::releaseFinishedFollowUps()
         cardCopier.followUpsFinished();
 }
 
+namespace {
+
+/// "A", "A and B", "A, B and C".
+juce::String inWords (juce::StringArray items)
+{
+    if (items.size() <= 1)
+        return items.joinIntoString ({});
+
+    const auto last = items[items.size() - 1];
+    items.remove (items.size() - 1);
+    return items.joinIntoString (", ") + " and " + last;
+}
+
+} // namespace
+
 juce::String Application::unfinishedAfterTakeWork()
 {
     // Not a plain getter: a combined video or podcast copy that has just
@@ -3768,17 +3801,31 @@ juce::String Application::unfinishedAfterTakeWork()
 
     // A copy under way, held, or queued a moment ago at Stop -- not one
     // waiting to retry a card that is out, which keeps its note on this
-    // computer and goes at the next launch anyway.
+    // computer and goes at the next launch anyway -- or one queued because
+    // its card was seen back in.
     if (cardCopier.hasWorkToFinish())
         work.add ("the copy to the card");
 
-    if (work.size() <= 1)
-        return work.joinIntoString ({});
+    return inWords (work);
+}
 
-    // "A, B and C".
-    const auto last = work[work.size() - 1];
-    work.remove (work.size() - 1);
-    return work.joinIntoString (", ") + " and " + last;
+juce::String Application::stillSavingMessage() const
+{
+    StillSaving work;
+    juce::StringArray other;
+
+    if (podcastExporter.isRunning())
+        other.add ("the podcast copy");
+
+    if (takeCombiner.isRunning())
+        other.add ("the combined video");
+
+    work.otherWork = inWords (other).toStdString();
+    work.copyingToCard = cardCopier.hasWorkToFinish();
+    work.takesCopying = cardCopier.takesToFinish();
+    work.takesNotOnCard = cardCopier.takesNotOnCard();
+    work.computerFolder = backupRootFolder().getFullPathName().toStdString();
+    return juce::String (describeStillSaving (work));
 }
 
 juce::String Application::unseenProblemWithLastTake() const
@@ -8519,6 +8566,32 @@ std::string Application::cardIdentityAtDestination() const
         return {};
 
     return snapshot.destinationCardIdentity;
+}
+
+std::optional<bool> Application::cardSeenAtDestination() const
+{
+    // The probe's last look between takes, at this destination: never a
+    // filesystem call on the message thread. A card is there when it can be
+    // told which card it is, or when the save location's folder is there
+    // (only then is a room figure worked out).
+    const auto snapshot = filesystemStatusProbe.getSnapshot();
+
+    if (! snapshot.ready || destinationFolder.empty() || snapshot.request.destinationPath != destinationFolder
+        || ! snapshot.request.sessionFolder.empty())
+        return std::nullopt;
+
+    return ! snapshot.destinationCardIdentity.empty() || snapshot.remainingSeconds >= 0.0;
+}
+
+double Application::cardCopyRetryIntervalMs()
+{
+   #if defined (MMA_UI_WALK)
+    // Test builds only: a gate that must tell a card seen back in from the
+    // timed retry sets the timed one far off.
+    if (const char* seconds = std::getenv ("MMA_CARD_RETRY_SECONDS"); seconds != nullptr && *seconds != '\0')
+        return std::max (1.0, std::atof (seconds)) * 1000.0;
+   #endif
+    return 10000.0;
 }
 
 bool Application::probeSeesAnotherDriveThanChecked (const PreflightResult& verdict) const

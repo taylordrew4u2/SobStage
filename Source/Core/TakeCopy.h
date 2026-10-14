@@ -312,10 +312,17 @@ inline constexpr Wording kThisSystemsWording = Wording::Windows;
 inline constexpr Wording kThisSystemsWording = Wording::Mac;
 #endif
 
+/// When the words are read. While SobStage stays open, a take waiting for
+/// its card is copied once the card is back; read by someone quitting, only
+/// the next time SobStage is opened with the card in. "Will be copied when
+/// the card is back" beside a Quit Anyway button reads as a card that fills
+/// itself in.
+enum class Moment { WhileOpen, Quitting };
+
 /// What the user is told about `result`, in one or two plain sentences.
 /// Empty for Yielded and Cancelled, which are not news.
 std::string describe (const Result& result, const std::string& localFolder,
-                      Wording wording = kThisSystemsWording);
+                      Wording wording = kThisSystemsWording, Moment moment = Moment::WhileOpen);
 
 /// "Copying to the card: 40%."
 std::string copyingLine (uint64_t done, uint64_t total);

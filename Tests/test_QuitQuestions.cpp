@@ -315,3 +315,53 @@ TEST_CASE (QuitQuestions_ACopyThatFinishesWhileWaitingStillQuitsByItself)
     REQUIRE (q.onWorkAnswered (WorkAnswer::QuitWhenDone) == Next::Wait);
     REQUIRE (q.onWaitTick (false, false, false) == Tick::Quit);
 }
+
+// The bug: the "Still saving" question, asked about the copy to the card,
+// still ended "the recording itself is already saved" -- beside Quit Now,
+// which left the take only on this computer and the card without it. Said
+// to a producer about to walk off with the card, that read as the take being
+// safe on it. Mutation: the copy to the card worded like the combined video.
+TEST_CASE (QuitQuestions_StillSavingTheCopyToTheCardSaysTheTakeIsNotOnTheCardYet)
+{
+    StillSaving copy;
+    copy.copyingToCard = true;
+    copy.takesCopying = 1;
+    copy.computerFolder = "/Users/me/RECORDINGS-MIRROR";
+
+    const auto text = describeStillSaving (copy);
+    REQUIRE (text.find ("already saved") == std::string::npos);
+    REQUIRE (text.find ("from the last take") == std::string::npos);
+    REQUIRE (text.find ("isn't on the card yet") != std::string::npos);
+    REQUIRE (text.find ("only on this computer, in /Users/me/RECORDINGS-MIRROR") != std::string::npos);
+    REQUIRE (text.find ("the next time you open SobStage with the card in") != std::string::npos);
+
+    // Two takes, one the launch picked up: not "the last take".
+    copy.takesCopying = 2;
+    REQUIRE (describeStillSaving (copy).find ("still copying 2 takes to the card. They aren't on the card yet")
+             != std::string::npos);
+
+    // With the combined video too: that one is cancelled, the take stays here.
+    copy.takesCopying = 1;
+    copy.otherWork = "the combined video";
+    const auto both = describeStillSaving (copy);
+    REQUIRE (both.find ("isn't on the card yet") != std::string::npos);
+    REQUIRE (both.find ("also still making the combined video, which quitting now cancels") != std::string::npos);
+    REQUIRE (both.find ("already saved") == std::string::npos);
+}
+
+TEST_CASE (QuitQuestions_StillSavingTheCombinedVideoKeepsItsWords)
+{
+    StillSaving video;
+    video.otherWork = "the combined video";
+    REQUIRE (describeStillSaving (video)
+             == "SobStage is still making the combined video from the last take. Quitting now cancels it; "
+                "the recording itself is already saved.");
+
+    // A take an earlier copy left only on this computer is said too, with
+    // where it is -- never that it is on the card.
+    video.takesNotOnCard = 1;
+    video.computerFolder = "/Users/me/RECORDINGS-MIRROR";
+    const auto text = describeStillSaving (video);
+    REQUIRE (text.find ("1 take isn't on the card yet. It's safe on this computer in /Users/me/RECORDINGS-MIRROR.")
+             != std::string::npos);
+}
