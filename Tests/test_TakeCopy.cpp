@@ -68,6 +68,8 @@ public:
     std::map<std::string, Failure> failCreate;
     /// openRead fails for a path containing the key: a file busy elsewhere.
     std::map<std::string, Failure> failOpenRead;
+    /// makeFolder fails for exactly this path.
+    std::map<std::string, Failure> failMakeFolder;
     /// A write fails once the file whose name contains `writeFailPath` has
     /// had `writeFailAfterBytes` written to it.
     std::string writeFailPath;
@@ -171,6 +173,8 @@ public:
     FsResult makeFolder (const std::string& path) override
     {
         calls.push_back ({ "makeFolder", path });
+        if (const auto failing = failMakeFolder.find (path); failing != failMakeFolder.end())
+            return { failing->second.error, failing->second.osError };
         if (folders.count (parentOf (path)) == 0)
             return { FsError::NotFound, 2 };
         if (folders.count (path) > 0 || files.count (path) > 0)
@@ -782,6 +786,36 @@ TEST_CASE (TakeCopy_LockedCardAndRefusedPermissionAreToldApart)
     const auto w = run (ntfs);
     REQUIRE (w.outcome == Outcome::CardLocked);
     REQUIRE (describe (w, kLocal).find ("NTFS") != std::string::npos);
+
+    // Mutation: the folder's refusal not asked the card's format. The copy's
+    // first write to such a drive is always a folder, and it must say NTFS
+    // there too -- for the take's folder and for the save folder itself.
+    FakeFs ntfsFolder;
+    finishedTake (ntfsFolder);
+    ntfsFolder.cardType = "ntfs";
+    ntfsFolder.failMakeFolder[kCardTake] = { FsError::ReadOnly, 30 };
+    const auto f = run (ntfsFolder);
+    REQUIRE (f.outcome == Outcome::CardLocked);
+    REQUIRE (describe (f, kLocal).find ("NTFS") != std::string::npos);
+    REQUIRE (describe (f, kLocal).find ("lock switch") == std::string::npos);
+
+    FakeFs ntfsRoot;
+    finishedTake (ntfsRoot);
+    ntfsRoot.cardType = "ntfs";
+    ntfsRoot.folders.erase (kRoot);
+    ntfsRoot.failMakeFolder[kRoot] = { FsError::ReadOnly, 30 };
+    const auto rr = run (ntfsRoot);
+    REQUIRE (rr.outcome == Outcome::CardLocked);
+    REQUIRE (describe (rr, kLocal).find ("NTFS") != std::string::npos);
+
+    // Windows refuses a read-only card or Controlled folder access with
+    // "access denied"; it is not sent to a Mac's System Settings.
+   #if defined(_WIN32)
+    REQUIRE (describe (n, kLocal).find ("System Settings") == std::string::npos);
+    REQUIRE (describe (n, kLocal).find ("Windows Security") != std::string::npos);
+   #else
+    REQUIRE (describe (n, kLocal).find ("Privacy & Security") != std::string::npos);
+   #endif
 }
 
 // Mutation: the 4 GiB check removed, at either point.
@@ -805,12 +839,24 @@ TEST_CASE (TakeCopy_FileTooBigForTheCard)
     finishedTake (big);
     big.cardIsFat32 = true;
     big.addFile (local ("V01_Cam.mov"), "x");
+    big.files[local (kMarkerFileName)] = markerToJson (toTheCard());
 
     const auto r = run (big);
     REQUIRE (r.outcome == Outcome::FileTooBig);
     REQUIRE (r.fileName == "V01_Cam.mov");
-    REQUIRE (big.count ("createNew") == 0);
+    REQUIRE (big.count ("createNew", "V01_Cam.mov") == 0);
     REQUIRE (describe (r, kLocal).find ("V01_Cam.mov is too big") == 0);
+    REQUIRE (describe (r, kLocal).find ("reformat the card as ExFAT") != std::string::npos);
+
+    // The sound is not held back by a movie that can never fit: everything
+    // else is on the card, but not session.json, so the card's folder never
+    // looks complete without the movie. The take stays marked to be copied.
+    for (const char* name : { "MIX.wav", "01_Alice.wav", "02_Bob.wav", "activity.log" })
+        REQUIRE (big.files.count (card (name)) == 1 && big.files[card (name)] == big.files[local (name)]);
+    REQUIRE (big.files.count (card ("V01_Cam.mov")) == 0);
+    REQUIRE (big.files.count (card ("session.json")) == 0);
+    REQUIRE (big.files.count (local (kMarkerFileName)) == 1);
+    REQUIRE (noWorkingFilesOnCard (big));
 
     // One byte under the limit is fine.
     struct JustUnder : BigListing
@@ -831,7 +877,7 @@ TEST_CASE (TakeCopy_FileTooBigForTheCard)
     under.addFile (local ("V01_Cam.mov"), "x");
     REQUIRE (run (under).outcome != Outcome::FileTooBig);
 
-    // And when the card says so at write time.
+    // And when the card says so at write time: the rest still goes.
     FakeFs late;
     finishedTake (late);
     late.writeFailPath = "MIX.wav";
@@ -840,6 +886,10 @@ TEST_CASE (TakeCopy_FileTooBigForTheCard)
     REQUIRE (t.outcome == Outcome::FileTooBig);
     REQUIRE (t.fileName == "MIX.wav");
     REQUIRE (noWorkingFilesOnCard (late));
+    REQUIRE (late.files.count (card ("MIX.wav")) == 0);
+    REQUIRE (late.files.count (card ("02_Bob.wav")) == 1);
+    REQUIRE (late.files.count (card ("activity.log")) == 1);
+    REQUIRE (late.files.count (card ("session.json")) == 0);
 }
 
 // Mutation: replace allowed for audio. A different MIX.wav already on the card

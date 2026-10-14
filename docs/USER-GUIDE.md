@@ -408,6 +408,11 @@ copies it to the card when you press Stop.
 - **The line under the record button says what is still to go**: "Waiting to
   copy 2 takes to the card." If the card stopped answering before a copy
   could start, it says that instead, and where the takes are safe.
+- **A card formatted FAT32** (most cards of 32 GB and smaller) can't hold a
+  file over 4 GB, such as a camera's movie after about 18 minutes. The movie
+  stays on this computer, everything else from the take goes to the card, and
+  the take's line says so. To copy the movie too, reformat the card as ExFAT
+  (this erases it) or use another card.
 - **A take started while another is still copying comes first.** The copy
   steps aside, and finishes after you stop.
 - **If this computer is nearly full** — it couldn't hold as much as the card

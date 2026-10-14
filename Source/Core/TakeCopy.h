@@ -241,7 +241,7 @@ struct Control
     /// run, so a re-run after a combined video or podcast copy is added reads
     /// back only what is new. Trusted only while the card's listing still
     /// shows the file under its name and size, and forgotten for the whole
-    /// take when an attempt fails.
+    /// take when an attempt fails in a way that puts the card in doubt.
     std::set<std::string>* verified = nullptr;
 };
 

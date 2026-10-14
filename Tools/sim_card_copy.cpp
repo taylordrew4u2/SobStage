@@ -613,6 +613,10 @@ int main()
 
         check (r.outcome == cardcopy::Outcome::FileTooBig, "EFBIG reads as a file too big for the card");
         check (! workingFilesOn (f.card / "2026-10-14_2330_Big"), "and the part written is removed");
+        check (fs::exists (f.card / "2026-10-14_2330_Big" / "activity.log"),
+               "what does fit is still copied");
+        check (! fs::exists (f.card / "2026-10-14_2330_Big" / "session.json"),
+               "but not session.json, so the card's folder doesn't look complete");
         check (cardcopy::describe (r, local.string()).find ("too big for the way this card is formatted")
                    != std::string::npos,
                "and the user is told so in plain words");

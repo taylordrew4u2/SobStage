@@ -413,6 +413,19 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
     //    on the startup disk.
     const auto& root = marker.destinationRoot;
 
+    // Every refusal from the card, from its first folder on: a card that will
+    // not be written says what kind it is, so a Windows-formatted drive a Mac
+    // mounts read-only is not called a card with its lock switch on.
+    const auto refusedOnCard = [&] (Outcome outcome, const std::string& name, const FsResult& r)
+    {
+        auto failed = finish (result, outcome, name, r.osError);
+
+        if (outcome == Outcome::CardLocked || outcome == Outcome::NotAllowed)
+            failed.filesystemType = fs.filesystemTypeName (root);
+
+        return failed;
+    };
+
     if (root.empty() || volumecapacity::isUnderMissingMountPoint (root, [&fs] (const std::string& p) { return fs.exists (p); }))
         return finish (result, Outcome::CardMissing);
 
@@ -424,7 +437,7 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
             return finish (result, Outcome::CardMissing);
 
         if (const auto r = fs.makeFolder (root); ! r.ok())
-            return finish (result, outcomeForCardError (fs, rootParent, r), {}, r.osError);
+            return refusedOnCard (outcomeForCardError (fs, rootParent, r), {}, r);
     }
 
     // 4. The take's folder on the card, remembered on this computer BEFORE it
@@ -448,11 +461,11 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
 
     if (! fs.exists (cardFolder))
         if (const auto r = fs.makeFolder (cardFolder); ! r.ok())
-            return finish (result, outcomeForCardError (fs, root, r), {}, r.osError);
+            return refusedOnCard (outcomeForCardError (fs, root, r), {}, r);
 
     std::vector<Entry> cardEntries;
     if (const auto r = fs.list (cardFolder, cardEntries); ! r.ok())
-        return finish (result, outcomeForCardError (fs, root, r), {}, r.osError);
+        return refusedOnCard (outcomeForCardError (fs, root, r), {}, r);
 
     // 5. Half-written copies left by an attempt that was cut off.
     std::map<std::string, uint64_t> onCard;
@@ -506,12 +519,34 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
         needWriting.push_back (name);
     }
 
+    // A file this card's format cannot hold -- a camera's movie past 4 GB on
+    // a FAT32 card -- is left on this computer and everything else goes: the
+    // sound must not wait on a movie that can never fit. session.json is held
+    // back with it, so the card's folder never looks complete without it.
+    std::vector<std::string> tooBig;
+    std::set<std::string> leftBehind;
+
+    const auto leaveBehind = [&] (const std::string& name)
+    {
+        tooBig.push_back (name);
+        leftBehind.insert (name);
+        leftBehind.insert (kSessionRecord);
+    };
+
     if (fs.limitedTo4GiBFiles (cardFolder).value_or (false))
         for (const auto& name : needWriting)
             if (localSizes[name] >= kFat32FileLimitBytes)
-                return finish (result, Outcome::FileTooBig, name);
+                leaveBehind (name);
 
-    if (const auto free = fs.freeBytes (cardFolder); free.has_value() && ! needWriting.empty()
+    if (! tooBig.empty())
+    {
+        toWrite = 0;
+        for (const auto& name : needWriting)
+            if (leftBehind.count (name) == 0)
+                toWrite += localSizes[name];
+    }
+
+    if (const auto free = fs.freeBytes (cardFolder); free.has_value() && toWrite > 0
         && *free < toWrite + kCardMarginBytes)
         return finish (result, Outcome::CardFull);
 
@@ -530,16 +565,6 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
             control.progress (done, toWrite);
     };
 
-    const auto refusedOnCard = [&] (Outcome outcome, const std::string& name, const FsResult& r)
-    {
-        auto failed = finish (result, outcome, name, r.osError);
-
-        if (outcome == Outcome::CardLocked || outcome == Outcome::NotAllowed)
-            failed.filesystemType = fs.filesystemTypeName (root);
-
-        return failed;
-    };
-
     for (const auto& name : names)
     {
         const auto size = localSizes[name];
@@ -547,7 +572,7 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
         const auto cardPath = joinPath (cardFolder, name);
         const auto key = verifiedKey (cardPath, size);
 
-        if (verified.count (key) > 0)
+        if (verified.count (key) > 0 || leftBehind.count (name) > 0)
             continue;
 
         if (const auto stop = stopRequested (control))
@@ -584,8 +609,9 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
 
         const auto workingPath = joinPath (cardFolder, "." + name + kWorkingSuffix);
         bool matched = false;
+        bool refusedAsTooBig = false;
 
-        for (int attempt = 0; attempt < 2 && ! matched; ++attempt)
+        for (int attempt = 0; attempt < 2 && ! matched && ! refusedAsTooBig; ++attempt)
         {
             const auto doneBefore = done;
             FsResult r;
@@ -632,12 +658,27 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
                 {
                     const auto outcome = outcomeForCardError (fs, root, wr);
                     abandon (writer);
+
+                    // The card's format said so only now: the same as one
+                    // known to be FAT32 before writing. The rest still goes.
+                    if (outcome == Outcome::FileTooBig)
+                    {
+                        refusedAsTooBig = true;
+                        break;
+                    }
+
                     return refusedOnCard (outcome, name, wr);
                 }
 
                 done += got;
                 result.bytesCopied += got;
                 tick();
+            }
+
+            if (refusedAsTooBig)
+            {
+                done = doneBefore;
+                break;
             }
 
             if (const auto sr = writer->syncAndClose(); ! sr.ok())
@@ -681,6 +722,12 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
             }
         }
 
+        if (refusedAsTooBig)
+        {
+            leaveBehind (name);
+            continue;
+        }
+
         if (! matched)
             return finish (result, Outcome::CopyDidNotMatch, name);
 
@@ -705,6 +752,11 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
         if (const auto r = fs.syncFolder (cardFolder); ! r.ok())
             return refusedOnCard (outcomeForCardError (fs, root, r), {}, r);
 
+    // Everything that fits is on the card; what does not stays here, with the
+    // marker, and is said.
+    if (! tooBig.empty())
+        return finish (result, Outcome::FileTooBig, tooBig.front());
+
     // 8. Everything is on the card and checked. The marker going is all that
     //    changes on this computer; if it will not go, the next launch checks
     //    the card again by comparing and tries once more. Kept while a file
@@ -724,16 +776,17 @@ Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marke
 
     auto result = copyTakeOnce (fs, localFolder, marker, control, verified);
 
-    // A failed attempt on the card's side is a card that cannot be trusted
-    // with what it held a moment ago: pulled, swapped, garbled or refusing.
-    // The next attempt checks every file of this take against the card again.
-    // One that failed on this computer's side says nothing about the card.
-    const bool cardSide = isFailure (result.outcome)
-                       && result.outcome != Outcome::NotFinishedYet
-                       && result.outcome != Outcome::ComputerCopyMissing
-                       && result.outcome != Outcome::ComputerReadFailed;
+    // A card that cannot be trusted with what it held a moment ago -- pulled,
+    // swapped, garbled, or holding files that are not this take's -- has
+    // every file of this take checked against it again next time. A full or
+    // locked card, a file too big for its format, or a failure on this
+    // computer's side says nothing about what is on it.
+    const bool cardInDoubt = result.outcome == Outcome::CardMissing
+                          || result.outcome == Outcome::CardWriteFailed
+                          || result.outcome == Outcome::CopyDidNotMatch
+                          || result.outcome == Outcome::NameTakenOnCard;
 
-    if (cardSide)
+    if (cardInDoubt)
     {
         for (const auto& folder : { marker.cardFolder, result.cardFolder })
         {
@@ -827,10 +880,20 @@ std::string describeWholeTake (const Result& result, const std::string& localFol
         case Outcome::CardLocked:
             return PreflightThroughputTest::writeFailureReason (EROFS, kind) + safe;
         case Outcome::NotAllowed:
+           #if defined(_WIN32)
+            // Not the Mac's privacy settings: Windows refuses with "access
+            // denied" for a read-only card and for Controlled folder access.
+            return "SobStage isn't allowed to write to this card. Check the card isn't set to read-only, "
+                   "and that Controlled folder access in Windows Security allows SobStage, or choose a "
+                   "different place to save." + safe;
+           #else
             return PreflightThroughputTest::writeFailureReason (EACCES, kind) + safe;
+           #endif
         case Outcome::FileTooBig:
             return (result.fileName.empty() ? std::string ("A file") : result.fileName)
-                   + " is too big for the way this card is formatted." + safe;
+                   + " is too big for the way this card is formatted, so it wasn't copied. The rest of the "
+                     "take was. To copy it, reformat the card as ExFAT (this erases it) or use another "
+                     "card." + safe;
         case Outcome::NameTakenOnCard:
             return "The card already has a different file called " + result.fileName + "." + safe;
         case Outcome::CopyDidNotMatch:
