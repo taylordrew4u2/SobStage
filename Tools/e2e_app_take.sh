@@ -37,6 +37,26 @@ trap cleanup EXIT
 pkill Xvfb 2>/dev/null || true; sleep 1
 Xvfb "$DISPLAY_NUM" -screen 0 1280x1200x24 >/dev/null 2>&1 &
 sleep 2
+# The fixture's `file` microphones sit on the clockless `null` slave: left
+# alone they deliver as fast as the file reads, flood the ring, and each stem
+# becomes a patchwork of whatever fitted -- which says nothing about the app
+# and lets the tone vote land anywhere from 40% to 100% depending on how fast
+# the runner happens to be. Tools/alsa_readi_shim.cpp paces each microphone to
+# its own clock instead, the way hardware does. A caller that brings its own
+# shim (e2e_realtime_mics.sh) keeps it and its clocks.
+if [ -z "${MMA_APP_LD_PRELOAD:-}" ]; then
+  for CANDIDATE in build/libalsa_readi_shim.so build-app/libalsa_readi_shim.so; do
+    [ -e "$CANDIDATE" ] || continue
+    if [ -z "${MMA_APP_LD_PRELOAD:-}" ] || [ "$CANDIDATE" -nt "$MMA_APP_LD_PRELOAD" ]; then
+      MMA_APP_LD_PRELOAD="$PWD/$CANDIDATE"
+    fi
+  done
+  if [ -n "${MMA_APP_LD_PRELOAD:-}" ]; then
+    export MMA_SIM_REALTIME="${MMA_SIM_REALTIME:-1}"
+    export MMA_SIM_PPM="${MMA_SIM_PPM:-mma_mic1=150,mma_mic2=-150,mma_out=0}"
+    echo "Microphone clocks: $MMA_SIM_PPM"
+  fi
+fi
 # MMA_APP_LD_PRELOAD reaches the app and nothing else, so a shim meant for it
 # (the real-time microphone clocks, for one) is not loaded into Xvfb, xdotool
 # and every other helper this script runs.

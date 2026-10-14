@@ -43,7 +43,20 @@ trap cleanup EXIT
 pkill Xvfb 2>/dev/null || true; sleep 1
 Xvfb "$DISPLAY_NUM" -screen 0 1280x1200x24 >/dev/null 2>&1 &
 sleep 2
-DISPLAY="$DISPLAY_NUM" MMA_SKIP_SETUP_GUIDE=1 nohup "./$APP" >/tmp/mma-e2e-two-takes.log 2>&1 &
+# The fixture's `file` microphones are clockless: unpaced they flood the ring
+# and each stem is a patchwork of whatever fitted, so the tone check below
+# measured the runner's speed, not the app. The shim gives each microphone its
+# own clock (see e2e_app_take.sh). mma_out runs twice as fast as it should on
+# purpose: its overflow is what the per-take reset check at the end measures.
+SHIM=""
+for CANDIDATE in build/libalsa_readi_shim.so build-app/libalsa_readi_shim.so; do
+  [ -e "$CANDIDATE" ] || continue
+  if [ -z "$SHIM" ] || [ "$CANDIDATE" -nt "$SHIM" ]; then SHIM="$CANDIDATE"; fi
+done
+test -n "$SHIM" || { echo "Build with -DMMA_ALLOW_TEST_INPUTS=ON first (no libalsa_readi_shim.so)"; exit 1; }
+env MMA_SIM_REALTIME=1 MMA_SIM_PPM="${MMA_SIM_PPM:-mma_mic1=150,mma_mic2=-150,mma_out=1000000}" \
+  LD_PRELOAD="$PWD/$SHIM" \
+  DISPLAY="$DISPLAY_NUM" MMA_SKIP_SETUP_GUIDE=1 nohup "./$APP" >/tmp/mma-e2e-two-takes.log 2>&1 &
 APP_PID=$!
 
 for _ in {1..60}; do
