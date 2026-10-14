@@ -401,6 +401,13 @@ copies it to the card when you press Stop.
 - **A card that is out is copied when it comes back**, by itself. So is a
   file this computer couldn't read for a moment. A card that is full or
   locked is tried again at the next Stop, or when you press **Copy again**.
+- **A take goes to its own card, not just any card in the same place.** Cards
+  formatted the same way often share a name ("NO NAME" on a Mac), and Windows
+  can give a card reader's drive letter to the next USB stick. If another
+  card is in when the copy runs, nothing is written to it: the saved-take
+  card says the card in now isn't this take's, that the take is safe on this
+  computer, and that it will be copied when its own card is back. To copy it
+  to the card that is in now instead, press **Copy again**.
 - **The combined video and the podcast-ready copy go to the card too**, once
   they are made. Until then the take stays marked to be copied, so if you
   quit first they are copied at the next launch. If the card is out by then,

@@ -293,3 +293,34 @@ TEST_CASE (VolumeCapacity_AMissingCardIsAnUnknownDiskNotTheStartupDisk)
     }
 }
 #endif
+
+// What a take still to be copied keeps of its card. The same card put back --
+// in another reader, under another device node -- must read as itself, or its
+// take would never be copied to it; another card at the same place must not.
+TEST_CASE (VolumeFingerprint_ACardIsKnownByItselfNotWhereItIsMounted)
+{
+    REQUIRE (cardIdentity (card ("6A1F-0C22")) == "uuid:6A1F-0C22");
+    REQUIRE (cardIdentity (card ("6A1F-0C22", "/dev/disk9s1")) == cardIdentity (card ("6A1F-0C22")));
+    REQUIRE (cardIdentity (card ("6A1F-0C22")) != cardIdentity (card ("1B2C-3D4E")));
+
+    // No UUID: a FAT or ExFAT card's format and size, never its device.
+    auto noUuid = card ("");
+    REQUIRE (cardIdentity (noUuid) == "size:exfat:64000000000");
+    auto moved = card ("", "/dev/disk9s1");
+    REQUIRE (cardIdentity (moved) == cardIdentity (noUuid));
+
+    // Nothing that tells one volume from another: not known.
+    auto network = card ("");
+    network.fsType = "nfs";
+    REQUIRE (cardIdentity (network).empty());
+    REQUIRE (cardIdentity (VolumeFingerprint {}).empty());
+}
+
+#if ! defined (_WIN32)
+TEST_CASE (VolumeCapacity_ACardThatIsOutHasNoIdentity)
+{
+    REQUIRE (cardIdentityOf ("/Volumes/SOBSTAGE-NO-SUCH-CARD/RECORDINGS").empty());
+    REQUIRE (cardIdentityOf ("/media/sobstage-no-such-user/CARD/RECORDINGS").empty());
+    REQUIRE (cardIdentityOf ("").empty());
+}
+#endif

@@ -263,11 +263,12 @@ bool CardCopier::copyAgain (const std::string& localFolder)
             return false;
 
         TakeId id = 0;
-        const auto* found = newestLocked (*state, localFolder, &id);
+        auto* found = newestLocked (*state, localFolder, &id);
         if (found == nullptr || found->phase == Phase::Waiting
             || found->phase == Phase::Copying || found->job.marker.destinationRoot.empty())
             return false;
 
+        found->anyCard = true;
         needed = enqueueLocked (*state, id);
     }
 
@@ -386,7 +387,9 @@ CardCopier::Summary CardCopier::summary() const
 
             ++s.onlyOnComputer;
 
-            if (record.last->outcome == cardcopy::Outcome::CardMissing)
+            // Both wait for the take's own card to be put in.
+            if (record.last->outcome == cardcopy::Outcome::CardMissing
+                || record.last->outcome == cardcopy::Outcome::DifferentCard)
                 ++s.cardMissing;
         }
     }
@@ -471,6 +474,7 @@ void CardCopier::run (std::shared_ptr<State> s)
         Job job;
         std::string scanRoot;
         bool keepMarker = false;
+        bool anyCard = false;
         std::map<std::string, uint64_t> copiedBefore;
 
         {
@@ -507,6 +511,7 @@ void CardCopier::run (std::shared_ptr<State> s)
                 job = record.job;
                 keepMarker = record.awaitingFollowUps;
                 copiedBefore = record.copiedFiles;
+                anyCard = record.anyCard;
                 s->inFlight = key;
                 s->lastProgress = Clock::now();
             }
@@ -544,6 +549,7 @@ void CardCopier::run (std::shared_ptr<State> s)
         control.cancel = &s->cancelling;
         control.verified = &s->verified;
         control.copiedBefore = &copiedBefore;
+        control.anyCard = anyCard;
         control.shouldYield = [&s] { return s->held.load (std::memory_order_acquire); };
         control.progress = [&s, &key] (uint64_t done, uint64_t total)
         {
@@ -589,6 +595,8 @@ void CardCopier::run (std::shared_ptr<State> s)
             record.folderNow = movedTo;
             if (! result.cardFolder.empty())
                 record.job.marker.cardFolder = result.cardFolder;
+            if (! result.cardIdentity.empty())
+                record.job.marker.cardIdentity = result.cardIdentity;
             enqueueLocked (*s, key, true);
             continue;
         }
@@ -596,9 +604,21 @@ void CardCopier::run (std::shared_ptr<State> s)
         record.movedFolderRetries = 0;
 
         // The folder it chose on the card, kept for the next attempt so a take
-        // is never copied twice into "_2" and "_3".
+        // is never copied twice into "_2" and "_3"; and the card it is for.
         if (! result.cardFolder.empty())
             record.job.marker.cardFolder = result.cardFolder;
+
+        if (! result.cardIdentity.empty())
+        {
+            if (result.cardIdentity != record.job.marker.cardIdentity)
+                record.job.marker.cardFolder = result.cardFolder;
+
+            record.job.marker.cardIdentity = result.cardIdentity;
+        }
+
+        // Taken or not, "Copy again" was for this attempt only.
+        if (result.outcome != cardcopy::Outcome::Yielded)
+            record.anyCard = false;
 
         if (result.outcome == cardcopy::Outcome::Yielded)
         {

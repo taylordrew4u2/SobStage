@@ -257,7 +257,10 @@ FilesystemStatusProbe::Snapshot FilesystemStatusProbe::sample (const Request& re
     // Between takes only: during one the destination is the take's own folder
     // on the card, and nothing done with the answer would touch a take.
     if (! request.destinationPath.empty() && request.sessionFolder.empty())
+    {
         out.destinationVolume = volumeFingerprintOf (request.destinationPath);
+        out.destinationCardIdentity = cardIdentityOf (request.destinationPath);
+    }
 
     if (! request.destinationPath.empty() && request.bytesPerSecond > 0.0)
     {

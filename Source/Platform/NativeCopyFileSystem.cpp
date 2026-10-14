@@ -469,6 +469,11 @@ std::optional<uint64_t> NativeCopyFileSystem::freeBytes (const std::string& path
     return availableBytesForRecording (path);
 }
 
+std::string NativeCopyFileSystem::cardIdentity (const std::string& path)
+{
+    return cardIdentityOf (path);
+}
+
 std::string NativeCopyFileSystem::filesystemTypeName (const std::string& path)
 {
    #if defined(_WIN32)

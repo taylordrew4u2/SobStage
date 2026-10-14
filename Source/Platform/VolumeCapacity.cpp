@@ -9,6 +9,12 @@
 #if ! defined(_WIN32)
  #include <cerrno>
  #include <sys/stat.h>
+#else
+ #ifndef NOMINMAX
+  #define NOMINMAX
+ #endif
+ #include <windows.h>
+ #include <cstdio>
 #endif
 
 #if defined(__APPLE__)
@@ -327,6 +333,43 @@ VolumeFingerprint volumeFingerprintOf (const std::string& path) noexcept
     }
 
     return fingerprint;
+}
+
+std::string cardIdentityOf (const std::string& path) noexcept
+{
+    try
+    {
+       #if defined(_WIN32)
+        // The volume serial number: set when the card is formatted, and read
+        // from whichever card is in the drive now, whatever its letter.
+        wchar_t volume[MAX_PATH + 1] = {};
+        DWORD serial = 0;
+        const auto wide = pathFromUtf8 (path).wstring();
+
+        if (path.empty() || GetVolumePathNameW (wide.c_str(), volume, MAX_PATH) == 0
+            || GetVolumeInformationW (volume, nullptr, 0, &serial, nullptr, nullptr, nullptr, 0) == 0)
+            return {};
+
+        char text[32] = {};
+        std::snprintf (text, sizeof (text), "serial:%08lX", static_cast<unsigned long> (serial));
+        return text;
+       #else
+        // A card that is out: its path climbs to the startup disk, which is
+        // never the card.
+        if (path.empty() || volumecapacity::isUnderMissingMountPoint (path, [] (const std::string& candidate)
+            {
+                struct stat info {};
+                return ::stat (candidate.c_str(), &info) == 0;
+            }))
+            return {};
+
+        return cardIdentity (volumeFingerprintOf (path));
+       #endif
+    }
+    catch (...)
+    {
+        return {};
+    }
 }
 
 } // namespace mma

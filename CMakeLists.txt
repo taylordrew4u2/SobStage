@@ -519,6 +519,13 @@ if (MMA_BUILD_APP)
             -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckFailedOpenRetry.cmake)
 
+    # A take for a card goes to that card, not another at the same place; the
+    # decision is TakeCopy's, this pins that Application hands it the card.
+    add_test(NAME card_identity_wiring
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckCardIdentityWiring.cmake)
+
     # MAC-PKG-2: the macOS Info.plist must carry LSMinimumSystemVersion and
     # still keep JUCE's microphone/camera usage strings. juceaide writes the
     # plist only on Apple builds, so run it here on SobStage's Info.txt.

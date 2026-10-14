@@ -35,6 +35,7 @@ public:
     std::optional<uint64_t> freeBytes (const std::string& path) override;
     std::optional<bool> limitedTo4GiBFiles (const std::string& path) override;
     std::string filesystemTypeName (const std::string& path) override;
+    std::string cardIdentity (const std::string& path) override;
     cardcopy::FsResult readText (const std::string& path, std::string& text) override;
     cardcopy::FsResult replaceText (const std::string& path, const std::string& text) override;
     std::unique_ptr<Reader> openRead (const std::string& path, bool bypassCache,

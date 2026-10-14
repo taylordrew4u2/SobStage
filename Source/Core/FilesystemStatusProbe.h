@@ -71,6 +71,11 @@ public:
         /// out, is noticed: the path stays the same and the drive check made
         /// for the old card must not arm the new one.
         VolumeFingerprint destinationVolume;
+        /// Which card is at the destination now (cardIdentityOf), asked
+        /// between takes only; empty when it cannot be told or none is in.
+        /// Kept with a take recorded here for that card, so its copy goes to
+        /// that card and no other at the same place.
+        std::string destinationCardIdentity;
         /// When the sample behind this snapshot began, so a caller can tell
         /// evidence gathered after some event from evidence gathered before.
         std::chrono::steady_clock::time_point sampleStartedAt {};

@@ -199,6 +199,7 @@ std::string markerToJson (const Marker& marker)
     JsonValue root = JsonValue::makeObject();
     root["destinationRoot"] = JsonValue (marker.destinationRoot);
     root["cardFolder"] = JsonValue (marker.cardFolder);
+    root["cardIdentity"] = JsonValue (marker.cardIdentity);
     return root.dump (2);
 }
 
@@ -217,6 +218,11 @@ std::optional<Marker> markerFromJson (const std::string& text)
 
         if (const auto* folder = parsed.find ("cardFolder"))
             marker.cardFolder = folder->asString();
+
+        // Absent from a marker an earlier version wrote: not known.
+        if (const auto* identity = parsed.find ("cardIdentity");
+            identity != nullptr && identity->getType() == JsonValue::Type::String)
+            marker.cardIdentity = identity->asString();
 
         return marker;
     }
@@ -334,6 +340,7 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
 {
     Result result;
     result.cardFolder = marker.cardFolder;
+    result.cardIdentity = marker.cardIdentity;
 
     // 1. The take must be finished. A session.json without a stop time is the
     //    take recording now, or one a crash cut off: the recovery card stamps
@@ -448,12 +455,37 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
     if (root.empty() || volumecapacity::isUnderMissingMountPoint (root, [&fs] (const std::string& p) { return fs.exists (p); }))
         return finish (result, Outcome::CardMissing);
 
-    if (! fs.exists (root))
+    const bool rootThere = fs.exists (root);
+
+    if (! rootThere && (parentOf (root) == root || ! fs.exists (parentOf (root))))
+        return finish (result, Outcome::CardMissing);
+
+    // A card is there. Which one, before anything is made or written on it:
+    // the place a card mounts is not the card. Another one at it -- a drive
+    // letter Windows gave a USB stick, a camera card also called "NO NAME" --
+    // is left alone, and the take waits for its own card. "Copy again" takes
+    // whichever card is in.
+    auto cardFolderWanted = marker.cardFolder;
+
+    if (const auto here = fs.cardIdentity (root); ! here.empty() && here != marker.cardIdentity)
+    {
+        if (! marker.cardIdentity.empty() && ! control.anyCard)
+            return finish (result, Outcome::DifferentCard);
+
+        // This card is the take's from now on: in the note on this computer
+        // before the card is touched, so a crash or a quit keeps to it. A
+        // card taken over by "Copy again" chooses its own folder name.
+        if (! marker.cardIdentity.empty())
+            cardFolderWanted.clear();
+
+        result.cardIdentity = here;
+        result.cardFolder = cardFolderWanted;
+        rememberOnThisComputer ({ root, cardFolderWanted, here });
+    }
+
+    if (! rootThere)
     {
         const auto rootParent = parentOf (root);
-
-        if (rootParent == root || ! fs.exists (rootParent))
-            return finish (result, Outcome::CardMissing);
 
         // A card is there, without even the save folder: none of the take.
         look.looked = true;
@@ -465,7 +497,7 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
     // 4. The take's folder on the card, remembered on this computer BEFORE it
     //    is made: a crash in between then reuses it, rather than leaving an
     //    empty folder behind and copying into "_2".
-    auto cardFolder = marker.cardFolder;
+    auto cardFolder = cardFolderWanted;
 
     if (cardFolder.empty())
     {
@@ -478,8 +510,8 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
 
     result.cardFolder = cardFolder;
 
-    if (cardFolder != marker.cardFolder)
-        rememberOnThisComputer ({ root, cardFolder });
+    if (cardFolder != cardFolderWanted)
+        rememberOnThisComputer ({ root, cardFolder, result.cardIdentity });
 
     if (! fs.exists (cardFolder))
     {
@@ -830,6 +862,7 @@ Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marke
     // locked card, a file too big for its format, or a failure on this
     // computer's side says nothing about what is on it.
     const bool cardInDoubt = result.outcome == Outcome::CardMissing
+                          || result.outcome == Outcome::DifferentCard
                           || result.outcome == Outcome::CardWriteFailed
                           || result.outcome == Outcome::CopyDidNotMatch
                           || result.outcome == Outcome::NameTakenOnCard;
@@ -968,6 +1001,10 @@ std::string describeWholeTake (const Result& result, const std::string& localFol
         case Outcome::CardMissing:
             return "The card isn't plugged in. This take is safe on this computer in " + localFolder
                    + ", and will be copied when the card is back.";
+        case Outcome::DifferentCard:
+            return "The card in now isn't the one this take is for, so nothing was copied to it. This take "
+                   "is safe on this computer in " + localFolder + ", and will be copied when its own card "
+                   "is back. To copy it to the card that's in now, choose Copy again.";
         case Outcome::CardFull:
             return "The card is full." + safe;
         case Outcome::CardLocked:

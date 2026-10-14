@@ -59,6 +59,8 @@ public:
     std::optional<uint64_t> cardFree;
     bool cardIsFat32 = false;
     std::string cardType = "exfat";
+    /// Which card is in (cardIdentity()); empty when it cannot be told.
+    std::string cardId;
 
     struct Failure
     {
@@ -201,6 +203,12 @@ public:
     {
         calls.push_back ({ "filesystemTypeName", path });
         return cardType;
+    }
+
+    std::string cardIdentity (const std::string& path) override
+    {
+        calls.push_back ({ "cardIdentity", path });
+        return startsWith (path, "/cards/") ? cardId : std::string();
     }
 
     FsResult readText (const std::string& path, std::string& text) override
@@ -1481,6 +1489,78 @@ TEST_CASE (TakeCopyWording_ACopyThatFailedBeforeQuittingSaysWhereTheTakeIs)
     REQUIRE (two.find ("The copies of 2 takes to the card didn't finish.") == 0);
     REQUIRE (two.find ("2026-10-14_2000_Show: The card is full.") != std::string::npos);
     REQUIRE (two.find ("Late: The card isn't plugged in.") != std::string::npos);
+}
+
+// Mutation: the card's identity not compared. The place a card mounts is not
+// the card: Windows hands a card reader's letter to the next USB stick, and a
+// Mac mounts every FAT32 card at /Volumes/NO NAME. A take waiting for its
+// card was written to whatever was there, its note removed, and the user told
+// it was copied "to the card" -- while its own card never got it.
+TEST_CASE (TakeCopy_AnotherCardAtTheSamePlaceIsNotWrittenTo)
+{
+    FakeFs other;
+    finishedTake (other);
+    other.cardId = "uuid:STICK";
+    const auto refused = run (other, { kRoot, {}, "uuid:CARD" });
+    REQUIRE (refused.outcome == Outcome::DifferentCard);
+    REQUIRE (isFailure (refused.outcome));
+    REQUIRE (other.count ("makeFolder") == 0);
+    REQUIRE (other.count ("createNew") == 0);
+    REQUIRE (other.count ("rename") == 0);
+    REQUIRE (other.files.count (card ("MIX.wav")) == 0);
+    REQUIRE (refused.cardIdentity == "uuid:CARD");
+
+    const auto line = describe (refused, kLocal);
+    REQUIRE (line.find ("isn't the one this take is for") != std::string::npos);
+    REQUIRE (line.find ("safe on this computer in " + std::string (kLocal)) != std::string::npos);
+    REQUIRE (line.find ("Copy again") != std::string::npos);
+
+    // Its own card: copied.
+    FakeFs own;
+    finishedTake (own);
+    own.cardId = "uuid:CARD";
+    REQUIRE (run (own, { kRoot, {}, "uuid:CARD" }).outcome == Outcome::Copied);
+
+    // A card that cannot say which it is: copied, as before.
+    FakeFs unknown;
+    finishedTake (unknown);
+    REQUIRE (run (unknown, { kRoot, {}, "uuid:CARD" }).outcome == Outcome::Copied);
+
+    // "Copy again": the card in now is the one wanted, and becomes the take's.
+    FakeFs taken;
+    finishedTake (taken);
+    taken.cardId = "uuid:STICK";
+    Control again;
+    again.anyCard = true;
+    again.keepMarker = true;
+    const auto copied = run (taken, { kRoot, joinPath (kRoot, "Old_Name"), "uuid:CARD" }, &again);
+    REQUIRE (copied.outcome == Outcome::Copied);
+    REQUIRE (copied.cardIdentity == "uuid:STICK");
+    REQUIRE (copied.cardFolder == kCardTake); // its own folder name on this card
+    const auto note = markerFromJson (taken.files[local (kMarkerFileName)]);
+    REQUIRE (note.has_value() && note->cardIdentity == "uuid:STICK" && note->cardFolder == kCardTake);
+}
+
+// Mutation: the first card reached not remembered. A take armed with no card
+// in is for the first card its copy finds; from then on, for that one only.
+TEST_CASE (TakeCopy_TheFirstCardReachedBecomesTheTakesCard)
+{
+    FakeFs fs;
+    finishedTake (fs);
+    fs.cardId = "uuid:CARD";
+    fs.cardFree = 1; // full: the copy fails, the card is still the take's
+    const auto r = run (fs);
+    REQUIRE (r.outcome == Outcome::CardFull);
+    REQUIRE (r.cardIdentity == "uuid:CARD");
+
+    const auto note = markerFromJson (fs.files[local (kMarkerFileName)]);
+    REQUIRE (note.has_value() && note->cardIdentity == "uuid:CARD");
+
+    // Round trip, and a marker an earlier version wrote.
+    const auto back = markerFromJson (markerToJson ({ kRoot, kCardTake, "serial:1A2B3C4D" }));
+    REQUIRE (back.has_value() && back->cardIdentity == "serial:1A2B3C4D" && back->cardFolder == kCardTake);
+    const auto old = markerFromJson ("{ \"destinationRoot\": \"/cards/SD/RECORDINGS\", \"cardFolder\": \"\" }");
+    REQUIRE (old.has_value() && old->cardIdentity.empty());
 }
 
 TEST_CASE (TakeCopy_TheComputerCopyGoneIsSaid)

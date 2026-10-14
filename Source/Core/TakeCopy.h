@@ -9,6 +9,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mma {
@@ -112,10 +113,19 @@ inline constexpr uint64_t kFat32FileLimitBytes = 1ull << 32;
 
 struct Marker
 {
+    Marker() = default;
+    Marker (std::string root, std::string folder = {}, std::string identity = {})
+        : destinationRoot (std::move (root)), cardFolder (std::move (folder)), cardIdentity (std::move (identity)) {}
+
     /// The save location the take was meant for.
     std::string destinationRoot;
     /// The take's folder on the card, once chosen. Empty until then.
     std::string cardFolder;
+    /// Which card (cardIdentityOf): the one in when the take was armed, or
+    /// else the first the copy reached. Another card at the same place -- a
+    /// Windows drive letter now a USB stick's, a camera card also called "NO
+    /// NAME" -- is not written to. Empty when it could not be told.
+    std::string cardIdentity;
 };
 
 std::string markerToJson (const Marker& marker);
@@ -192,6 +202,9 @@ public:
     /// The format's name as the system gives it ("msdos", "exfat", "ntfs",
     /// "FAT32"), or empty. Only asked for the wording of a refused write.
     virtual std::string filesystemTypeName (const std::string&) { return {}; }
+    /// Which card is at `path` (cardIdentityOf), or empty when that cannot be
+    /// told. Never stands for "no card": that is asked with exists().
+    virtual std::string cardIdentity (const std::string&) { return {}; }
     virtual FsResult readText (const std::string& path, std::string& text) = 0;
     /// Written to a temporary file, flushed, and renamed over `path`.
     virtual FsResult replaceText (const std::string& path, const std::string& text) = 0;
@@ -216,6 +229,9 @@ enum class Outcome
     ComputerCopyMissing, ///< the take's folder on this computer is gone
     ComputerReadFailed,  ///< a file on this computer could not be opened or read, its folder still there
     CardMissing,
+    /// Another card is at the save location's place, not the one the take is
+    /// for (Marker::cardIdentity). Nothing was written to it.
+    DifferentCard,
     CardFull,
     CardLocked,
     NotAllowed,
@@ -248,6 +264,9 @@ struct Control
     /// copied (Result::filesOnCard). With it, a failed attempt works out
     /// whether this is only a file added since (Result::addedFilesOnly).
     const std::map<std::string, uint64_t>* copiedBefore = nullptr;
+    /// The user's "Copy again": the card in the reader now is the one wanted,
+    /// whichever card the take was for. It becomes the take's card.
+    bool anyCard = false;
 };
 
 struct Result
@@ -271,6 +290,9 @@ struct Result
     bool addedFilesOnly = false;
     /// Copied: every file of the take now on the card, by size.
     std::map<std::string, uint64_t> filesOnCard;
+    /// The card the take is for now (Marker::cardIdentity), once known, for
+    /// the next attempt.
+    std::string cardIdentity;
 };
 
 /// Copies the finished take in `localFolder` to the card, checks every file

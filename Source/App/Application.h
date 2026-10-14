@@ -987,6 +987,12 @@ private:
     TakeRoute currentTakeRoute = TakeRoute::StraightToDestination;
     /// The save location the take in progress is to be copied to.
     juce::String currentCopyRoot;
+    /// Which card the take recording now is for (cardIdentityOf), from the
+    /// status probe's last look between takes; empty when not known. Its
+    /// copy is never written to another card at the same place.
+    std::string currentCopyCardIdentity;
+    /// The card at the destination as the probe last saw it, between takes.
+    std::string cardIdentityAtDestination() const;
     bool lastTakeCopiesToCard = false;
     juce::String lastCopyRoot;
     /// "This computer is nearly full, so this take is going straight to the

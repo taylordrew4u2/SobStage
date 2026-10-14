@@ -69,4 +69,13 @@ VolumeIdentity volumeIdentityOf (const std::string& path) noexcept;
 /// the queries above, so it is asked on a worker or under a deadline.
 VolumeFingerprint volumeFingerprintOf (const std::string& path) noexcept;
 
+/// Which card or drive is at `path` (UTF-8), as cardIdentity() puts it:
+/// the same text when the same card is put back, different for another card
+/// at the same place -- a Windows drive letter handed to a USB stick, or two
+/// cards both called "NO NAME". Empty when it cannot be told, or nothing is
+/// mounted there. Mac and Linux: from volumeFingerprintOf(), and empty for a
+/// path under a mount point that is not there. Windows: the volume's serial
+/// number. Can block on a disappearing volume, like the queries above.
+std::string cardIdentityOf (const std::string& path) noexcept;
+
 } // namespace mma

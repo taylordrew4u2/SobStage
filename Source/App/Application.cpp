@@ -2933,6 +2933,7 @@ void Application::toggleRecording()
                 sessionStartIso = now.toISO8601 (true);
                 currentTakeRoute = route;
                 currentCopyRoot = juce::String (destinationFolder);
+                currentCopyCardIdentity = onComputer ? cardIdentityAtDestination() : std::string();
 
                 // Beside the take, on this computer: it still has to go to the
                 // card, and where to. What lets a quit or a crash before the
@@ -2941,7 +2942,8 @@ void Application::toggleRecording()
                 // still copied when this one stops.
                 if (onComputer
                     && ! replaceWithTextChecked (juce::File (folder).getChildFile (cardcopy::kMarkerFileName),
-                                                 juce::String (cardcopy::markerToJson ({ destinationFolder, {} }))))
+                                                 juce::String (cardcopy::markerToJson (
+                                                     { destinationFolder, {}, currentCopyCardIdentity }))))
                     noteActivity (ActivityLevel::Warning, "Card copy",
                                   "Couldn't make a note on this computer that this take still has to go "
                                   "to the card. It will still be copied when you stop, but not after a "
@@ -3421,7 +3423,7 @@ void Application::toggleRecording()
 
         if (lastTakeCopiesToCard)
             copyJob = CardCopier::Job { currentSessionFolder.toStdString(),
-                                        { currentCopyRoot.toStdString(), {} },
+                                        { currentCopyRoot.toStdString(), {}, currentCopyCardIdentity },
                                         followTakeFolderAfterTheTake(),
                                         moreFilesComing };
 
@@ -3438,6 +3440,7 @@ void Application::toggleRecording()
         currentMirrorFolder.clear();
         currentTakeRoute = TakeRoute::StraightToDestination;
         currentCopyRoot.clear();
+        currentCopyCardIdentity.clear();
         takeFolderTracker.close();
 
         // After the folder is let go, so no later line of this take's activity
@@ -3622,6 +3625,7 @@ void Application::tickCardCopies()
             cardCopier.retry ([] (const cardcopy::Result& r)
             {
                 return r.outcome == cardcopy::Outcome::CardMissing
+                    || r.outcome == cardcopy::Outcome::DifferentCard
                     || r.outcome == cardcopy::Outcome::NotFinishedYet
                     || r.outcome == cardcopy::Outcome::ComputerReadFailed;
             });
@@ -8486,6 +8490,19 @@ void Application::rescanDestinationIfItHasAppeared()
     destinationRecoveryRoot.clear();
     destinationRecoveryStatus = RecoveryScanStatus::NotStarted;
     startDestinationRecoveryScan();
+}
+
+std::string Application::cardIdentityAtDestination() const
+{
+    // The probe's last look, between takes, at this destination: never a
+    // filesystem call here, on the message thread, while Record is pressed.
+    const auto snapshot = filesystemStatusProbe.getSnapshot();
+
+    if (! snapshot.ready || snapshot.request.destinationPath != destinationFolder
+        || ! snapshot.request.sessionFolder.empty())
+        return {};
+
+    return snapshot.destinationCardIdentity;
 }
 
 bool Application::probeSeesAnotherDriveThanChecked (const PreflightResult& verdict) const

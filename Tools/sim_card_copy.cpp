@@ -98,6 +98,8 @@ struct Gate
 
     /// The card says it has no room: another card, full, in the reader.
     bool cardFull = false;
+    /// Which card the card folder says it is (cardIdentity); empty: unknown.
+    std::string cardId;
 
     /// Every write to a file whose name contains this takes `slowWriteMs`:
     /// a slow card, which is not one that has stopped answering.
@@ -177,6 +179,12 @@ public:
     }
     std::optional<bool> limitedTo4GiBFiles (const std::string& p) override { gate->note (p); return real.limitedTo4GiBFiles (p); }
     std::string filesystemTypeName (const std::string& p) override { gate->note (p); return real.filesystemTypeName (p); }
+    std::string cardIdentity (const std::string& p) override
+    {
+        gate->note (p);
+        const std::lock_guard<std::mutex> l (gate->lock);
+        return p.compare (0, gate->cardPrefix.size(), gate->cardPrefix) == 0 ? gate->cardId : std::string();
+    }
     cardcopy::FsResult readText (const std::string& p, std::string& t) override { gate->note (p); return real.readText (p, t); }
     cardcopy::FsResult replaceText (const std::string& p, const std::string& t) override { gate->note (p); return real.replaceText (p, t); }
     cardcopy::FsResult rename (const std::string& a, const std::string& b, bool r) override { gate->note (a); return real.rename (a, b, r); }
@@ -981,6 +989,64 @@ int main()
                "with card A back, the take is on it and only the added file is waiting");
         check (copier.summary().onlyOnComputer == 0 && copier.summary().addedFilesWaiting == 1,
                "and the status line says so");
+    }
+
+    // The place a card mounts is not the card. A take armed for one card,
+    // stopped with another at the same place -- a USB stick given the card
+    // reader's drive letter -- waits for its own, and goes to it when it is
+    // back; "Copy again" takes the one that is in.
+    std::printf ("\n13. Another card at the same place\n");
+    {
+        Fixture f;
+        const auto local = f.take ("2026-10-14_2355_ForCardA");
+        const auto onCard = f.card / "2026-10-14_2355_ForCardA";
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:STICK";
+        }
+
+        CardCopier copier (f.factory());
+        auto job = f.job (local);
+        job.marker.cardIdentity = "uuid:CARD-A";
+        copier.start (job);
+
+        const auto r = waitForResult (copier, 15s);
+        check (r.has_value() && r->result.outcome == cardcopy::Outcome::DifferentCard,
+               "the take is not copied to another card at its card's place");
+        check (! fs::exists (onCard), "nothing of it is written there");
+        check (fs::exists (local / cardcopy::kMarkerFileName), "it stays marked to be copied");
+        check (r.has_value() && cardcopy::describe (r->result, local.string()).find ("Copied") == std::string::npos,
+               "and is not called copied");
+        check (copier.summary().onlyOnComputer == 1 && copier.summary().cardMissing == 1,
+               "the line under Record says it will be copied when its card is back");
+
+        // Its own card is back: the retry the app makes every 10 s copies it.
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:CARD-A";
+        }
+        copier.retry ([] (const cardcopy::Result& res) { return res.outcome == cardcopy::Outcome::DifferentCard; });
+        const auto back = waitForResult (copier, 15s);
+        check (back.has_value() && back->result.outcome == cardcopy::Outcome::Copied, "its own card back, it is copied");
+        check (sameOnCard (local, onCard), "every file is on its card");
+
+        // Another take for card A; the user chooses "Copy again" with the stick in.
+        const auto second = f.take ("2026-10-14_2358_ForCardA");
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:STICK";
+        }
+        auto job2 = f.job (second);
+        job2.marker.cardIdentity = "uuid:CARD-A";
+        copier.start (job2);
+        const auto refused = waitForResult (copier, 15s);
+        check (refused.has_value() && refused->result.outcome == cardcopy::Outcome::DifferentCard,
+               "a second take waits for card A too");
+        check (copier.copyAgain (second.string()), "Copy again is taken");
+        const auto taken = waitForResult (copier, 15s);
+        check (taken.has_value() && taken->result.outcome == cardcopy::Outcome::Copied,
+               "and copies it to the card that is in");
+        check (sameOnCard (second, f.card / "2026-10-14_2358_ForCardA"), "every file is on it");
     }
 
     std::printf ("\n%s (%d checks, %d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILED", checks, failures);

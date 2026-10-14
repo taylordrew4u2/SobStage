@@ -124,7 +124,8 @@ public:
 
     /// The user's "Copy again", for the newest take at `localFolder`. False
     /// when the take is not one this copier knows, or it is already queued or
-    /// under way.
+    /// under way. The card in the reader is taken as the one wanted, even if
+    /// the take was for another (cardcopy::Control::anyCard).
     bool copyAgain (const std::string& localFolder);
 
     /// The combined videos and podcast copies being made are all finished:
@@ -183,6 +184,8 @@ private:
         /// A later attempt that fails says "only a file added since" only
         /// while the card it finds still holds these.
         std::map<std::string, uint64_t> copiedFiles;
+        /// "Copy again": the next attempt takes the card that is in.
+        bool anyCard = false;
         /// Gone again after following the folder through a rename: a bound,
         /// so a folder renamed over and over cannot keep the worker busy.
         int movedFolderRetries = 0;
