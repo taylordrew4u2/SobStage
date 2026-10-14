@@ -2258,6 +2258,90 @@ TEST_CASE (TakeCopy_Marker_RoundTripAndUnreadable)
     REQUIRE_FALSE (markerFromJson ("{ \"destinationRoot\": \"\" }").has_value());
 }
 
+TEST_CASE (TakeCopy_Marker_TakeNextCardRoundTrips)
+{
+    const Marker waiting { "/Volumes/SD/RECORDINGS", "/Volumes/SD/RECORDINGS/2026-10-14_2000_Show",
+                           "uuid:FAT", true };
+    const auto back = markerFromJson (markerToJson (waiting));
+    REQUIRE (back.has_value());
+    REQUIRE (back->takeNextCard);
+    REQUIRE (back->cardIdentity == "uuid:FAT");
+
+    // A marker written without it -- every take's at arm, and an earlier
+    // version's -- is for its own card.
+    const auto plain = markerFromJson (markerToJson ({ "/Volumes/SD/RECORDINGS", {}, "uuid:FAT" }));
+    REQUIRE (plain.has_value());
+    REQUIRE_FALSE (plain->takeNextCard);
+    REQUIRE (markerToJson ({ "/Volumes/SD/RECORDINGS", {} }).find ("takeNextCard") == std::string::npos);
+}
+
+// The bug: "reformat the card as ExFAT or use another card" was remembered
+// only in memory. Quit -- the usual moment a card is reformatted at home --
+// and the take found at the next launch refused the reformatted card, or any
+// other, as "not the one this take is for", for ever. Mutation: the note on
+// this computer not told, or not read.
+TEST_CASE (TakeCopy_AFileTooBigTakesTheNextCardEvenAfterARelaunch)
+{
+    FakeFs fs;
+    finishedTake (fs);
+    fs.cardId = "uuid:FAT";
+    fs.files[local (kMarkerFileName)] = markerToJson ({ kRoot, {}, "uuid:FAT" });
+    fs.writeFailPath = "MIX.wav";
+    fs.writeFailure = { FsError::TooBig, 27 };
+
+    REQUIRE (run (fs, { kRoot, {}, "uuid:FAT" }).outcome == Outcome::FileTooBig);
+
+    const auto noted = markerFromJson (fs.files[local (kMarkerFileName)]);
+    REQUIRE (noted.has_value());
+    REQUIRE (noted->takeNextCard);
+    REQUIRE (noted->cardIdentity == "uuid:FAT");
+
+    // The same card put back, still FAT32: still waiting for the next one.
+    {
+        Control fresh;
+        REQUIRE (run (fs, *noted, &fresh).outcome == Outcome::FileTooBig);
+        REQUIRE (markerFromJson (fs.files[local (kMarkerFileName)])->takeNextCard);
+    }
+
+    // Reformatted as ExFAT: erased, another identity. A fresh run of the app
+    // -- nothing in memory, only the note -- takes it.
+    fs.pullCard();
+    fs.addFolder (kRoot);
+    fs.writeFailPath.clear();
+    fs.cardId = "uuid:EXFAT";
+
+    Control fresh;
+    const auto r = run (fs, *markerFromJson (fs.files[local (kMarkerFileName)]), &fresh);
+    REQUIRE (r.outcome == Outcome::Copied);
+    REQUIRE (r.cardIdentity == "uuid:EXFAT");
+    REQUIRE_FALSE (r.cardFirstSeen);
+    REQUIRE (fs.files.count (card ("MIX.wav")) == 1);
+    REQUIRE (fs.files.count (local (kMarkerFileName)) == 0);
+}
+
+// Taken, a card is the take's own: the next card after it is another card.
+TEST_CASE (TakeCopy_TheNextCardTakenIsTheTakesOwn)
+{
+    FakeFs fs;
+    finishedTake (fs);
+    fs.cardId = "uuid:EXFAT";
+    fs.cardFree = 1000; // taken, then full: the take is still to copy
+    fs.files[local (kMarkerFileName)] = markerToJson ({ kRoot, {}, "uuid:FAT", true });
+
+    const auto full = run (fs, *markerFromJson (fs.files[local (kMarkerFileName)]));
+    REQUIRE (full.outcome == Outcome::CardFull);
+    REQUIRE (full.cardIdentity == "uuid:EXFAT");
+
+    const auto noted = markerFromJson (fs.files[local (kMarkerFileName)]);
+    REQUIRE (noted.has_value());
+    REQUIRE (noted->cardIdentity == "uuid:EXFAT");
+    REQUIRE_FALSE (noted->takeNextCard);
+
+    fs.cardId = "uuid:CAMERA";
+    fs.cardFree.reset();
+    REQUIRE (run (fs, *noted).outcome == Outcome::DifferentCard);
+}
+
 TEST_CASE (TakeCopy_PathsJoinAndSplit)
 {
     REQUIRE (parentOf ("/a/b/c") == "/a/b");

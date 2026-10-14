@@ -223,12 +223,6 @@ private:
         /// Queued again because its card was seen back in: work a quit would
         /// cut off, though its last attempt failed. Until that attempt ends.
         bool countsAsWork = false;
-        /// A file was too big for the take's card, and the user was told to
-        /// reformat it as ExFAT or use another card: either is a card with
-        /// another identity, and the next card the copy reaches is taken as
-        /// the take's -- not refused as "not the one this take is for", for
-        /// ever. Until an attempt reaches a card.
-        bool takeNextCard = false;
         /// An attempt took the card it reached as the take's, the take not
         /// knowing its card (cardcopy::Result::cardFirstSeen): said when the
         /// take is copied, even by a later attempt.

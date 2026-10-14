@@ -631,7 +631,9 @@ void CardCopier::run (std::shared_ptr<State> s)
                 job = record.job;
                 keepMarker = record.awaitingFollowUps;
                 copiedBefore = record.copiedFiles;
-                anyCard = record.anyCard || record.takeNextCard;
+                // A file too big for its card takes the next card itself
+                // (Marker::takeNextCard), in the note on this computer too.
+                anyCard = record.anyCard;
                 s->inFlight = key;
                 s->lastProgress = Clock::now();
             }
@@ -716,6 +718,8 @@ void CardCopier::run (std::shared_ptr<State> s)
             record.folderNow = movedTo;
             if (! result.cardFolder.empty())
                 record.job.marker.cardFolder = result.cardFolder;
+            if (! result.cardIdentity.empty() && result.cardIdentity != record.job.marker.cardIdentity)
+                record.job.marker.takeNextCard = false;
             if (! result.cardIdentity.empty())
                 record.job.marker.cardIdentity = result.cardIdentity;
             enqueueLocked (*s, key, true);
@@ -726,12 +730,15 @@ void CardCopier::run (std::shared_ptr<State> s)
 
         // The folder it chose on the card, kept for the next attempt so a take
         // is never copied twice into "_2" and "_3"; and the card it is for.
+        const bool cardTaken = ! result.cardIdentity.empty()
+                            && result.cardIdentity != record.job.marker.cardIdentity;
+
         if (! result.cardFolder.empty())
             record.job.marker.cardFolder = result.cardFolder;
 
         if (! result.cardIdentity.empty())
         {
-            if (result.cardIdentity != record.job.marker.cardIdentity)
+            if (cardTaken)
                 record.job.marker.cardFolder = result.cardFolder;
 
             record.job.marker.cardIdentity = result.cardIdentity;
@@ -745,16 +752,15 @@ void CardCopier::run (std::shared_ptr<State> s)
             record.countsAsWork = false;
         }
 
-        // Told to reformat the card or use another: the next card reached is
-        // the take's. Kept through attempts that reach no card at all.
+        // Told to use another card or reformat this one: the next card
+        // reached is the take's, as the note on this computer says too
+        // (copyTake keeps the two alike). Kept through every attempt until a
+        // card is taken or the take is copied -- the same card put back full
+        // or locked is not the card the user was sent to find.
         if (result.outcome == cardcopy::Outcome::FileTooBig)
-            record.takeNextCard = true;
-        else if (result.outcome != cardcopy::Outcome::Yielded && result.outcome != cardcopy::Outcome::Cancelled
-                 && result.outcome != cardcopy::Outcome::CardMissing
-                 && result.outcome != cardcopy::Outcome::NotFinishedYet
-                 && result.outcome != cardcopy::Outcome::ComputerCopyMissing
-                 && result.outcome != cardcopy::Outcome::ComputerReadFailed)
-            record.takeNextCard = false;
+            record.job.marker.takeNextCard = true;
+        else if (cardTaken || result.outcome == cardcopy::Outcome::Copied)
+            record.job.marker.takeNextCard = false;
 
         if (result.outcome == cardcopy::Outcome::Yielded)
         {

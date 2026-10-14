@@ -200,6 +200,8 @@ std::string markerToJson (const Marker& marker)
     root["destinationRoot"] = JsonValue (marker.destinationRoot);
     root["cardFolder"] = JsonValue (marker.cardFolder);
     root["cardIdentity"] = JsonValue (marker.cardIdentity);
+    if (marker.takeNextCard)
+        root["takeNextCard"] = JsonValue (true);
     return root.dump (2);
 }
 
@@ -223,6 +225,9 @@ std::optional<Marker> markerFromJson (const std::string& text)
         if (const auto* identity = parsed.find ("cardIdentity");
             identity != nullptr && identity->getType() == JsonValue::Type::String)
             marker.cardIdentity = identity->asString();
+
+        if (const auto* nextCard = parsed.find ("takeNextCard"))
+            marker.takeNextCard = nextCard->asBool (false);
 
         return marker;
     }
@@ -491,7 +496,7 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
 
     if (! here.empty() && here != marker.cardIdentity)
     {
-        if (! marker.cardIdentity.empty() && ! control.anyCard)
+        if (! marker.cardIdentity.empty() && ! control.anyCard && ! marker.takeNextCard)
             return finish (result, Outcome::DifferentCard);
 
         // This card is the take's from now on: in the note on this computer
@@ -535,8 +540,11 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
 
     result.cardFolder = cardFolder;
 
+    // Still waiting to take the next card only while this is the card it
+    // was told about: taken, it is the take's card now.
     if (cardFolder != cardFolderWanted)
-        rememberOnThisComputer ({ root, cardFolder, result.cardIdentity });
+        rememberOnThisComputer ({ root, cardFolder, result.cardIdentity,
+                                  marker.takeNextCard && result.cardIdentity == marker.cardIdentity });
 
     if (! fs.exists (cardFolder))
     {
@@ -880,6 +888,32 @@ Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marke
 
     CardLook look;
     auto result = copyTakeOnce (fs, localFolder, marker, control, verified, look);
+
+    // A file too big for this card: the user is told to use another card or
+    // reformat this one, and the next card reached is taken as the take's.
+    // Said in the note on this computer, so a quit before that card is in --
+    // the usual moment a card is reformatted -- keeps to it; and taken back
+    // once a card is taken or the take is copied.
+    {
+        const auto markerPath = joinPath (localFolder, kMarkerFileName);
+        const auto taken = ! result.cardIdentity.empty() && result.cardIdentity != marker.cardIdentity;
+        std::optional<Marker> rewrite;
+
+        if (result.outcome == Outcome::FileTooBig)
+            rewrite = Marker { marker.destinationRoot, result.cardFolder, result.cardIdentity, true };
+        else if (marker.takeNextCard && (taken || result.outcome == Outcome::Copied))
+            rewrite = Marker { marker.destinationRoot, result.cardFolder, result.cardIdentity, false };
+
+        // Written for a file too big even where the note was missing -- the
+        // take is still to go to a card; only rewritten where it is there
+        // otherwise, a copied take's having gone.
+        std::string onDisk;
+        const bool there = rewrite.has_value() && fs.readText (markerPath, onDisk).ok();
+
+        if (rewrite.has_value() && (there || result.outcome == Outcome::FileTooBig)
+            && onDisk != markerToJson (*rewrite))
+            (void) fs.replaceText (markerPath, markerToJson (*rewrite));
+    }
 
     // Only a file added since is missing when every file an earlier attempt
     // copied is on the card this attempt looked at -- the records by name,

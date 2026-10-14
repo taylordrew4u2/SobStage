@@ -1278,6 +1278,60 @@ int main()
        #endif
     }
 
+    // The same, with a quit in between: the card is reformatted at home,
+    // after the show, and the take is found at the next launch. "Take the
+    // next card" lived only in memory, so the reformatted card -- or any
+    // other -- was refused as "not the one this take is for", for ever.
+    std::printf ("\n18b. The card reformatted after a file too big for it, across a relaunch\n");
+    {
+       #if ! defined(_WIN32)
+        Fixture f;
+        const auto local = f.take ("2026-10-15_0115_Movie");
+        std::ofstream (local / cardcopy::kMarkerFileName)
+            << cardcopy::markerToJson ({ f.card.string(), {}, "uuid:FAT32-CARD" });
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:FAT32-CARD";
+        }
+
+        rlimit old {};
+        getrlimit (RLIMIT_FSIZE, &old);
+        rlimit small = old;
+        small.rlim_cur = 1u << 20;
+
+        {
+            CardCopier first (f.factory());
+            auto job = f.job (local);
+            job.marker.cardIdentity = "uuid:FAT32-CARD";
+            job.stoppedHere = true;
+            setrlimit (RLIMIT_FSIZE, &small);
+            first.start (job);
+            const auto tooBig = waitForResult (first, 15s);
+            setrlimit (RLIMIT_FSIZE, &old);
+            check (tooBig.has_value() && tooBig->result.outcome == cardcopy::Outcome::FileTooBig,
+                   "a file is too big for the card");
+        } // quit
+
+        // Reformatted as ExFAT at home: erased, and a new identity.
+        fs::remove_all (f.card);
+        fs::create_directories (f.card);
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:EXFAT-CARD";
+        }
+
+        CardCopier next (f.factory());
+        next.resumePendingIn (f.staging.string());
+        const auto copied = waitForResult (next, 15s);
+        check (copied.has_value() && copied->result.outcome == cardcopy::Outcome::Copied,
+               "at the next launch the reformatted card is taken as the take's, and the whole take goes to it");
+        check (sameOnCard (local, f.card / "2026-10-15_0115_Movie"), "every file is on it");
+        check (! fs::exists (local / cardcopy::kMarkerFileName), "and the take is no longer marked to be copied");
+       #else
+        check (true, "(RLIMIT_FSIZE is POSIX)");
+       #endif
+    }
+
     // A take that never knew its card -- none had been seen at its save
     // location -- takes the first one it reaches, and says so when it is
     // copied, even if the attempt that reached it failed (the card full).

@@ -114,8 +114,9 @@ inline constexpr uint64_t kFat32FileLimitBytes = 1ull << 32;
 struct Marker
 {
     Marker() = default;
-    Marker (std::string root, std::string folder = {}, std::string identity = {})
-        : destinationRoot (std::move (root)), cardFolder (std::move (folder)), cardIdentity (std::move (identity)) {}
+    Marker (std::string root, std::string folder = {}, std::string identity = {}, bool nextCard = false)
+        : destinationRoot (std::move (root)), cardFolder (std::move (folder)), cardIdentity (std::move (identity)),
+          takeNextCard (nextCard) {}
 
     /// The save location the take was meant for.
     std::string destinationRoot;
@@ -126,6 +127,13 @@ struct Marker
     /// Windows drive letter now a USB stick's, a camera card also called "NO
     /// NAME" -- is not written to. Empty when it could not be told.
     std::string cardIdentity;
+    /// A file was too big for the take's card, and the user was told to use
+    /// another card (or reformat this one): either is a card with another
+    /// identity, and the next card the copy reaches is taken as the take's --
+    /// not refused as "not the one this take is for", for ever. Kept on this
+    /// computer with the rest, so a quit and a relaunch -- the usual moment a
+    /// card is reformatted or swapped -- keep to it. Until a card is taken.
+    bool takeNextCard = false;
 };
 
 std::string markerToJson (const Marker& marker);
