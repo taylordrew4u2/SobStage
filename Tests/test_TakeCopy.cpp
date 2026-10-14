@@ -1652,7 +1652,7 @@ TEST_CASE (TakeCopyWording_AnAddedFileRefusedByAnotherCardNamesTheTakesOwnCard)
     REQUIRE (atQuit.find ("the next time you open SobStage with that card in") != std::string::npos);
     REQUIRE (atQuit.find ("Copy again") == std::string::npos);
     REQUIRE (atQuit.find (kCopyToThisCard) == std::string::npos);
-    REQUIRE (line.find ("To copy the whole take to the card that's in now, choose Copy to this card.")
+    REQUIRE (line.find ("To copy the whole take to the card in now, choose Copy to this card.")
              != std::string::npos);
 }
 
