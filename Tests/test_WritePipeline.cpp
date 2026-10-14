@@ -1,5 +1,7 @@
 #include "TestFramework.h"
 #include "Core/WritePipeline.h"
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
@@ -1146,4 +1148,114 @@ TEST_CASE (WritePipeline_WithNoOffsetsTheStemsAreWrittenAsTheyCame)
     REQUIRE (loudestFrameOf (tree.card() + "/02_Right.wav") == 137);
     REQUIRE (p.getChannelAlignmentOffset (0) == 0);
     REQUIRE (p.isAlignmentExact());
+}
+
+namespace {
+
+/// A 16-bit mono file's samples.
+std::vector<int> samplesOf (const std::string& path)
+{
+    std::ifstream f (path, std::ios::binary);
+    REQUIRE (f.is_open());
+    const auto bytes = readU32LE (f, kDataSizeOffset);
+    f.seekg (kAudioDataOffset);
+    std::vector<int> out;
+    out.reserve (bytes / 2);
+
+    for (uint32_t i = 0; i < bytes / 2; ++i)
+    {
+        unsigned char lo = 0, hi = 0;
+        f.read (reinterpret_cast<char*> (&lo), 1);
+        f.read (reinterpret_cast<char*> (&hi), 1);
+        out.push_back (static_cast<int16_t> (static_cast<uint16_t> (lo) | (static_cast<uint16_t> (hi) << 8)));
+    }
+
+    return out;
+}
+
+} // namespace
+
+TEST_CASE (WritePipeline_APairWeightMovesTheMixFromItsFrameAndNeverTheStems)
+{
+    // §2.1: a fresh two-input microphone starts in MIX.wav at half each, as
+    // in the headphones, and follows its verdict from the frame the verdict
+    // was handed over for -- reached over 10 ms, not in one step. Summed at
+    // unity it was in the file twice for the whole take. Left carries the
+    // voice at 0.8 and right is silent, so half each is 0.4 in the mix; a
+    // Mono verdict for the left side, or a Stereo one, brings it to 0.8.
+    // The stems are each microphone's own samples throughout.
+    constexpr int kBlock = 256;
+    constexpr int kVerdictFrame = 40 * kBlock;
+    const int quarter = static_cast<int> (std::lround (0.4 * 32767.0));
+    const int whole = static_cast<int> (std::lround (0.8 * 32767.0));
+
+    for (const float rightAfter : { 0.0f, 1.0f })
+    {
+        ScopedTempTree tree ("pair-weight");
+        auto specs = twoChannels();
+        specs[0].mixWeight = 0.5f;
+        specs[1].mixWeight = 0.5f;
+
+        WritePipeline p;
+        REQUIRE (p.start (tree.card(), specs, 48000.0, 16, "2026-10-14T00:00:00Z"));
+
+        std::vector<float> left (kBlock, 0.8f), right (kBlock, 0.0f);
+        const float* chans[] = { left.data(), right.data() };
+
+        for (int block = 0; block < 80; ++block)
+        {
+            const bool decided = block * kBlock >= kVerdictFrame;
+            const float weights[] = { decided ? 1.0f : 0.5f, decided ? rightAfter : 0.5f };
+            REQUIRE (p.pushBlock (chans, 2, kBlock, nullptr, nullptr, nullptr, weights));
+        }
+
+        p.stop();
+
+        const auto mix = samplesOf (tree.card() + "/MIX.wav");
+        const auto stemLeft = samplesOf (tree.card() + "/01_Left.wav");
+        const auto stemRight = samplesOf (tree.card() + "/02_Right.wav");
+        REQUIRE (mix.size() == static_cast<size_t> (80 * kBlock));
+
+        // The voice once, up to the frame before the verdict.
+        for (int i = 0; i < kVerdictFrame; ++i)
+            REQUIRE (std::abs (mix[static_cast<size_t> (i)] - quarter) <= 1);
+
+        // From that frame exactly, rising a 480th of the way a sample: 0.5
+        // to 1 takes 240 samples, and no sample jumps.
+        REQUIRE (mix[kVerdictFrame] - mix[kVerdictFrame - 1] >= 30);
+        int biggestStep = 0;
+        for (int i = kVerdictFrame; i < kVerdictFrame + 240; ++i)
+            biggestStep = std::max (biggestStep, std::abs (mix[static_cast<size_t> (i)] - mix[static_cast<size_t> (i) - 1]));
+        REQUIRE (biggestStep <= 60); // 0.8 / 480 is 55 LSB; a step to 0.8 would be 13107
+        REQUIRE (mix[kVerdictFrame + 120] > quarter + 2000);
+        REQUIRE (mix[kVerdictFrame + 120] < whole - 2000);
+
+        for (size_t i = kVerdictFrame + 240; i < mix.size(); ++i)
+            REQUIRE (std::abs (mix[i] - whole) <= 1);
+
+        for (size_t i = 0; i < stemLeft.size(); ++i)
+        {
+            REQUIRE (std::abs (stemLeft[i] - whole) <= 1);
+            REQUIRE (stemRight[i] == 0);
+        }
+    }
+}
+
+TEST_CASE (WritePipeline_WithNoPairWeightsTheMixIsThePlainSum)
+{
+    // Every channel not in a fresh pair: weight 1, nothing handed over, the
+    // mix the trimmed sum it always was.
+    ScopedTempTree tree ("no-pair-weight");
+    WritePipeline p;
+    REQUIRE (p.start (tree.card(), twoChannels(), 48000.0, 16, "2026-10-14T00:00:00Z"));
+
+    std::vector<float> left (256, 0.3f), right (256, 0.2f);
+    const float* chans[] = { left.data(), right.data() };
+    REQUIRE (p.pushBlock (chans, 2, 256));
+    p.stop();
+
+    const auto mix = samplesOf (tree.card() + "/MIX.wav");
+    REQUIRE (mix.size() == 256u);
+    for (const int v : mix)
+        REQUIRE (std::abs (v - static_cast<int> (std::lround (0.5 * 32767.0))) <= 1);
 }

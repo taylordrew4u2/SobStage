@@ -3,42 +3,6 @@
 
 namespace mma {
 
-void StemOffsetQueue::clear() noexcept
-{
-    head.store (0, std::memory_order_relaxed);
-    tail.store (0, std::memory_order_relaxed);
-}
-
-bool StemOffsetQueue::push (const StemOffsetEvent& event) noexcept
-{
-    const auto h = head.load (std::memory_order_relaxed);
-    const auto t = tail.load (std::memory_order_acquire);
-
-    if (h - t >= kCapacity)
-        return false;
-
-    slots[h % kCapacity] = event;
-    head.store (h + 1, std::memory_order_release);
-    return true;
-}
-
-bool StemOffsetQueue::peek (StemOffsetEvent& event) const noexcept
-{
-    const auto t = tail.load (std::memory_order_relaxed);
-    const auto h = head.load (std::memory_order_acquire);
-
-    if (t == h)
-        return false;
-
-    event = slots[t % kCapacity];
-    return true;
-}
-
-void StemOffsetQueue::pop() noexcept
-{
-    tail.store (tail.load (std::memory_order_relaxed) + 1, std::memory_order_release);
-}
-
 void StemAligner::prepare (int numChannels)
 {
     lines.clear();

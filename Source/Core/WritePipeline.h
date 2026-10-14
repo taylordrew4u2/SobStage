@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -11,6 +12,7 @@
 #include "MixBusLimiter.h"
 #include "LoudnessMeter.h"
 #include "StemAligner.h"
+#include "FrameEventQueue.h"
 
 namespace mma {
 
@@ -29,6 +31,23 @@ struct WriteChannelSpec
     /// no per-device answer passes -- the manual override, and the two backends
     /// that do not report capability yet.
     int bitDepth = 0;
+
+    /// §2.1: the weight this channel is summed into MIX.wav at when the take
+    /// starts, on top of its trim -- 1, except for one side of a fresh
+    /// two-input device whose layout is still being decided (0.5) or has
+    /// been decided Mono and is not the chosen side (0). Moved mid-take by
+    /// pushBlock's `channelMixWeights`. Never applied to the stem.
+    float mixWeight = 1.0f;
+};
+
+/// One channel's weight in MIX.wav changing: from `frame` of the take on
+/// (counted in frames the writer accepted), channel `channel` is summed in
+/// at `weight`, reached over WritePipeline::kMixWeightRampSeconds.
+struct MixWeightEvent
+{
+    uint64_t frame = 0;
+    int channel = 0;
+    float weight = 1.0f;
 };
 
 /// §6.3 write pipeline: the audio callback hands blocks to a lock-free ring
@@ -73,10 +92,23 @@ public:
     /// such a change back, or is room the channel's own stream gave back
     /// (StemOffsetKind) -- `channelReleased` samples of it; null means every
     /// change is settled.
+    ///
+    /// `channelMixWeights`, when given, is the weight each channel is to be
+    /// summed into MIX.wav at, on top of its trim, from this block on (§2.1:
+    /// the same weight the headphones give a fresh two-input microphone's
+    /// pair). A change is queued tagged with this block's first frame, like
+    /// an offset, and the writer moves to it over kMixWeightRampSeconds from
+    /// there. The stems never see it. Null leaves every weight where it is.
     bool pushBlock (const float* const* channelData, int numChannels, int numSamples,
                     const int* channelOffsets = nullptr,
                     const StemOffsetKind* channelOffsetKinds = nullptr,
-                    const int* channelReleased = nullptr) noexcept;
+                    const int* channelReleased = nullptr,
+                    const float* channelMixWeights = nullptr) noexcept;
+
+    /// How long a change of a channel's MIX.wav weight takes. The same 10 ms
+    /// the headphones take: a pair going from half each to both at unity is
+    /// a 6 dB step, a click if it lands in one sample.
+    static constexpr double kMixWeightRampSeconds = 0.010;
 
     /// How the stems were lined up, per channel: the offset in force now and
     /// the one the take started with, the silence written mid-take to hold a
@@ -276,6 +308,17 @@ private:
 
     std::vector<float> trimGains;      // linear, from WriteChannelSpec::trimDb
     std::vector<std::atomic<bool>> channelLive;
+
+    // §2.1's pair weights in MIX.wav. The audio thread queues each change
+    // (publishedMixWeights is what it has queued, audio-thread-owned); the
+    // writer moves each channel's weight towards the last one it was handed,
+    // from the frame it was tagged with (writer-owned, reset at start()).
+    FrameEventQueue<MixWeightEvent, 1024> mixWeightQueue;
+    std::vector<float> publishedMixWeights;
+    std::vector<float> mixWeights;
+    std::vector<float> mixWeightTargets;
+    float mixWeightStep = 1.0f;
+    std::vector<MixWeightEvent> chunkWeightEvents; // writer scratch, reserved at start()
 
     std::thread writerThread;
     std::atomic<bool> running { false };

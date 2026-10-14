@@ -190,10 +190,10 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     }
 
     monitorPairWeight.assign (channels.size(), 1.0f);
-    monitorPairTarget.assign (channels.size(), 1.0f);
+    pairTargetWeights.assign (channels.size(), 1.0f);
     for (size_t i = 0; i < channels.size(); ++i)
         if (monitorPairAnalyzer[i] >= 0)
-            monitorPairWeight[i] = monitorPairTarget[i] = kUnsettledPairMonitorGain;
+            monitorPairWeight[i] = pairTargetWeights[i] = kUnsettledPairWeight;
 
     // A headphone/capture-card output is never allowed to make the recording
     // inputs unavailable. Enumeration can say an output supports a rate and
@@ -973,8 +973,12 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     std::vector<WriteChannelSpec> specs;
     specs.reserve (channels.size());
 
-    for (const auto& ch : channels)
-        specs.push_back ({ ch.fileName, ch.trimDb, ch.bitDepth });
+    // §2.1: each channel starts in MIX.wav at the weight the headphones give
+    // it now -- half each for a fresh pair still being decided -- and the
+    // callback hands the writer every change from there.
+    for (size_t i = 0; i < channels.size(); ++i)
+        specs.push_back ({ channels[i].fileName, channels[i].trimDb, channels[i].bitDepth,
+                           pairTargetWeight (i) });
 
     // Opening the files is the take's first write to the card, so it runs on
     // a disposable worker with a deadline. A card pulled at that instant used
@@ -1514,7 +1518,7 @@ void CaptureCoordinator::analyzeStereoPair (int channelIndex, const float* left,
     }
 }
 
-float CaptureCoordinator::pairMonitorTarget (size_t channel) const noexcept
+float CaptureCoordinator::pairTargetWeight (size_t channel) const noexcept
 {
     if (channel >= monitorPairAnalyzer.size() || monitorPairAnalyzer[channel] < 0)
         return 1.0f;
@@ -1532,7 +1536,7 @@ float CaptureCoordinator::pairMonitorTarget (size_t channel) const noexcept
     // stays at half each until a real answer. The acquire pairs with the
     // release that published the decision and its side.
     if (! layout.decisionPersistable.load (std::memory_order_acquire))
-        return kUnsettledPairMonitorGain;
+        return kUnsettledPairWeight;
 
     switch (static_cast<ChannelLayoutDecision> (layout.decision.load (std::memory_order_acquire)))
     {
@@ -1547,7 +1551,7 @@ float CaptureCoordinator::pairMonitorTarget (size_t channel) const noexcept
 
         case ChannelLayoutDecision::Pending:
         default:
-            return kUnsettledPairMonitorGain;
+            return kUnsettledPairWeight;
     }
 }
 
@@ -2101,8 +2105,20 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     if (inputs == nullptr || channelCount <= 0)
         return;
 
+    // §2.1: where each analysed pair's weight is headed this block, for the
+    // headphones below and for MIX.wav alike, so a fresh two-input microphone
+    // is in both once, and both follow its verdict at once. Worked out before
+    // the writer is handed the block, and whether or not anything is
+    // listening. A few atomic loads per pair; sized at startMonitoring().
+    const bool pairTargetsReady = static_cast<int> (pairTargetWeights.size()) >= channelCount;
+
+    if (pairTargetsReady)
+        for (int ch = 0; ch < channelCount; ++ch)
+            pairTargetWeights[static_cast<size_t> (ch)] = pairTargetWeight (static_cast<size_t> (ch));
+
     // §6: recording gets the raw channels. §4 keeps stems at unity and applies
-    // trim only to the mix, which the pipeline does itself.
+    // trim only to the mix, which the pipeline does itself -- as it does the
+    // pair weights.
     //
     // The busy count is taken before the load and released after the call, so
     // stopRecording cannot free the pipeline between the two.
@@ -2119,7 +2135,8 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
         // rejects a mismatched block anyway -- what it does with it now is
         // count it.
         activeWriter->pushBlock (inputs, channelCount, numSamples, recordingOffsetsForBlock,
-                                 recordingOffsetKindsForBlock, recordingOffsetReleasedForBlock);
+                                 recordingOffsetKindsForBlock, recordingOffsetReleasedForBlock,
+                                 pairTargetsReady ? pairTargetWeights.data() : nullptr);
     }
 
     pipelineUsers.fetch_sub (1, std::memory_order_release);
@@ -2187,7 +2204,7 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
         || static_cast<int> (trimFrame.size()) < channelCount
         || static_cast<int> (trimGains.size()) < channelCount
         || static_cast<int> (monitorPairWeight.size()) < channelCount
-        || static_cast<int> (monitorPairTarget.size()) < channelCount)
+        || static_cast<int> (pairTargetWeights.size()) < channelCount)
     {
         for (int ch = 0; ch < numOutputs; ++ch)
             if (outputs[ch] != nullptr)
@@ -2207,14 +2224,13 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     for (size_t ch = static_cast<size_t> (channelCount); ch < trimFrame.size(); ++ch)
         trimFrame[ch] = 0.0f;
 
-    // Where each analysed pair's headphone weight is headed this block (see
-    // startMonitoring). Read once per block: a few atomic loads per pair.
+    // Whether any analysed pair's headphone weight is still on its way to
+    // the target worked out above (see startMonitoring).
     bool pairWeightsMoving = false;
     for (int ch = 0; ch < channelCount; ++ch)
     {
         const auto i = static_cast<size_t> (ch);
-        monitorPairTarget[i] = pairMonitorTarget (i);
-        pairWeightsMoving = pairWeightsMoving || monitorPairWeight[i] != monitorPairTarget[i];
+        pairWeightsMoving = pairWeightsMoving || monitorPairWeight[i] != pairTargetWeights[i];
     }
 
     // A verdict moves the weights over 10 ms rather than in one step: a pair
@@ -2235,9 +2251,9 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
             const auto i = static_cast<size_t> (ch);
             float weight = monitorPairWeight[i];
 
-            if (pairWeightsMoving && weight != monitorPairTarget[i])
+            if (pairWeightsMoving && weight != pairTargetWeights[i])
             {
-                const float target = monitorPairTarget[i];
+                const float target = pairTargetWeights[i];
                 weight = weight < target ? std::min (target, weight + pairWeightStep)
                                          : std::max (target, weight - pairWeightStep);
                 monitorPairWeight[i] = weight;

@@ -298,11 +298,12 @@ files really are empty and the card says so instead of calling it saved.
 - **A new two-channel USB microphone.** Many USB microphones send the same
   voice on two channels, and the app listens for about three seconds of
   sound to tell that from two separate inputs. Until it knows, the
-  headphones play each channel at half level, so a mic like that is heard
-  once, at its true level, rather than twice as loud. As soon as it knows,
-  they play just the one channel, or both at full level if they really are
-  two inputs (which sound a little quiet until then), even mid-take. The
-  recording keeps both channels, each at full level, until you stop.
+  headphones and `MIX.wav` take each channel at half level, so a mic like
+  that is heard once, at its true level, rather than twice as loud. As soon
+  as it knows, they take just the one channel, or both at full level if they
+  really are two inputs (which sound a little quiet until then), even
+  mid-take. The microphone's own tracks keep both channels, each at full
+  level, until you stop.
 - **The Mac sleeping (macOS).** Close the lid with the app open and, when the
   Mac wakes, the app waits for your microphones and headphones to start again
   rather than calling them unplugged. The same goes for the Mac waking with

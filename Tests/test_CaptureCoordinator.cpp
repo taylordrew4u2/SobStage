@@ -3173,12 +3173,13 @@ TEST_CASE (CaptureCoordinator_AFreshDuplicatedPairIsHeardOnceNotTwice)
     c.stopMonitoring();
 }
 
-TEST_CASE (CaptureCoordinator_AVerdictReachedMidTakeReachesTheHeadphonesButNotTheStems)
+TEST_CASE (CaptureCoordinator_AVerdictReachedMidTakeReachesTheHeadphonesAndMixButNotTheStems)
 {
     // Record pressed before the verdict: the layout is only rebuilt while
     // idle, so the doubled voice used to last the whole take. The verdict now
-    // reaches the headphones the moment it is reached, and the stems -- both
-    // of them, each at unity -- are exactly what they were.
+    // reaches the headphones the moment it is reached, and MIX.wav from the
+    // same frame, and the stems -- both of them, each at unity -- are exactly
+    // what they were.
     const auto dir = tempDir() + "/fresh_pair_mid_take";
     std::filesystem::create_directories (dir);
     std::remove ((dir + "/01_Fresh-USB-1.wav").c_str());
@@ -3223,9 +3224,70 @@ TEST_CASE (CaptureCoordinator_AVerdictReachedMidTakeReachesTheHeadphonesButNotTh
     REQUIRE (loudestMagnitudeIn (dir + "/01_Fresh-USB-1.wav") == 0);
     REQUIRE (std::abs (loudestMagnitudeIn (dir + "/02_Fresh-USB-2.wav") - static_cast<int> (std::lround (0.4 * 32767.0))) <= 1);
 
+    // MIX.wav follows the headphones: the live side at half while it was
+    // being worked out, then alone at unity once the verdict was in.
+    const auto mix = stemSamples (dir + "/MIX.wav");
+    REQUIRE (mix.size() > 48000u * 3u);
+    REQUIRE (std::abs (mix[48000] - static_cast<int> (std::lround (0.2 * 32767.0))) <= 1);
+    REQUIRE (std::abs (static_cast<int> (mix.back()) - static_cast<int> (std::lround (0.4 * 32767.0))) <= 1);
+
     std::remove ((dir + "/01_Fresh-USB-1.wav").c_str());
     std::remove ((dir + "/02_Fresh-USB-2.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
+}
+
+TEST_CASE (CaptureCoordinator_AFreshPairIsInMixWavOnceBeforeAndAfterItsVerdict)
+{
+    // MIX.wav is summed from every take channel, so a fresh duplicated USB
+    // microphone recorded before its verdict was in it twice -- +6 dB, for
+    // the whole take, since the layout is only rebuilt while idle -- and
+    // that one doubled voice drove the file's -1 dBFS limiter. The writer is
+    // now handed the headphones' pair weights: half each until the verdict,
+    // the chosen side alone after it. Both stems stay at full level.
+    const auto dir = tempDir() + "/fresh_pair_mix_once";
+    std::filesystem::create_directories (dir);
+    for (const char* name : { "/01_Fresh-USB-1.wav", "/02_Fresh-USB-2.wav", "/MIX.wav" })
+        std::remove ((dir + name).c_str());
+
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (freshStereoPair(), "out-device"));
+    REQUIRE (c.startRecording (dir, 16, "2026-10-14T00:00:00Z"));
+
+    const std::vector<float> voice (64, 0.3f);
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+
+    for (int block = 0; block < 2400; ++block) // 3.2 s: the verdict lands mid-take
+    {
+        pushStereo (backend, 0, voice, voice);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Mono);
+    REQUIRE (c.getChannels().size() == 2);
+
+    c.stopRecording();
+    c.stopMonitoring();
+
+    const int once = static_cast<int> (std::lround (0.3 * 32767.0));
+    const auto mix = stemSamples (dir + "/MIX.wav");
+    REQUIRE (mix.size() > 48000u * 3u);
+
+    int loudest = 0;
+    for (const auto v : mix)
+        loudest = std::max (loudest, std::abs (static_cast<int> (v)));
+
+    REQUIRE (std::abs (loudest - once) <= 1);                        // never twice
+    REQUIRE (std::abs (mix[48000] - once) <= 1);                     // 1 s in, before the verdict
+    REQUIRE (std::abs (static_cast<int> (mix.back()) - once) <= 1);  // after it
+
+    REQUIRE (loudestMagnitudeIn (dir + "/01_Fresh-USB-1.wav") == once);
+    REQUIRE (loudestMagnitudeIn (dir + "/02_Fresh-USB-2.wav") == once);
+
+    for (const char* name : { "/01_Fresh-USB-1.wav", "/02_Fresh-USB-2.wav", "/MIX.wav" })
+        std::remove ((dir + name).c_str());
 }
 
 TEST_CASE (CaptureCoordinator_AStereoVerdictBringsBothSidesBackToUnity)

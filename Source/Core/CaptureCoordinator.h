@@ -948,18 +948,19 @@ private:
     std::vector<float> trimFrame;
     std::vector<float> trimGains;
 
-    // §2.1 in the headphones: for each channel of a fresh two-input device
-    // whose layout is still being analysed, the channel that analyses the pair
-    // (its input 0), else -1; which side of the pair it is; the weight it is
-    // monitored at now and the weight it is heading for. Sized at
+    // §2.1 in the headphones and MIX.wav: for each channel of a fresh
+    // two-input device whose layout is still being analysed, the channel that
+    // analyses the pair (its input 0), else -1; which side of the pair it is;
+    // the weight it is monitored at now; and the weight it is heading for,
+    // which is also handed to the writer for MIX.wav each block. Sized at
     // startMonitoring(), read and moved only by the callback.
     std::vector<int> monitorPairAnalyzer;
     std::vector<int> monitorPairSide;
     std::vector<float> monitorPairWeight;
-    std::vector<float> monitorPairTarget;
-    static constexpr float kUnsettledPairMonitorGain = 0.5f;
+    std::vector<float> pairTargetWeights;
+    static constexpr float kUnsettledPairWeight = 0.5f;
     static constexpr double kPairWeightRampSeconds = 0.010;
-    float pairMonitorTarget (size_t channel) const noexcept;
+    float pairTargetWeight (size_t channel) const noexcept;
 
     // The headphone limiter's engagement count the mix meter's CLIP has
     // caught up with. Audio-thread-owned (whichever thread is mixing).

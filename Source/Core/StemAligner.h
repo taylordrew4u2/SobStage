@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include "FrameEventQueue.h"
 
 namespace mma {
 
@@ -46,33 +47,11 @@ struct StemOffsetEvent
 };
 
 /// Carries alignment changes from the audio thread to the writer thread,
-/// beside the audio itself. Single producer (the callback handing blocks to
-/// WritePipeline), single consumer (the writer). Fixed storage, no locks and
-/// no allocation on either side (§11).
-class StemOffsetQueue
-{
-public:
-    /// Changes come only when a device's IO size or the rig's slowest device
-    /// changes -- a handful a take -- so this is far more than is ever queued.
-    static constexpr size_t kCapacity = 1024;
-
-    /// Not concurrent with push or pop: before the take's audio starts.
-    void clear() noexcept;
-
-    /// Producer. False when full; nothing is queued then.
-    bool push (const StemOffsetEvent& event) noexcept;
-
-    /// Consumer: the oldest change, without taking it.
-    bool peek (StemOffsetEvent& event) const noexcept;
-
-    /// Consumer: takes the oldest change. Only after a successful peek.
-    void pop() noexcept;
-
-private:
-    std::array<StemOffsetEvent, kCapacity> slots {};
-    std::atomic<size_t> head { 0 }; // next slot the producer writes
-    std::atomic<size_t> tail { 0 }; // next slot the consumer reads
-};
+/// beside the audio itself (FrameEventQueue: single producer, single
+/// consumer, fixed storage, no locks, no allocation). Changes come only when
+/// a device's IO size or the rig's slowest device changes -- a handful a take
+/// -- so 1024 is far more than is ever queued.
+using StemOffsetQueue = FrameEventQueue<StemOffsetEvent, 1024>;
 
 /// Lines the stems up on the writer thread, where it costs the headphones
 /// nothing (§5.4, §6.1).
