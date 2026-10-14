@@ -163,12 +163,41 @@ std::string describeStillSaving (const StillSaving& work)
     else
     {
         const int n = work.takesCopying;
+        const int added = work.takesAddingFiles;
         const bool one = n == 1;
         const auto takes = one ? std::string ("1 take") : n > 1 ? std::to_string (n) + " takes" : std::string ("takes");
 
-        text = "SobStage is still copying " + takes + " to the card. " + (one ? "It isn't" : "They aren't")
-             + " on the card yet: quitting now leaves " + (one ? "it" : "them") + " only on this computer, in "
-             + work.computerFolder + ", to be copied the next time you open SobStage with the card in.";
+        // A take already copied and checked whose combined video or podcast
+        // copy is all that is going: the take is on the card, and only that
+        // file stays here. "It isn't on the card yet" contradicted its
+        // saved-take card ("Copied to the card") and read as a copy undone.
+        const auto addedFiles = [&] (bool alone)
+        {
+            const bool oneAdded = added == 1;
+            return std::string (alone ? "SobStage is still copying " : "It is also still copying ")
+                 + (oneAdded ? "a file added to 1 " + std::string (alone ? "" : "other ")
+                                   + "take since it was copied (a combined video or podcast copy)"
+                             : "files added to " + std::to_string (added) + (alone ? "" : " other")
+                                   + " takes since they were copied (combined videos or podcast copies)")
+                 + " to the card. " + (oneAdded ? "That take is" : "Those takes are")
+                 + " on the card already; quitting now leaves only " + (oneAdded ? "that file" : "those files")
+                 + " on this computer, in " + work.computerFolder
+                 + ", to be copied the next time you open SobStage with the card in.";
+        };
+
+        if (n == 0 && added > 0)
+        {
+            text = addedFiles (true);
+        }
+        else
+        {
+            text = "SobStage is still copying " + takes + " to the card. " + (one ? "It isn't" : "They aren't")
+                 + " on the card yet: quitting now leaves " + (one ? "it" : "them") + " only on this computer, in "
+                 + work.computerFolder + ", to be copied the next time you open SobStage with the card in.";
+
+            if (added > 0)
+                text += " " + addedFiles (false);
+        }
 
         if (! work.otherWork.empty())
             text += " It is also still making " + work.otherWork + ", which quitting now cancels.";

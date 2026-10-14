@@ -202,10 +202,29 @@ bool CardCopier::hasWorkToFinish() const
     return false;
 }
 
-int CardCopier::takesToFinish() const
+bool CardCopier::isAddingFilesOnlyLocked (const Record& record)
 {
-    const std::lock_guard<std::mutex> lock (state->lock);
-    int takes = state->inFlight != 0 ? 1 : 0;
+    return record.resync
+        || (record.last.has_value() && cardcopy::isFailure (record.last->outcome) && record.last->addedFilesOnly);
+}
+
+std::pair<int, int> CardCopier::countWorkLocked() const
+{
+    int whole = 0, addingFiles = 0;
+
+    const auto count = [&] (const Record* record)
+    {
+        if (record != nullptr && isAddingFilesOnlyLocked (*record))
+            ++addingFiles;
+        else
+            ++whole;
+    };
+
+    if (state->inFlight != 0)
+    {
+        const auto found = state->records.find (state->inFlight);
+        count (found != state->records.end() ? &found->second : nullptr);
+    }
 
     for (const auto id : state->queued)
     {
@@ -214,11 +233,25 @@ int CardCopier::takesToFinish() const
 
         const auto found = state->records.find (id);
 
-        if (found == state->records.end() || isWorkLocked (found->second))
-            ++takes;
+        if (found == state->records.end())
+            count (nullptr);
+        else if (isWorkLocked (found->second))
+            count (&found->second);
     }
 
-    return takes;
+    return { whole, addingFiles };
+}
+
+int CardCopier::takesToFinish() const
+{
+    const std::lock_guard<std::mutex> lock (state->lock);
+    return countWorkLocked().first;
+}
+
+int CardCopier::takesAddingFilesToFinish() const
+{
+    const std::lock_guard<std::mutex> lock (state->lock);
+    return countWorkLocked().second;
 }
 
 int CardCopier::takesNotOnCard() const

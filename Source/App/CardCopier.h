@@ -121,9 +121,16 @@ public:
     /// moment ago at Stop counts, before the worker has picked it up.
     bool hasWorkToFinish() const;
 
-    /// How many takes hasWorkToFinish() is for. 0 with work to finish while
-    /// the takes left at the last quit are still being looked for.
+    /// How many takes hasWorkToFinish() is for that are not on the card yet.
+    /// 0 with work to finish while the takes left at the last quit are still
+    /// being looked for. Not a take already copied and checked whose combined
+    /// video or podcast copy is all that is going now (takesAddingFilesToFinish).
     int takesToFinish() const;
+
+    /// Takes hasWorkToFinish() is for that are on the card already, and are
+    /// only being given a file added to them since: a combined video or
+    /// podcast copy. "It isn't on the card yet" is untrue of them.
+    int takesAddingFilesToFinish() const;
 
     /// Takes not on the card at all, and not being copied now: their last
     /// attempt failed, and not only for a file too big for the card or one
@@ -238,6 +245,15 @@ private:
 
     /// Under the lock: whether a queued take is work a quit would cut off.
     static bool isWorkLocked (const Record& record);
+
+    /// Under the lock: the take itself is on its card, and only a file added
+    /// since is to go -- a run after the combined video, or a retry of one
+    /// that failed for that file alone.
+    static bool isAddingFilesOnlyLocked (const Record& record);
+
+    /// Under the lock: the takes counted as work, as {whole takes, takes only
+    /// being given a file added since}.
+    std::pair<int, int> countWorkLocked() const;
 
     struct State
     {

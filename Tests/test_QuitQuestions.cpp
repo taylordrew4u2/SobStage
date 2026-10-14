@@ -349,6 +349,36 @@ TEST_CASE (QuitQuestions_StillSavingTheCopyToTheCardSaysTheTakeIsNotOnTheCardYet
     REQUIRE (both.find ("already saved") == std::string::npos);
 }
 
+// The bug: a take already copied and checked -- its saved-take card saying
+// "Copied to the card" -- whose combined video was then being copied was
+// called "still copying 1 take to the card. It isn't on the card yet". Its
+// audio was. Mutation: a file added since counted as a whole take.
+TEST_CASE (QuitQuestions_StillSavingOnlyAnAddedFileSaysTheTakeIsOnTheCard)
+{
+    StillSaving copy;
+    copy.copyingToCard = true;
+    copy.takesCopying = 0;
+    copy.takesAddingFiles = 1;
+    copy.computerFolder = "/Users/me/RECORDINGS-MIRROR";
+
+    const auto text = describeStillSaving (copy);
+    REQUIRE (text.find ("isn't on the card yet") == std::string::npos);
+    REQUIRE (text.find ("aren't on the card yet") == std::string::npos);
+    REQUIRE (text.find ("a file added to 1 take since it was copied (a combined video or podcast copy)")
+             != std::string::npos);
+    REQUIRE (text.find ("That take is on the card already") != std::string::npos);
+    REQUIRE (text.find ("leaves only that file on this computer, in /Users/me/RECORDINGS-MIRROR")
+             != std::string::npos);
+
+    // Beside a whole take still going: each said as what it is.
+    copy.takesCopying = 1;
+    copy.takesAddingFiles = 2;
+    const auto both = describeStillSaving (copy);
+    REQUIRE (both.find ("still copying 1 take to the card. It isn't on the card yet") != std::string::npos);
+    REQUIRE (both.find ("also still copying files added to 2 other takes") != std::string::npos);
+    REQUIRE (both.find ("Those takes are on the card already") != std::string::npos);
+}
+
 TEST_CASE (QuitQuestions_StillSavingTheCombinedVideoKeepsItsWords)
 {
     StillSaving video;

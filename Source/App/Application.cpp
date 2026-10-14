@@ -3876,6 +3876,7 @@ juce::String Application::stillSavingMessage() const
     work.otherWork = inWords (other).toStdString();
     work.copyingToCard = cardCopier.hasWorkToFinish();
     work.takesCopying = cardCopier.takesToFinish();
+    work.takesAddingFiles = cardCopier.takesAddingFilesToFinish();
     work.takesNotOnCard = cardCopier.takesNotOnCard();
     work.computerFolder = backupRootFolder().getFullPathName().toStdString();
     return juce::String (describeStillSaving (work));

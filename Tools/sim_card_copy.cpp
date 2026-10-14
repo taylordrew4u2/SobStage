@@ -460,8 +460,14 @@ int main()
         writeBytes (local / "V01_Cam_with-sound.mov", 1u << 20, 9);
         fs::remove_all (earlier); // deleted from this computer once on the card
         f.gate->reset();
+        copier.setHeld (true);
         check (copier.followUpsFinished() == 1, "only the take it was made for goes again");
         check (copier.hasWorkToFinish(), "which a quit now waits for");
+        // Its audio is on the card and checked: a quit says the combined
+        // video is still going, never that the take isn't on the card.
+        check (copier.takesToFinish() == 0 && copier.takesAddingFilesToFinish() == 1,
+               "as a file added to a take on the card, not as a take not on it");
+        copier.setHeld (false);
         const auto again = waitForResult (copier, 15s);
         check (again.has_value() && again->result.outcome == cardcopy::Outcome::Copied
                    && again->localFolder == local.string(), "and is copied");
@@ -507,6 +513,16 @@ int main()
         copier.setHeld (false);
         check (waitForResult (copier, 15s).has_value(), "the retry finds the card still out");
         fs::rename (f.base / "CARD-out", cardRoot);
+
+        // The card put back in: the retry is work a quit waits for, and it is
+        // for the added file alone.
+        copier.setHeld (true);
+        check (copier.retryWithCardIn (f.card.string(), {}, false) == 1, "the card back in, it goes again");
+        check (copier.hasWorkToFinish() && copier.takesToFinish() == 0 && copier.takesAddingFilesToFinish() == 1,
+               "a quit waits for it as a file added to a take on the card");
+        copier.setHeld (false);
+        const auto back = waitForResult (copier, 15s);
+        check (back.has_value() && back->result.outcome == cardcopy::Outcome::Copied, "and the file is copied");
     }
 
     std::printf ("\n2. Held before it starts\n");

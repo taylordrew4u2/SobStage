@@ -117,6 +117,11 @@ struct StillSaving
     /// takes left at the last quit still being looked for).
     int takesCopying = 0;
 
+    /// Takes already on the card whose combined video or podcast copy -- a
+    /// file added since -- is all that is still being copied. Not among
+    /// takesCopying: "it isn't on the card yet" is untrue of them.
+    int takesAddingFiles = 0;
+
     /// Takes that are not on the card and not being copied: a copy that
     /// failed, for a card that is out, full or locked.
     int takesNotOnCard = 0;
