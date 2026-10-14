@@ -20,7 +20,7 @@ class MonitorBus
 {
 public:
     static constexpr float kLimiterCeilingDb = -3.0f;
-    static constexpr double kLimiterHoldSeconds = PeakLimiter::kHoldSeconds;       // 10 ms
+    static constexpr double kLimiterHoldSeconds = PeakLimiter::kHoldSeconds;       // 20 ms
     static constexpr double kLimiterReleaseSeconds = PeakLimiter::kReleaseSeconds; // 50 ms
 
     /// §5: what "continuous" tolerates when timing a runaway. A stretch

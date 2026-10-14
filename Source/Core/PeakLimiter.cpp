@@ -78,9 +78,9 @@ float PeakLimiter::process (float sample) noexcept
     {
         // Still as loud as the passage that set this gain: keep holding it.
         // Without this a steady loud vowel, whose every crest lands exactly
-        // on the ceiling, let the gain go 10 ms after the first one -- and the
-        // next crest came in over the ceiling again and was squared off,
-        // every 10 ms for as long as the vowel lasted.
+        // on the ceiling, let the gain go one hold after the first one -- and
+        // the next crest came in over the ceiling again and was squared off,
+        // once per hold for as long as the vowel lasted.
         holdRemaining = holdSamples;
     }
 

@@ -67,7 +67,7 @@ TEST_CASE (PeakLimiter_HoldsThenReleasesOverFiftyMilliseconds)
     const int holdSamples = static_cast<int> (PeakLimiter::kHoldSeconds * kRate);
     for (int i = 0; i < holdSamples; ++i)
         limiter.process (0.0f);
-    REQUIRE_NEAR (limiter.getGain(), 0.5f, 1e-6); // held for the whole 10 ms
+    REQUIRE_NEAR (limiter.getGain(), 0.5f, 1e-6); // held for the whole 20 ms
 
     // One release time constant later, 1/e of the reduction is left.
     const int releaseSamples = static_cast<int> (PeakLimiter::kReleaseSeconds * kRate);
@@ -84,9 +84,9 @@ TEST_CASE (PeakLimiter_HoldsThenReleasesOverFiftyMilliseconds)
 TEST_CASE (PeakLimiter_ASteadyLoudToneKeepsOneGainInsteadOfPumping)
 {
     // Every crest of a steady tone lands exactly on the ceiling once the gain
-    // is set. Those crests must keep the gain held: if it were let go 10 ms
-    // after the first, each later crest would come in over the ceiling again
-    // and have its rise squared off, every 10 ms.
+    // is set. Those crests must keep the gain held: if it were let go one
+    // hold after the first, each later crest would come in over the ceiling
+    // again and have its rise squared off, once per hold.
     PeakLimiter limiter (kRate, 0.5f);
     float lowest = 1.0f, highest = 0.0f;
     int flatTopped = 0;
@@ -110,6 +110,60 @@ TEST_CASE (PeakLimiter_ASteadyLoudToneKeepsOneGainInsteadOfPumping)
 
     REQUIRE (highest - lowest < 1e-3f);
     REQUIRE (flatTopped == 0);
+    REQUIRE (limiter.getEngagements() == 1u);
+}
+
+TEST_CASE (PeakLimiter_ALowVoiceKeepsOneGainAcrossItsLongPitchPeriod)
+{
+    // A voiced sound has one main crest per pitch period, and only samples
+    // near that crest are loud enough to renew the hold. An 80 Hz voice has
+    // 12.5 ms between crests: a 10 ms hold ran out before the next one, the
+    // gain came back up for a few milliseconds, and that next crest went over
+    // the ceiling again -- its rise squared off and the gain pulled down, once
+    // every pitch period. (A 150 Hz sine, with a crest every 3.3 ms, never
+    // showed it.) A harmonic-rich wave, 4 dB over the ceiling at its crest:
+    const float ceiling = 0.708f;
+    const double f0 = 80.0;
+    PeakLimiter limiter (kRate, ceiling);
+
+    const auto voiceAt = [f0] (int i)
+    {
+        const double t = static_cast<double> (i) / kRate;
+        double x = 0.0;
+        for (int h = 1; static_cast<double> (h) * f0 < 3500.0; ++h)
+            x += std::sin (6.283185307179586 * f0 * h * t + h) / h;
+        return static_cast<float> (x / 2.2 * 1.6);
+    };
+
+    const int firstPeriod = static_cast<int> (kRate / f0) + 1;
+    float lowest = 1.0f, highest = 0.0f, loudest = 0.0f;
+    int flatTopped = 0;
+    float previous = 0.0f;
+
+    for (int i = 0; i < 2 * static_cast<int> (kRate); ++i)
+    {
+        const float x = voiceAt (i);
+        loudest = std::max (loudest, std::abs (x));
+        const float out = limiter.process (x);
+
+        // Past the first two periods (the first crest sets the gain, the
+        // one after may find a slightly larger peak in this waveform), the
+        // gain must not move and no crest may meet the ceiling flat.
+        if (i > 2 * firstPeriod)
+        {
+            lowest = std::min (lowest, limiter.getGain());
+            highest = std::max (highest, limiter.getGain());
+
+            if (std::abs (out) >= ceiling * 0.99999f && std::abs (previous) >= ceiling * 0.99999f)
+                ++flatTopped;
+        }
+
+        previous = out;
+    }
+
+    REQUIRE (loudest > ceiling * 1.4f); // really over the ceiling, by about 4 dB
+    REQUIRE (highest - lowest < 1e-4f); // was 0.27 dB of ripple, every 12.5 ms
+    REQUIRE (flatTopped == 0);          // was a squared-off rise on every crest
     REQUIRE (limiter.getEngagements() == 1u);
 }
 

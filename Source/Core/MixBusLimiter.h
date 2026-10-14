@@ -10,7 +10,7 @@ namespace mma {
 /// Ceiling -1dBFS; no runaway/mute semantics apply to the recording path.
 ///
 /// It turns a peak down rather than squaring it off (PeakLimiter: instant
-/// attack, 10 ms hold, 50 ms release, the ceiling still guaranteed). It used to
+/// attack, 20 ms hold, 50 ms release, the ceiling still guaranteed). It used to
 /// be a per-sample hard clip, and MIX.wav is summed at unity from every
 /// microphone in one room, so a few overlapping voices flat-topped the file
 /// every time they peaked together -- the one file a novice plays back.

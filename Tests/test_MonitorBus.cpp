@@ -324,7 +324,7 @@ TEST_CASE (MonitorBus_ALoudPassageIsTurnedDownNotSquaredOff)
 
 TEST_CASE (MonitorBus_TheLimiterLetsGoAfterTheLoudPassage)
 {
-    // Instant attack, a 10 ms hold, a 50 ms release: a moment of overload
+    // Instant attack, a 20 ms hold, a 50 ms release: a moment of overload
     // turns the headphones down for a fraction of a second, then they come
     // back to unity -- and the next loud passage is counted again.
     MonitorBus bus (48000.0);

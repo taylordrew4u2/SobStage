@@ -12,13 +12,22 @@ namespace mma {
 /// sustained vowel that six microphones in one room all hear, the headphones
 /// spent a third of the time flat on the ceiling. This one reacts on the same
 /// sample (instant attack, so nothing gets past the ceiling and nothing has
-/// to be delayed to look ahead), holds the reduced gain for 10 ms -- for as
+/// to be delayed to look ahead), holds the reduced gain for 20 ms -- for as
 /// long as the signal stays within 1 dB of the level that set it -- so it does
 /// not ripple inside one cycle of a low voice, then lets it back to unity
 /// with a 50 ms time constant. A loud moment is turned down for a fraction of
 /// a second instead of being bent out of shape: only the rise of its first
 /// crest, which nothing without lookahead can see coming, still meets the
 /// ceiling flat (that vowel: 12 samples in a minute).
+///
+/// Why 20 ms. A voice has one main crest per pitch period, and only the
+/// samples near it are loud enough to renew the hold, so the hold has to
+/// outlast the gap from one crest to the next. It was 10 ms, which only
+/// covers voices above about 95 Hz: an 80 Hz voice (12.5 ms between crests)
+/// had the gain let go and pulled back down once per period, squaring off
+/// the rise of every crest -- 0.27 dB of ripple, and 1630 flat-topped samples
+/// in 20 s of one vowel heard by six microphones. 20 ms covers fundamentals
+/// down to 50 Hz, below any speaking voice.
 ///
 /// The ceiling is still guaranteed: the output is clamped to it as a final
 /// backstop, which only ever acts on the rounding in the gain it just set.
@@ -28,7 +37,7 @@ namespace mma {
 class PeakLimiter
 {
 public:
-    static constexpr double kHoldSeconds = 0.010;
+    static constexpr double kHoldSeconds = 0.020;
     static constexpr double kReleaseSeconds = 0.050;
 
     PeakLimiter() noexcept : PeakLimiter (48000.0, 1.0f) {}
