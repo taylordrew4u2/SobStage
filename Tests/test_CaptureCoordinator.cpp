@@ -1347,8 +1347,10 @@ HeldRoomTakeResult recordAnIoSizeExcursion (int kitchenLatency, int couchLate = 
     HeldRoomTakeResult r;
     r.quickMs = c.getMonitoringLatencyMs();
 
-    constexpr long long growAt = 48000, returnAt = 96000, clapAt = 288000, end = 336000;
-    constexpr long long lateFrom = 186000, lateUntil = 204000;
+    // static: MSVC will not let a lambda without a capture read a local,
+    // even a constexpr one, and couchBlock and fill read these.
+    static constexpr long long growAt = 48000, returnAt = 96000, clapAt = 288000, end = 336000;
+    static constexpr long long lateFrom = 186000, lateUntil = 204000;
     std::vector<float> a (4096, 0.0f), b (4096, 0.0f), out (64);
     const float* aIn[] = { a.data() };
     const float* bIn[] = { b.data() };

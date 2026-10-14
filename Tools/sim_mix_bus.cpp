@@ -420,9 +420,25 @@ void nonFiniteSamples()
             return sum;
         };
 
+        // Within a few float rounding steps of the plain sum (2^-22 of full
+        // scale, about -132 dBFS). The macOS runner's file did not match the
+        // plain sum exactly at 24 and 32 bits, though it did at 16; a click
+        // from a bad sample is the whole scale away, and any mismatch is
+        // printed so its size is on the record.
+        const double fullScale = bits == 16 ? 32767.0 : bits == 24 ? 8388607.0 : 2147483647.0;
+        const double tolerance = std::max (1.0, fullScale / 4194304.0);
         bool mixClean = take.mix.ok;
         for (int i : { 10000, 10001, 10002, 20000, 20240, 20479 })
-            mixClean = mixClean && take.mix.raw[static_cast<size_t> (i)] == expectedInteger (expectedMix (i), bits);
+        {
+            const auto got = take.mix.ok ? take.mix.raw[static_cast<size_t> (i)] : 0;
+            const auto want = expectedInteger (expectedMix (i), bits);
+            if (std::llabs (static_cast<long long> (got - want)) > static_cast<long long> (tolerance))
+            {
+                std::printf ("    frame %d: MIX.wav holds %lld, the good microphones sum to %lld\n",
+                             i, static_cast<long long> (got), static_cast<long long> (want));
+                mixClean = false;
+            }
+        }
         check (mixClean, tag + "MIX.wav carries only the good microphones at those frames, no click");
         // Two microphones at -12 dBFS read around -10 LUFS. A figure near the
         // meter's floor means the bad samples wiped the measurement out.

@@ -134,7 +134,11 @@ jobs:
           # Release's macOS cache contains universal arm64+x86_64 generated
           # state, unlike CI's native-only tree. Keep the workflows namespaced
           # so an immutable shared cache cannot cross-contaminate them.
-          key: release-juce-4f43011b96eb0636104cb3e433894cda98243626-${{ hashFiles('ThirdParty/Patches/juce-7.0.12-camera-lifecycle.patch') }}-${{ runner.os }}-${{ runner.arch }}
+          # The repository's name is in the key because the cached tree records
+          # the absolute path it was configured in (/work/<repo>/<repo>/...):
+          # after the rename from usbmic, the old cache made CMake refuse to
+          # configure.
+          key: release-juce-4f43011b96eb0636104cb3e433894cda98243626-${{ hashFiles('ThirdParty/Patches/juce-7.0.12-camera-lifecycle.patch') }}-${{ github.event.repository.name }}-${{ runner.os }}-${{ runner.arch }}
 
       - name: Configure macOS universal build
         if: runner.os == 'macOS'
