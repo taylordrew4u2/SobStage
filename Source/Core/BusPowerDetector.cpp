@@ -24,6 +24,17 @@ void BusPowerDetector::noteHealthy (const std::string& deviceId)
     failingNow.erase (deviceId);
 }
 
+void BusPowerDetector::noteLeft (const std::string& deviceId)
+{
+    failingNow.erase (deviceId);
+}
+
+int devicesAttachedAtDrop (int listedNow, const std::vector<std::string>& takeDeviceIds)
+{
+    const std::set<std::string> takeDevices (takeDeviceIds.begin(), takeDeviceIds.end());
+    return std::max (listedNow, static_cast<int> (takeDevices.size()));
+}
+
 void BusPowerDetector::prune (double nowSeconds)
 {
     while (! events.empty() && ! inWindow (events.front(), nowSeconds))

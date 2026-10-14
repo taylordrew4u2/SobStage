@@ -35,6 +35,14 @@ public:
     /// The device opened or came back: a later failure is a new episode.
     void noteHealthy (const std::string& deviceId);
 
+    /// The device left the device list. Whatever it was failing with is over:
+    /// plugged back in -- by hand, or by USB itself after a brownout -- and
+    /// failing again, that is a new failure. Only opening ended an episode,
+    /// so a mic that failed, was replugged and failed again counted once for
+    /// the life of the app, and neither the power advice nor "keeps losing
+    /// its connection" could ever be given for it.
+    void noteLeft (const std::string& deviceId);
+
     /// True if the sustained-power-exhaustion condition currently holds.
     bool isBusPowerExhausted (double nowSeconds) const;
 
@@ -75,5 +83,15 @@ private:
 
     void prune (double nowSeconds);
 };
+
+/// §14.2's "devices attached" for a failure or a drop: what was plugged in
+/// just before it. `listedNow` is the included devices in the device list as
+/// it is now -- which, for a drop seen through the device list, has already
+/// lost every device that dropped with it: a hub browning out took its three
+/// mics off the list first and each was counted against what was left, 0,
+/// so the powered-hub advice could not be reached in the very case it is for.
+/// `takeDeviceIds` is the device of every channel of the take running (each
+/// was attached when it started; repeats are one device), empty between takes.
+int devicesAttachedAtDrop (int listedNow, const std::vector<std::string>& takeDeviceIds);
 
 } // namespace mma

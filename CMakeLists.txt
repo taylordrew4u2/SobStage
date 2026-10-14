@@ -519,6 +519,13 @@ if (MMA_BUILD_APP)
             -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckFailedOpenRetry.cmake)
 
+    # §14.2's inputs from the device list: drops counted against the devices
+    # before them, and a device that left the list failing afresh.
+    add_test(NAME bus_power_wiring
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckBusPowerWiring.cmake)
+
     # A take for a card goes to that card, not another at the same place; the
     # decision is TakeCopy's, this pins that Application hands it the card.
     add_test(NAME card_identity_wiring

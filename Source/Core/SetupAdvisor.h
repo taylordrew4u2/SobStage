@@ -58,6 +58,10 @@ public:
     /// The device opened or came back, so its next failure counts again.
     void noteDeviceHealthy (const std::string& deviceId);
 
+    /// The device left the device list, so its next failure, once it is
+    /// back, counts again (BusPowerDetector::noteLeft).
+    void noteDeviceLeft (const std::string& deviceId);
+
     /// §14.3: called when the device list changes, with whatever controller
     /// topology the OS exposed. An empty list clears the warning.
     void updateControllerTopology (const std::vector<ControllerContentionDetector::DeviceControllerInfo>& devices);

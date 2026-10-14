@@ -1609,6 +1609,21 @@ void Application::rescanDevices()
         ++order;
     }
 
+    // §14.2: a device that has left the list has ended whatever failure it
+    // was in. Plugged back in -- by hand, or by USB itself after a brownout --
+    // and failing again, it is failing again, and counts. Only opening ended
+    // a failure, so a mic that failed, was replugged and failed again counted
+    // once for the life of the app.
+    {
+        std::set<std::string> listedNow;
+        for (const auto& state : seen)
+            listedNow.insert (state.identity.key());
+
+        for (const auto& d : deviceManager.getDevices())
+            if (listedNow.count (d.identity.key()) == 0)
+                setupAdvisor.noteDeviceLeft (d.identity.key());
+    }
+
     // Reconcile against what the OS reports rather than appending each device
     // again. macOS fires its device-list listener several times while a USB
     // microphone initialises, and this handler previously called addDevice()
@@ -2369,13 +2384,23 @@ void Application::noteDeviceDropout (const std::string& deviceId, const juce::St
     // take CHANNELS -- so one four-input interface on one port reported four
     // and tripped a heuristic written for four microphones on four ports,
     // telling someone to buy a powered hub for a rig that does not need one.
-    int attachedDevices = 0;
+    int listedNow = 0;
     for (const auto& d : deviceManager.getDevices())
         if (d.included)
-            ++attachedDevices;
+            ++listedNow;
+
+    // Mid-take, the device list has already lost the mics that dropped --
+    // a hub browning out takes all of its mics off it at once, before any of
+    // them is counted here. The take's own devices were all attached when it
+    // started.
+    std::vector<std::string> takeDevices;
+    if (capture != nullptr && capture->isRecording())
+        for (const auto& ch : capture->getChannels())
+            takeDevices.push_back (ch.deviceId);
 
     setupAdvisor.noteDeviceDropout (juce::Time::getMillisecondCounterHiRes() / 1000.0,
-                                    deviceId, displayName.toStdString(), attachedDevices);
+                                    deviceId, displayName.toStdString(),
+                                    devicesAttachedAtDrop (listedNow, takeDevices));
 }
 
 void Application::noteDeviceHealthy (const std::string& deviceId)

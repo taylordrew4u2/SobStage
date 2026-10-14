@@ -15,6 +15,11 @@ void SetupAdvisor::noteDeviceHealthy (const std::string& deviceId)
     busPower.noteHealthy (deviceId);
 }
 
+void SetupAdvisor::noteDeviceLeft (const std::string& deviceId)
+{
+    busPower.noteLeft (deviceId);
+}
+
 namespace {
 
 /// "Kitchen and Hall", "Kitchen, Hall and Door".

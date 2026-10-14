@@ -127,3 +127,43 @@ TEST_CASE (BusPowerDetector_CountsAsPossiblePowerLoss_EachKind)
     REQUIRE_FALSE (countsAsPossiblePowerLoss (OpenRefusal::appBusy));
     REQUIRE_FALSE (countsAsPossiblePowerLoss (OpenRefusal::notExternal));
 }
+
+// Mutation: noteLeft ignored. Only opening ended a failure, and a mic that
+// fails as it opens never opens: it failed, was unplugged and plugged back in
+// (or USB re-enumerated it after a brownout), failed again -- and counted once
+// for the life of the app, so neither "keeps losing its connection" nor the
+// power advice could ever be given for it.
+TEST_CASE (BusPowerDetector_AMicThatLeftAndFailsAgainCountsAgain)
+{
+    BusPowerDetector d;
+    REQUIRE (d.recordEvent (10.0, "loc4|serD", "Door", 4));
+    d.noteLeft ("loc4|serD");
+    REQUIRE (d.recordEvent (40.0, "loc4|serD", "Door", 4));
+    REQUIRE (d.repeatingDevice (50.0) == "Door");
+
+    // Still failing, and never gone: still once.
+    BusPowerDetector stays;
+    REQUIRE (stays.recordEvent (10.0, "loc4|serD", "Door", 4));
+    REQUIRE_FALSE (stays.recordEvent (40.0, "loc4|serD", "Door", 4));
+    REQUIRE (stays.repeatingDevice (50.0).empty());
+}
+
+// Mutation: the drop counted against the device list after it lost the
+// dropped mics. A hub browning out takes all its mics off the list in one
+// pass, and each was recorded with 0 (or 1) attached: never three or more.
+TEST_CASE (BusPowerDetector_AHubDroppingItsMicsTogetherCountsTheMicsItHad)
+{
+    // Three hub mics, one a two-channel device; the fourth plugged in directly.
+    const std::vector<std::string> take { "hub1", "hub1", "hub2", "hub3", "direct" };
+
+    REQUIRE (devicesAttachedAtDrop (1, take) == 4);
+    REQUIRE (devicesAttachedAtDrop (0, { "hub1", "hub2", "hub3" }) == 3);
+    REQUIRE (devicesAttachedAtDrop (5, take) == 5); // more listed now than in the take
+    REQUIRE (devicesAttachedAtDrop (2, {}) == 2);   // between takes: the list
+
+    BusPowerDetector d;
+    for (const auto* id : { "hub1", "hub2", "hub3" })
+        d.recordEvent (100.0, id, id, devicesAttachedAtDrop (1, take));
+
+    REQUIRE (d.isBusPowerExhausted (101.0));
+}
