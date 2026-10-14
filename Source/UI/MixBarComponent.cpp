@@ -1,5 +1,6 @@
 #include "MixBarComponent.h"
 #include "AppLookAndFeel.h"
+#include "../Core/MonitorBus.h"
 
 namespace mma {
 
@@ -30,15 +31,18 @@ void MixBarComponent::timerCallback()
     if (metering == nullptr)
         return;
     const bool wasClipped = currentClip;
+    const int previousClipCount = currentClipCount;
     // Real elapsed time: the timer is asked for 60 Hz and not promised it.
     currentLevelDb = metering->tick (meterClock.tick());
     currentPeakDb = metering->getPeakHoldDb();
     currentClip = metering->isClipped();
+    currentClipCount = metering->getClipCount();
 
     // Whole decibels, like the strips: what a sighted user can read, without
     // a 60 Hz stream of value changes for a screen reader.
     const int accessibleLevel = juce::roundToInt (currentLevelDb);
-    if (accessibleLevel != lastAccessibleLevelDb || currentClip != wasClipped)
+    if (accessibleLevel != lastAccessibleLevelDb || currentClip != wasClipped
+        || currentClipCount != previousClipCount)
     {
         lastAccessibleLevelDb = accessibleLevel;
         updateAccessibilityText();
@@ -50,8 +54,35 @@ void MixBarComponent::timerCallback()
 
 void MixBarComponent::updateAccessibilityText()
 {
+    // The bar is the headphone mix at the listener's volume; its CLIP is the
+    // headphones' safety limit turning that mix down. Said in those terms, so
+    // the reason the headphones sound squashed is not left to guesswork.
     setDescription (juce::String (currentLevelDb, 0) + " decibels"
-                    + (currentClip ? ". Clipping." : "."));
+                    + (currentClip ? ". The headphone mix hit its safety limit "
+                                         + juce::String (juce::jmax (1, currentClipCount))
+                                         + (currentClipCount == 1 ? " time" : " times")
+                                         + ". Turn the trims or the microphones down. Activate to clear."
+                                   : "."));
+}
+
+void MixBarComponent::mouseUp (const juce::MouseEvent&)
+{
+    clearClip();
+}
+
+void MixBarComponent::clearClip()
+{
+    if (metering != nullptr && currentClip)
+        metering->acknowledgeClip();
+}
+
+std::unique_ptr<juce::AccessibilityHandler> MixBarComponent::createAccessibilityHandler()
+{
+    juce::AccessibilityActions actions;
+    actions.addAction (juce::AccessibilityActionType::press, [this] { clearClip(); });
+
+    return std::make_unique<juce::AccessibilityHandler> (
+        *this, juce::AccessibilityRole::group, std::move (actions));
 }
 
 void MixBarComponent::paint (juce::Graphics& g)
@@ -64,7 +95,11 @@ void MixBarComponent::paint (juce::Graphics& g)
 
     const float norm = juce::jlimit (0.0f, 1.0f, (currentLevelDb - Metering::kMinDb) / (Metering::kMaxDb - Metering::kMinDb));
 
-    juce::Colour fillColour = currentLevelDb < -18.0f ? kFillLow : (currentLevelDb < -3.0f ? kFillMid : kFillHigh);
+    // The bar is the mix at the listener's volume, before the safety limiter
+    // (§8.1), so its red zone starts at that limiter's ceiling: red means the
+    // headphones are at their limit, at any volume, and CLIP says it acted.
+    constexpr float kRedFromDb = MonitorBus::kLimiterCeilingDb;
+    juce::Colour fillColour = currentLevelDb < -18.0f ? kFillLow : (currentLevelDb < kRedFromDb ? kFillMid : kFillHigh);
 
     // Clip the full-width rounded bar to the level, rather than rounding the
     // fill itself. Rounding a narrow fill gave a lozenge with two curved ends
@@ -96,7 +131,7 @@ void MixBarComponent::paint (juce::Graphics& g)
                       + juce::jlimit (1.0f, bounds.getWidth() - 1.0f,
                                       bounds.getWidth() * peakNorm);
 
-        g.setColour (currentPeakDb >= -3.0f ? kFillHigh : kBone.withAlpha (0.7f));
+        g.setColour (currentPeakDb >= kRedFromDb ? kFillHigh : kBone.withAlpha (0.7f));
         g.fillRect (x - 1.0f, bounds.getY() + 1.0f, 2.0f, bounds.getHeight() - 2.0f);
     }
 
@@ -115,8 +150,12 @@ void MixBarComponent::paint (juce::Graphics& g)
     g.drawText ("MIX", textArea, juce::Justification::centredLeft);
 
     g.setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 11.0f, juce::Font::plain));
+    // CLIP here is the headphones' safety limit at work, counted like a
+    // strip's, so a mix that keeps running into it reads as a number that
+    // climbs rather than a word that never changes.
     g.setColour (currentClip ? kFillHigh : kSecondaryText);
-    g.drawText (juce::String (currentLevelDb, 1) + " dBFS" + (currentClip ? "   CLIP" : ""),
+    g.drawText (juce::String (currentLevelDb, 1) + " dBFS"
+                    + (currentClip ? "   CLIP " + juce::String (juce::jmax (1, currentClipCount)) : juce::String()),
                 textArea, juce::Justification::centredRight);
 }
 

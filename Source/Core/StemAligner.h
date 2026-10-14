@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include "FrameEventQueue.h"
 
 namespace mma {
 
@@ -17,52 +18,40 @@ namespace mma {
 ///  - refused: the device's next delivery said it was a backlog, and the
 ///    stream has gone back to its own block. This takes back the last
 ///    provisional change; it is not a move of its own.
+///  - released: the channel's own stream has given back room it held for a
+///    block its device has left, by dropping that much quiet from the
+///    newest end of what it had buffered (DeviceInputStream). The change
+///    carries how much (StemOffsetEvent::released): that part of it is a
+///    skip at the newest sample the channel has handed over, not at the
+///    oldest one waiting in its line.
 enum class StemOffsetKind : uint8_t
 {
     settled,
     provisional,
-    refused
+    refused,
+    released
 };
 
 /// One channel's alignment changing: from `frame` of the take on (counted in
 /// frames the writer accepted), channel `channel` is to be held back by
-/// `offset` samples.
+/// `offset` samples. For a released change, `released` is how many samples
+/// of it the channel's own stream skipped at that frame; any more of the
+/// change is another device's doing.
 struct StemOffsetEvent
 {
     uint64_t frame = 0;
     int channel = 0;
     int offset = 0;
     StemOffsetKind kind = StemOffsetKind::settled;
+    int released = 0;
 };
 
 /// Carries alignment changes from the audio thread to the writer thread,
-/// beside the audio itself. Single producer (the callback handing blocks to
-/// WritePipeline), single consumer (the writer). Fixed storage, no locks and
-/// no allocation on either side (§11).
-class StemOffsetQueue
-{
-public:
-    /// Changes come only when a device's IO size or the rig's slowest device
-    /// changes -- a handful a take -- so this is far more than is ever queued.
-    static constexpr size_t kCapacity = 1024;
-
-    /// Not concurrent with push or pop: before the take's audio starts.
-    void clear() noexcept;
-
-    /// Producer. False when full; nothing is queued then.
-    bool push (const StemOffsetEvent& event) noexcept;
-
-    /// Consumer: the oldest change, without taking it.
-    bool peek (StemOffsetEvent& event) const noexcept;
-
-    /// Consumer: takes the oldest change. Only after a successful peek.
-    void pop() noexcept;
-
-private:
-    std::array<StemOffsetEvent, kCapacity> slots {};
-    std::atomic<size_t> head { 0 }; // next slot the producer writes
-    std::atomic<size_t> tail { 0 }; // next slot the consumer reads
-};
+/// beside the audio itself (FrameEventQueue: single producer, single
+/// consumer, fixed storage, no locks, no allocation). Changes come only when
+/// a device's IO size or the rig's slowest device changes -- a handful a take
+/// -- so 1024 is far more than is ever queued.
+using StemOffsetQueue = FrameEventQueue<StemOffsetEvent, 1024>;
 
 /// Lines the stems up on the writer thread, where it costs the headphones
 /// nothing (§5.4, §6.1).
@@ -79,7 +68,17 @@ private:
 /// A channel's offset can change mid-take, when a device's IO block grows:
 ///  - Longer: the channel is held back further by writing silence into it
 ///    at once while its audio waits in the delay line -- nothing it handed
-///    over is lost, it comes out later.
+///    over is lost, it comes out later. That is where another device's
+///    growth belongs: the slowest device's stream moved later at the moment
+///    this channel's oldest waiting sample stands for.
+///  - Longer, for room the channel's own stream gave back (released): the
+///    stream skipped a moment of quiet at the newest sample it handed over,
+///    so the silence goes there, at the newest end of the line, and what
+///    was already waiting comes out on time. Written at the head instead,
+///    it landed as many samples before the quiet moment as the channel was
+///    held back, inside whatever sound was there, and those waiting samples
+///    came out that much late against every other stem: a 23 ms dropout in
+///    the middle of a word.
 ///  - Shorter: the channel's own device has grown its block and its stream
 ///    has just moved later by putting exactly that much silence in
 ///    (DeviceInputStream moves once, by the growth). That silence is what
@@ -121,8 +120,11 @@ public:
 
     /// Writer thread: from the next sample process() takes for `channel`, it
     /// is held back by `samples`. `kind` says whether the change is for a
-    /// block the device has not confirmed yet, or takes such a change back.
-    void setOffset (int channel, int samples, StemOffsetKind kind = StemOffsetKind::settled) noexcept;
+    /// block the device has not confirmed yet, takes such a change back, or
+    /// is room the channel's own stream gave back -- `released` samples of
+    /// it, skipped at the newest sample handed over.
+    void setOffset (int channel, int samples, StemOffsetKind kind = StemOffsetKind::settled,
+                    int released = 0) noexcept;
 
     /// Writer thread: `frames` samples of one channel, in place, through its
     /// line.

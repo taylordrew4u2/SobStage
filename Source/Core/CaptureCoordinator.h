@@ -404,6 +404,13 @@ public:
     Metering* getChannelMetering (int index) noexcept;
     Metering& getMixMetering() noexcept { return mixMeter; }
 
+    /// The weight a channel is heard at in the headphones on top of its trim:
+    /// 1, except for a fresh two-input device whose stereo/mono layout §2.1 is
+    /// still deciding (each side at 0.5) or has decided Mono (the chosen side
+    /// at 1, the other at 0). Never applied to the stems. As of the last
+    /// block mixed; for tests and diagnostics.
+    float getChannelMonitorWeight (int index) const noexcept;
+
     /// §6.6: the fraction of each callback's available time actually spent in
     /// it. This is the load that matters for dropouts -- overall machine CPU
     /// can look calm while the audio thread is already missing its deadline.
@@ -690,6 +697,18 @@ public:
         return { s.getPrimeCount(), s.getHoldCount(), s.getSkipCount() };
     }
 
+    /// Harness diagnostics: the device block one channel's ring holds room
+    /// for, and the room it has given back for blocks its device left
+    /// (DeviceInputStream::getReleasedHeldSamples).
+    struct ChannelHeldRoom { size_t heldBlock = 0; uint64_t releases = 0, releasedSamples = 0; };
+    ChannelHeldRoom getChannelHeldRoom (int index) const noexcept
+    {
+        if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+            return {};
+        const auto& s = *deviceStreams[static_cast<size_t> (index)];
+        return { s.getHeldBlockSamples(), s.getHeldReleases(), s.getReleasedHeldSamples() };
+    }
+
 private:
     IAudioBackend& backend;
     double sampleRate;
@@ -819,12 +838,21 @@ private:
     std::unique_ptr<std::atomic<int>[]> recordingOffsetView;
 
     // Consumer-owned, sized with recordingOffsets: whether each channel's
-    // offset is for a block its device has not confirmed, or takes one back
-    // (StemOffsetKind, handed to the writer beside the offsets), and the
-    // block each stream held at the last update, which is how a refusal is
-    // seen: a held block only ever falls when a provisional one is refused.
+    // offset is for a block its device has not confirmed, takes one back, or
+    // is room its stream gave back (StemOffsetKind, handed to the writer
+    // beside the offsets) and how much room that was; and the block each
+    // stream held at the last update, which is how both are seen: a held
+    // block falls when a provisional one is refused, or when room held for
+    // a settled one is given back.
     std::vector<StemOffsetKind> recordingOffsetKinds;
+    std::vector<int> recordingOffsetReleased;
     std::vector<size_t> heldBlockSeen;
+
+    // Consumer-owned, reset with the vectors above: the largest reference the
+    // stems have been lined up to during the take being written. It does not
+    // fall when the slowest device gives back held room, and is let go
+    // between takes (updateRecordingOffsets).
+    int stemReferenceFloor = 0;
     void updateRecordingOffsets() noexcept;
 
     /// A channel's own place in time beyond the cushion every stream shares:
@@ -842,11 +870,13 @@ private:
     /// `roundTripMs` -- an input block at `bufferSizeFrames`, the output
     /// block and what the output device adds after it, as the stream was
     /// worked out -- plus the ring's cushion (DeviceInputStream holds
-    /// kPreRollBlocks pulls, a pull being the output block or the size asked
-    /// for where that is larger, before the output takes a sample), plus
-    /// whatever of the microphone's own input side (`inputFrames`) goes past
-    /// the one input block already counted. Zero stays zero: nothing is
-    /// monitoring.
+    /// cushionSamples of a pull -- one pull plus a few milliseconds of late
+    /// delivery -- a pull being the output block or the size asked for where
+    /// that is larger, before the output takes a sample), plus the
+    /// resampler's own two samples (DeviceInputStream::
+    /// kResamplerDelaySamples), plus whatever of the microphone's own input
+    /// side (`inputFrames`) goes past the one input block already counted.
+    /// Zero stays zero: nothing is monitoring.
     double monitorPathMs (double roundTripMs, int bufferSizeFrames, int outputFrames, int inputFrames) const noexcept;
     int channelIndexForDevice (const std::string& deviceId) const noexcept;
 
@@ -906,8 +936,9 @@ private:
     // per-block vector here would do exactly that.
     std::vector<float> mixScratch;
 
-    // The bus before master volume, per sample of the block, for the
-    // feedback guard. Sized with mixScratch.
+    // The summed bus before master volume and the limiter, per sample of the
+    // block, for the feedback guard and (at the volume) the mix meter. Sized
+    // with mixScratch.
     std::vector<float> busScratch;
 
     // The app's own sounds alone (AlarmTone), for an output channel switched
@@ -916,6 +947,24 @@ private:
     std::vector<float> alarmScratch;
     std::vector<float> trimFrame;
     std::vector<float> trimGains;
+
+    // §2.1 in the headphones and MIX.wav: for each channel of a fresh
+    // two-input device whose layout is still being analysed, the channel that
+    // analyses the pair (its input 0), else -1; which side of the pair it is;
+    // the weight it is monitored at now; and the weight it is heading for,
+    // which is also handed to the writer for MIX.wav each block. Sized at
+    // startMonitoring(), read and moved only by the callback.
+    std::vector<int> monitorPairAnalyzer;
+    std::vector<int> monitorPairSide;
+    std::vector<float> monitorPairWeight;
+    std::vector<float> pairTargetWeights;
+    static constexpr float kUnsettledPairWeight = 0.5f;
+    static constexpr double kPairWeightRampSeconds = 0.010;
+    float pairTargetWeight (size_t channel) const noexcept;
+
+    // The headphone limiter's engagement count the mix meter's CLIP has
+    // caught up with. Audio-thread-owned (whichever thread is mixing).
+    uint64_t meteredLimiterEngagements = 0;
 
     // Per-device pulled audio and the pointer table the writer wants, both
     // sized at startMonitoring(). The output callback fills these every block
@@ -968,7 +1017,8 @@ private:
     void mixAndPublish (const float* const* inputs, int channelCount,
                         float* const* outputs, int numOutputs, int numSamples,
                         int outputFrameOffset, const int* recordingOffsetsForBlock,
-                        const StemOffsetKind* recordingOffsetKindsForBlock) noexcept;
+                        const StemOffsetKind* recordingOffsetKindsForBlock,
+                        const int* recordingOffsetReleasedForBlock) noexcept;
 };
 
 } // namespace mma

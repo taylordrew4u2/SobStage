@@ -16,7 +16,7 @@ public:
     // samples of phase debt: under 1 ms even at 44.1 kHz. The old 1 PPM per
     // sample gain needed 200 samples, so an ordinary short take could remain
     // over §3.4's alignment ceiling even though a long soak eventually settled.
-    // The output is still independently bounded to a 5 PPM/s slew below.
+    // The output is still independently bounded to a 20 PPM/s slew below.
     //
     // These gains are only sound against a fill error that moves smoothly.
     // Driven by the raw ring level at pull time -- which a real device moves
@@ -26,7 +26,15 @@ public:
     static constexpr double kKp = 5.0e-6;
     static constexpr double kKi = 1.0e-8;               // integral gain, per sample of fill error
     static constexpr double kMaxRatioDeviationPpm = 200.0; // clamp: max +/-200ppm ratio deviation
-    static constexpr double kMaxSlewPpmPerSecond = 5.0;     // never correct instantaneously
+    // Never correct instantaneously -- but not so slowly that a microphone
+    // far off the output's clock empties its ring before the loop arrives.
+    // At 5 PPM/s a device 160 PPM slow took half a minute to catch and ran
+    // its ring down by 120 samples on the way: a gap in the headphones and
+    // the stem at the top of every take. At 20 the same device is caught in
+    // eight seconds, 30 samples down. The pitch change is nothing anyone can
+    // hear: 20 PPM is 0.035 cent, the whole +/-200 PPM range 0.35 cent, and
+    // the ratio moves through it smoothly, never in a step.
+    static constexpr double kMaxSlewPpmPerSecond = 20.0;
 
     explicit DriftCompensator (double sampleRate) noexcept;
 

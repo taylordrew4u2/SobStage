@@ -42,6 +42,13 @@ public:
     /// silence had already stood in for it.
     size_t discard (size_t numSamples) noexcept;
 
+    /// Consumer side: the largest magnitude among the next numSamples
+    /// readable samples (or all of them, if fewer), without consuming any.
+    /// Real-time safe: it reads what the producer has already published and
+    /// moves nothing. For a consumer deciding whether a span it may skip is
+    /// quiet.
+    float peekPeak (size_t numSamples) const noexcept;
+
     /// Number of samples currently readable.
     size_t availableForRead() const noexcept;
 

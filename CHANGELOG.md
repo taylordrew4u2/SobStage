@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.13.27 -- 2026-10-14 (release candidate)
+
+Headphone sound fixes on Mac and Windows: clicks, warble and distortion.
+
+### Fixed
+
+The headphones sounded broken -- clicks, a warbly or robotic edge, and
+distortion -- on Mac and Windows, with one microphone or several. This
+release fixes the causes found by measuring the live headphone mix:
+
+- **No more clicks and gaps.** Each microphone now keeps more audio in
+  reserve for the moments a USB device or the computer delivers late
+  (about 5 ms at the smallest buffer, up from 2.7 ms, which ordinary timing
+  hiccups emptied). The
+  headphone delay shown in Settings includes it: a few milliseconds more at
+  the smallest buffer.
+- **Microphones stay in time with the headphones.** A mic whose clock runs
+  slightly fast or slow is caught within seconds instead of half a minute,
+  and is no longer corrected by small gaps every few seconds. Each mic
+  starts exactly on time, and one whose buffer size jumped and came back
+  is brought back in line instead of staying 20 ms late (which sounded
+  doubled or robotic).
+- **No more distortion.** The headphone volume is now applied before the
+  safety limit, so turning down really turns down; and when the mix is too
+  loud it is turned down smoothly instead of being squared off. MIX.wav
+  gets the same treatment.
+- **A USB mic is no longer heard twice.** A new mic that shows up as two
+  identical channels was added into the headphones (and MIX.wav) twice
+  until SobStage had worked out it was mono -- for the whole take if you
+  pressed Record first.
+- **Smoother high frequencies.** The way each mic is kept in time no longer
+  makes sibilance and cymbals swell and dip a few times a second.
+- **The MIX meter shows when the headphones are being limited**, so a mix
+  that is too hot is visible, not just audible.
+
 ## v1.13.26 -- 2026-10-12 (release candidate)
 
 Mac fixes: headphone rate changes, sleep, combined video, quitting, cards and cameras.

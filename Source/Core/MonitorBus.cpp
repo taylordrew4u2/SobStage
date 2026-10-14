@@ -10,12 +10,22 @@ static_assert (std::atomic<float>::is_always_lock_free,
                "MonitorBus requires lock-free float atomics on the audio thread");
 static_assert (std::atomic<double>::is_always_lock_free,
                "MonitorBus requires lock-free double atomics on the audio thread");
+static_assert (std::atomic<uint64_t>::is_always_lock_free,
+               "MonitorBus requires lock-free 64-bit atomics on the audio thread");
 
 MonitorBus::MonitorBus (double sampleRateIn) noexcept
     : sampleRate (sampleRateIn),
-      ceilingLinear (std::pow (10.0f, kLimiterCeilingDb / 20.0f)),
+      limiter (sampleRateIn, std::pow (10.0f, kLimiterCeilingDb / 20.0f)),
       masterGain (monitorVolumeToLinearGain (kDefaultMonitorVolume))
 {
+}
+
+void MonitorBus::clearEngagement() noexcept
+{
+    limiterEngaged = false;
+    limiterEngagedSeconds = 0.0;
+    limiterReleasedSeconds = 0.0;
+    limiter.reset();
 }
 
 float MonitorBus::monitorVolumeToLinearGain (double volume0to100) noexcept
@@ -35,17 +45,17 @@ float MonitorBus::trimDbToLinearGain (float trimDb) noexcept
     return std::pow (10.0f, clamped / 20.0f);
 }
 
-float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) noexcept
+float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples,
+                                 float* busBeforeVolume) noexcept
 {
+    if (busBeforeVolume != nullptr)
+        *busBeforeVolume = 0.0f;
+
     // manuallyUnmute() is called from the message thread. Reset the remaining
     // limiter state here so those non-atomic counters stay audio-thread-owned.
     if (limiterResetRequested.load (std::memory_order_acquire)
         && limiterResetRequested.exchange (false, std::memory_order_acq_rel))
-    {
-        limiterEngagedSeconds = 0.0;
-        limiterReleasedSeconds = 0.0;
-        limiterEngaged = false;
-    }
+        clearEngagement();
 
     if (isMuted())
     {
@@ -56,10 +66,9 @@ float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) 
         // pressed 400 ms into a loud burst carried that 400 ms across the
         // mute -- and the first 100 ms of ordinary loud audio after unmuting,
         // possibly minutes later, cut the headphones as a "runaway". The run
-        // starts again from nothing when the sound comes back.
-        limiterEngaged = false;
-        limiterEngagedSeconds = 0.0;
-        limiterReleasedSeconds = 0.0;
+        // starts again from nothing when the sound comes back, and so does
+        // the limiter's gain.
+        clearEngagement();
         return 0.0f;
     }
 
@@ -68,30 +77,35 @@ float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) 
         sum += s; // unity sum, no per-channel attenuation with channel count
 
     // A NaN or infinity from any microphone is a device fault. NaN failed the
-    // ceiling comparison below and went to the headphones as NaN, which an
-    // output driver may turn into a full-scale burst; infinity was clipped to
-    // the ceiling, a click at maximum level. Silence for that sample, and it
-    // is not counted as limiting, so a faulty microphone cannot trip the
-    // runaway cut and leave everyone's headphones muted after it recovers.
+    // ceiling comparison and went to the headphones as NaN, which an output
+    // driver may turn into a full-scale burst; infinity was clipped to the
+    // ceiling, a click at maximum level. Silence for that sample, and it is
+    // not counted as limiting, so a faulty microphone cannot trip the runaway
+    // cut and leave everyone's headphones muted after it recovers.
     if (! std::isfinite (sum))
         return 0.0f;
 
-    // ceilingLinear is a member computed once at construction. It used to be a
-    // std::pow evaluated on every sample of every block.
+    // §5.1/§5.5: the listener's volume first, then the ceiling, so the limiter
+    // judges what reaches the ears. The ceiling is a hearing-safety limit, and
+    // a bus at +3 dBFS played at the default volume reaches nobody's ears
+    // above -15 dBFS: there is nothing to protect anyone from, and squaring
+    // it off there was distortion the volume knob could not take away.
+    const float atTheEars = sum * masterGain.load (std::memory_order_acquire);
+
+    const auto engagementsBefore = limiter.getEngagements();
+    const float output = limiter.process (atTheEars);
+
+    if (limiter.getEngagements() != engagementsBefore)
+        limiterEngagements.fetch_add (1, std::memory_order_relaxed);
+
+    // §5: the runaway cut times how long the signal at the ears keeps needing
+    // the limiter -- samples over the ceiling before it acts, as it always
+    // was, now measured after the volume. Not the gain reduction itself:
+    // that is held and released over tens of milliseconds on purpose, and
+    // would make every loud phrase look "continuous".
     const double sampleSeconds = (sampleRate > 0.0) ? (1.0 / sampleRate) : 0.0;
 
-    float output = sum;
-    bool engagedThisSample = false;
-
-    if (std::abs (sum) > ceilingLinear)
-    {
-        // Zero-lookahead brickwall: clip instantly to the ceiling. No prediction,
-        // no pre-gain-reduction -- accept the distortion, it only engages in a fault.
-        output = std::copysign (ceilingLinear, sum);
-        engagedThisSample = true;
-    }
-
-    if (engagedThisSample)
+    if (limiter.wasOverCeiling())
     {
         limiterEngaged = true;
         limiterReleasedSeconds = 0.0;
@@ -103,20 +117,20 @@ float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) 
     else if (limiterEngaged)
     {
         // §5: the runaway cut is for 500 ms of *continuous* engagement, and
-        // kLimiterReleaseSeconds is what "continuous" tolerates -- a gap shorter
-        // than the 1 ms release is the same engagement, a longer one ends it.
+        // kRunawayGapSeconds is what "continuous" tolerates -- a gap shorter
+        // than 1 ms is the same engagement, a longer one ends it.
         //
         // This previously drained the accumulator one sample-time per quiet
-        // sample and never consulted kLimiterReleaseSeconds at all, so unwinding
-        // an engagement took as long as building it. An engagement that had
+        // sample and never consulted the gap length at all, so unwinding an
+        // engagement took as long as building it. An engagement that had
         // ended seconds ago still carried most of its credit into the next,
         // unrelated one: two 300 ms bursts 10 ms apart -- neither close to the
-        // threshold -- combined past 500 ms and cut the monitor. That is a false
-        // alarm that silences someone's headphones mid-take and needs a manual
-        // unmute, so a gap longer than the release now ends the run outright.
+        // threshold -- combined past 500 ms and cut the monitor. That is a
+        // false alarm that silences someone's headphones mid-take and needs a
+        // manual unmute, so a gap longer than this ends the run outright.
         limiterReleasedSeconds += sampleSeconds;
 
-        if (limiterReleasedSeconds >= kLimiterReleaseSeconds)
+        if (limiterReleasedSeconds >= kRunawayGapSeconds)
         {
             limiterEngaged = false;
             limiterEngagedSeconds = 0.0;
@@ -127,6 +141,9 @@ float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) 
     if (isRunawayMuted())
         return 0.0f;
 
+    if (busBeforeVolume != nullptr)
+        *busBeforeVolume = sum;
+
     return output;
 }
 
@@ -136,13 +153,8 @@ void MonitorBus::setMasterVolume (double volume0to100) noexcept
     masterVolume.store (clamped, std::memory_order_relaxed);
 
     // One aligned float store the callback picks up on its next sample, instead
-    // of a std::pow per sample inside applyMasterVolume.
+    // of a std::pow per sample inside processSample.
     masterGain.store (monitorVolumeToLinearGain (clamped), std::memory_order_release);
-}
-
-float MonitorBus::applyMasterVolume (float busSample) const noexcept
-{
-    return busSample * masterGain.load (std::memory_order_acquire);
 }
 
 void MonitorBus::manuallyUnmute() noexcept

@@ -8,12 +8,14 @@
 // of itself:
 //   - every stem is the microphone's own signal, bit for bit after quantising,
 //     whatever the trim or the other channels are doing (§4);
-//   - MIX.wav never exceeds the -1 dBFS ceiling and never wraps (§6.1);
+//   - MIX.wav never exceeds the -1 dBFS ceiling and never wraps (§6.1), and a
+//     loud overlap is turned down there rather than squared off;
 //   - a NaN or infinity from one microphone becomes silence in that
 //     microphone's stem and in the mix, never a full-scale click, and never
 //     poisons the loudness figure reported for the take;
 //   - the headphone bus never outputs a non-finite or over-ceiling sample,
-//     whatever it is fed (§5).
+//     whatever it is fed (§5), and at the default volume leaves a loud bus
+//     to the volume rather than the limiter.
 //
 //   sim_mix_bus            (no arguments; exits non-zero on any failure)
 
@@ -404,7 +406,9 @@ void nonFiniteSamples()
                tag + "the other microphones' stems are untouched");
 
         // In the mix, the bad samples contribute nothing: the mix at those
-        // frames is the two good microphones and nothing else.
+        // frames is the two good microphones and nothing else. Together they
+        // peak at -6 dBFS, under the -1 dBFS ceiling, so the take's limiter
+        // never acts and their plain sum is what the file must hold.
         const auto expectedMix = [&source] (int i)
         {
             float sum = 0.0f;
@@ -413,12 +417,28 @@ void nonFiniteSamples()
                 const float s = source (ch, i);
                 sum += std::isfinite (s) ? s : 0.0f;
             }
-            return MixBusLimiter::processSample (sum);
+            return sum;
         };
 
+        // Within a few float rounding steps of the plain sum (2^-22 of full
+        // scale, about -132 dBFS). The macOS runner's file did not match the
+        // plain sum exactly at 24 and 32 bits, though it did at 16; a click
+        // from a bad sample is the whole scale away, and any mismatch is
+        // printed so its size is on the record.
+        const double fullScale = bits == 16 ? 32767.0 : bits == 24 ? 8388607.0 : 2147483647.0;
+        const double tolerance = std::max (1.0, fullScale / 4194304.0);
         bool mixClean = take.mix.ok;
         for (int i : { 10000, 10001, 10002, 20000, 20240, 20479 })
-            mixClean = mixClean && take.mix.raw[static_cast<size_t> (i)] == expectedInteger (expectedMix (i), bits);
+        {
+            const auto got = take.mix.ok ? take.mix.raw[static_cast<size_t> (i)] : 0;
+            const auto want = expectedInteger (expectedMix (i), bits);
+            if (std::llabs (static_cast<long long> (got - want)) > static_cast<long long> (tolerance))
+            {
+                std::printf ("    frame %d: MIX.wav holds %lld, the good microphones sum to %lld\n",
+                             i, static_cast<long long> (got), static_cast<long long> (want));
+                mixClean = false;
+            }
+        }
         check (mixClean, tag + "MIX.wav carries only the good microphones at those frames, no click");
         // Two microphones at -12 dBFS read around -10 LUFS. A figure near the
         // meter's floor means the bad samples wiped the measurement out.
@@ -432,7 +452,11 @@ void headphoneBus()
 {
     std::printf ("-- the headphone bus, fed the same bad samples --\n");
 
+    // At full volume the headphones get the bus itself, so the figures below
+    // read directly. (The volume now comes before the ceiling; at the
+    // default it would scale every one of them.)
     MonitorBus bus (kRate);
+    bus.setMasterVolume (100.0);
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float inf = std::numeric_limits<float>::infinity();
 
@@ -471,12 +495,67 @@ void headphoneBus()
     const float recovered = bus.processSample ({ 0.1f, 0.2f });
     check (std::abs (recovered - 0.3f) < 1e-6f, "and the monitor carries on when the microphone recovers");
 
-    // Loud but finite input is still the limiter's job, as before.
+    // Loud but finite input is still the limiter's job, as before -- judged
+    // on what reaches the ears, after the volume.
+    const float monitorCeiling = std::pow (10.0f, MonitorBus::kLimiterCeilingDb / 20.0f);
     MonitorBus loud (kRate);
+    loud.setMasterVolume (100.0);
     float loudest = 0.0f;
     for (int i = 0; i < 100; ++i)
         loudest = std::max (loudest, std::abs (loud.processSample ({ 1.0f, 1.0f, 1.0f, 1.0f })));
-    check (loudest <= 1.0f && loudest > 0.5f, "four full-scale microphones are held at the monitor ceiling");
+    check (loudest <= monitorCeiling + 1e-6f && loudest > monitorCeiling * 0.99f,
+           "four full-scale microphones at full volume are held at the -3 dBFS ceiling");
+
+    // At the default volume the same four reach the ears at -6 dBFS, under
+    // the ceiling: they are turned down by the volume, not squared off.
+    MonitorBus atDefault (kRate);
+    const float expected = 4.0f * MonitorBus::monitorVolumeToLinearGain (MonitorBus::kDefaultMonitorVolume);
+    float worstError = 0.0f;
+    for (int i = 0; i < 100; ++i)
+        worstError = std::max (worstError, std::abs (atDefault.processSample ({ 1.0f, 1.0f, 1.0f, 1.0f }) - expected));
+    check (worstError < 1e-6f && atDefault.getLimiterEngagementCount() == 0,
+           "at the default volume they reach the headphones untouched by the limiter");
+}
+
+void loudOverlapIsTurnedDown()
+{
+    std::printf ("-- four microphones in phase, 2.6 dB over the MIX.wav ceiling --\n");
+
+    // Every microphone in one room hears the same vowel, so the unity sum
+    // runs over -1 dBFS on every crest. The mix limiter used to square each
+    // crest off; it now turns the whole passage down and keeps its shape.
+    static constexpr int kChannels = 4, kFrames = 48000;
+    const auto source = [] (int, int i) { return 0.3f * std::sin (2.0f * kPi * 220.0f * static_cast<float> (i) / 48000.0f); };
+    const auto take = runTake ("overlap", kChannels, 24, kFrames, {}, source, noBlockHook);
+    check (take.started && take.allFramesWritten, "the take starts and every frame is written");
+
+    bool stemsExact = true;
+    for (int ch = 0; ch < kChannels; ++ch)
+        stemsExact = stemsExact && stemMatchesSource (take.stems[static_cast<size_t> (ch)], ch, kFrames, source);
+    check (stemsExact, "every stem is its microphone's own signal, untouched by the mix limiter");
+
+    // Flat tops: two neighbouring samples both on the ceiling, to within a
+    // couple of steps of the 24-bit file. A hard clip at -1 dBFS of a
+    // 1.2-peak sine holds nearly half of every cycle there.
+    int flat = 0;
+    const double onTheCeiling = kCeiling - 2.0 / static_cast<double> (take.mix.fullScale);
+    for (size_t i = 1; i < take.mix.samples.size(); ++i)
+        if (std::abs (take.mix.samples[i]) >= onTheCeiling && std::abs (take.mix.samples[i - 1]) >= onTheCeiling)
+            ++flat;
+    // The very first crest's rise is the one thing a limiter with no
+    // lookahead cannot see coming: about 25 samples, once. Then none.
+    check (flat < 50, "MIX.wav squares off at most the rise of the first crest ("
+                          + std::to_string (flat) + " flat-topped samples in a second)");
+
+    // After the first crest the file is the same sine, scaled to the ceiling.
+    double worstShapeError = 0.0;
+    const double scale = kCeiling / 1.2;
+    for (int i = 4800; i < kFrames; ++i)
+        worstShapeError = std::max (worstShapeError,
+                                    std::abs (take.mix.samples[static_cast<size_t> (i)] - scale * 4.0 * source (0, i)));
+    check (worstShapeError < 1e-3, "and after its first crest it is the same waveform, turned down to the ceiling (worst error "
+                                       + std::to_string (worstShapeError) + ")");
+    check (peakOf (take.mix) <= kCeiling + 1.0 / static_cast<double> (take.mix.fullScale), "MIX.wav never exceeds -1 dBFS");
 }
 
 } // namespace
@@ -488,6 +567,7 @@ int main()
     transients();
     nonFiniteSamples();
     headphoneBus();
+    loudOverlapIsTurnedDown();
 
     std::printf ("\n%s: %d failure%s\n", failures == 0 ? "OK" : "FAILED", failures, failures == 1 ? "" : "s");
     return failures == 0 ? 0 : 1;

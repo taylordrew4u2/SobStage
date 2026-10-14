@@ -38,17 +38,50 @@ public:
     static constexpr int kRingBlocks = 16;
 
     /// How full the ring must be before playout starts, and what the PI loop
-    /// steers back to. This is the latency the drift buffer costs, so it is
-    /// deliberately small: §5.4 allows 10 ms end to end for the whole monitor
-    /// path, and an input block plus this plus an output block has to fit
-    /// inside that. Two blocks (2.7 ms at 64 samples / 48 kHz) absorbs the
-    /// jitter between a device callback and the output callback without
-    /// spending the budget on buffering.
+    /// steers back to. This is the latency the drift buffer costs the
+    /// headphones (§5.4), and the only thing standing between a device that
+    /// hands its audio over late and a gap in what the output takes.
+    ///
+    /// One pull of it the output takes at once. The rest is how late a
+    /// delivery can be before the ring runs dry, and lateness is time, not
+    /// blocks: a CoreAudio IOProc a few milliseconds late on a busy Mac, a
+    /// Windows DPC holding a 3 ms period back by 6 ms. Two pulls -- what
+    /// this used to be, 2.7 ms at 64 -- left one pull of that, 1.3 ms, and
+    /// every delivery later than that wrote silence into the channel: a
+    /// click in the headphones and a gap in the stem. Measured through the
+    /// real coordinator with six simulated microphones on drifting clocks:
+    /// 30 clicks a minute at 64 frames with 0.5% of callbacks up to 2 ms
+    /// late, 216 a minute at 3 ms, and 38 a minute at 144-frame Windows
+    /// periods with 0.2% up to 6 ms late; none in any of them with this.
+    ///
+    /// So the ring holds one pull plus kLateDeliveryMs, but never less than
+    /// kPreRollBlocks pulls (a pull's own jitter is a pull's worth at any
+    /// size) and never more than kMaxPreRollBlocks: at 64 samples four
+    /// pulls is 5.3 ms, which with the input and output blocks still fits
+    /// §5.4's 10 ms, and a cushion of a full 6 ms there would not. At 480 or
+    /// 512, two pulls already ride out more than 6 ms and nothing changes.
+    /// See cushionSamples(), which CaptureCoordinator::monitorPathMs uses
+    /// too, so the headphone delay the app names includes exactly this.
     ///
     /// Sizing this from the ring capacity instead -- half full, say -- ties the
     /// latency to the headroom, so making the ring safer would silently make
     /// the monitor path slower.
     static constexpr int kPreRollBlocks = 2;
+    static constexpr int kMaxPreRollBlocks = 4;
+    static constexpr double kLateDeliveryMs = 6.0;
+
+    /// The target fill, in samples, for a stream the output pulls
+    /// `pullSamples` at a time: one pull plus kLateDeliveryMs, kept between
+    /// kPreRollBlocks and kMaxPreRollBlocks pulls.
+    static size_t cushionSamples (size_t pullSamples, double sampleRate) noexcept
+    {
+        const size_t pull = pullSamples > 0 ? pullSamples : 1;
+        const double rate = sampleRate > 0.0 ? sampleRate : 48000.0;
+        const auto late = static_cast<size_t> (kLateDeliveryMs * rate / 1000.0 + 0.999999);
+        const size_t least = pull * static_cast<size_t> (kPreRollBlocks - 1);
+        const size_t most = pull * static_cast<size_t> (kMaxPreRollBlocks - 1);
+        return pull + (late < least ? least : late > most ? most : late);
+    }
 
     /// The largest single delivery or pull the ring is allocated for.
     /// CoreAudio runs a device at its own IO size whenever it refuses the one
@@ -62,14 +95,36 @@ public:
     ///
     /// Storage is allocated for this many samples a block. What is *used* of
     /// it -- the overflow limit, kRingBlocks of a block -- and the target fill
-    /// -- kPreRollBlocks of the pull -- follow the largest block actually
+    /// -- cushionSamples() of the pull -- follow the largest block actually
     /// seen on each side, so a device running at the size it was asked for
     /// keeps exactly the latency and the bound on staleness it always had.
     static constexpr int kLargestDeviceBlock = 4096;
 
-    static_assert (kSourceBufferBlocks + kPreRollBlocks + 2 <= kRingBlocks,
+    static_assert (kSourceBufferBlocks + kMaxPreRollBlocks + 2 <= kRingBlocks,
                    "the ring must hold a full driver burst above its target fill, with a block "
                    "of delivery jitter and one in flight");
+
+    /// The resampler that moves this device's audio onto the output's clock
+    /// is a four-point cubic (Catmull-Rom): each output sample lands between
+    /// the second and third of the last four samples taken from the ring,
+    /// the outer two shaping the curve between them. So a sample leaves it
+    /// one to two samples after it left the ring, and the headphone delay
+    /// the app names counts this many (CaptureCoordinator::monitorPathMs):
+    /// 0.04 ms at 48 kHz.
+    ///
+    /// It was a straight line between two samples. Every channel's ratio sits
+    /// a little off 1.0 -- the loop tracking its device's clock -- so where
+    /// an output falls between two samples sweeps through a whole sample
+    /// over and over, once every 1/PPM samples: five times a second at 100
+    /// PPM, once a second at 20. Half way between two samples, a straight
+    /// line is a two-sample average, which takes 3 dB off 12 kHz and 6 dB off
+    /// 16 kHz; at a sample it takes nothing. So the top of every voice rose
+    /// and fell at that rate, in the headphones and in the stems: sibilance
+    /// and breath warbling, a swirl on cymbals. Measured through this class,
+    /// a tone at 8/12/16 kHz swung 1.2/3.0/6.0 dB. The cubic's worst case is
+    /// 0.2/1.1/3.3 dB, its best is the samples themselves, and it costs one
+    /// more sample of delay and a few multiplies a sample.
+    static constexpr int kResamplerDelaySamples = 2;
 
     /// §3.1/§3.3: a drift figure is only claimed once this much of it has been
     /// measured. Before that the estimate's resolution is too coarse to name.
@@ -105,20 +160,36 @@ public:
     /// are lined up afterwards, on the writer thread, where it costs the
     /// monitor path nothing (WritePipeline, StemAligner).
     ///
-    /// What the stream does hold is room for its *own* device's largest
-    /// block (see getDeviceBlockSamples), which is what lets the ring absorb
-    /// an IO-size change: after a device has once run at a larger block, the
-    /// room that block needs stays held while it runs smaller, so a return
-    /// to the larger size finds it there and loses nothing, and the
-    /// channel's place in time never moves. Only the first growth past
-    /// anything held moves the channel -- the device itself now holds its
-    /// audio that much longer -- and it moves once, exactly. When the ring ran
-    /// dry for it, that gap is counted as lost audio; when the cushion
-    /// covered it, the silence that moves the channel is counted as a shift
-    /// (getAlignmentSilenceSamples). Its place in time is therefore always
-    /// two pulls of cushion plus getDeviceBlockSamples() (or the block asked
-    /// for, before the device has settled on one), which is what the
-    /// coordinator tells the writer.
+    /// What the stream does hold is room for its *own* device's recent
+    /// largest block, which is what lets the ring absorb an IO-size change:
+    /// after a device has run at a larger block, the room that block needs
+    /// stays held while it runs smaller, so a quick return to the larger size
+    /// finds it there and loses nothing, and the channel's place in time
+    /// never moves. Only a growth past anything held moves the channel --
+    /// the device itself now holds its audio that much longer -- and it moves
+    /// once, exactly. When the ring ran dry for it, that gap is counted as
+    /// lost audio; when the cushion covered it, the silence that moves the
+    /// channel is counted as a shift (getAlignmentSilenceSamples).
+    ///
+    /// Held room is given back once the device has run at a block at most
+    /// half of it for kHeldRoomReleaseSeconds: the headphones should not
+    /// carry latency held for a size that may never come back. Only once:
+    /// a device that grows again after that keeps its room from then on
+    /// (see kHeldRoomReleaseSeconds). Kept for good from the first growth,
+    /// as it was, one excursion to 1024 frames and back left that microphone
+    /// 20 ms later than the rest in the headphones for the rest of the
+    /// session: the talker heard themselves late, and their voice reached
+    /// the mix twice, 20 ms apart, through the other microphones -- a
+    /// slapback, heard as robotic. Exactly the room given back is dropped
+    /// from the ring, at once, but only at a quiet moment (kQuietLevel), so
+    /// the jump forward is silent; until one comes, nothing moves. Exactly
+    /// that much, not whatever the level happens to read above the smaller
+    /// target at that moment: the level carries a delivery's lateness, and
+    /// the writer lines the stem up by the room given back. Its place in
+    /// time is therefore always the cushion (cushionSamples) plus the block
+    /// it holds room for (getHeldBlockSamples; the block asked for, before
+    /// the device has settled on one), which is what the coordinator tells
+    /// the writer.
 
     /// The largest IO block the device has run at since prepare(): its real
     /// IO size, which CoreAudio does not promise is the one asked for, and
@@ -138,6 +209,40 @@ public:
     /// with each other and with what the stream has actually done.
     size_t getSettledBlockSamples() const noexcept { return settledBlockPublished.load (std::memory_order_relaxed); }
     size_t getHeldBlockSamples() const noexcept { return heldBlockPublished.load (std::memory_order_relaxed); }
+
+    /// How long a device must run at a block at most half the room held for
+    /// a larger one before that room is given back, and how quiet the audio
+    /// either side of the jump must be for it to be given back then: below
+    /// -40 dBFS for the 5 ms before it and everything the jump passes over
+    /// and lands on. Far below speech, and above the noise of an ordinary
+    /// room between words: measured, background noise up to -50 dBFS RMS
+    /// still lets the room go within a fraction of a second, where a -50 dBFS
+    /// threshold was never met by noise at -58 dBFS RMS and the room was held
+    /// for good after all. A jump between two samples under it is a step of
+    /// at most -34 dBFS, about -52 dBFS at the ears at the default headphone
+    /// volume.
+    ///
+    /// Given back once. A device that grows again after its room was given
+    /// back pays a gap for it, as any growth past the room held does (about
+    /// 23 ms for 64 to 1156, in the headphones and, where it is the slowest
+    /// device, in its track; counted as lost audio either way), and it has
+    /// shown that it does come back to a larger block: from then on its room
+    /// is kept for as long as the stream is open, and the channel stays that
+    /// much later in the headphones (the slowest-microphone figure says
+    /// so). A device another app moves between two sizes every few minutes
+    /// therefore pays two gaps in all -- its first growth and its first
+    /// return -- rather than one at every return.
+    static constexpr double kHeldRoomReleaseSeconds = 2.0;
+    static constexpr float kQuietLevel = 0.01f;
+    static constexpr double kQuietLeadMs = 5.0;
+
+    /// Samples dropped, at quiet moments, giving back room held for a larger
+    /// block (see above), and how many times. The writer holds the stem back
+    /// by the same amount at the same moment, so the stem stays in line with
+    /// the others: what was quiet room sound there becomes digital silence,
+    /// counted on the take's record as silence written to keep it in step.
+    uint64_t getReleasedHeldSamples() const noexcept { return releasedHeldSamples.load (std::memory_order_relaxed); }
+    uint64_t getHeldReleases() const noexcept { return heldReleases.load (std::memory_order_relaxed); }
 
     /// Silence written, without consuming, to move the channel later when its
     /// device's IO block grew by less than the ring's cushion. Not lost audio
@@ -207,7 +312,7 @@ public:
     /// The loop's own correction against the clock that pulls this stream:
     /// what the resampler is doing right now. Positive means this device is
     /// being drained faster than nominal. This is a control state, not a
-    /// measurement -- it slews at 5 PPM/s, overshoots, and is disturbed by
+    /// measurement -- it slews from zero, overshoots, and is disturbed by
     /// every lost block -- so §3.3's reported figure comes from
     /// getMeasuredDriftPpm() instead.
     double getDriftPpm() const noexcept { return driftPpm.load (std::memory_order_relaxed); }
@@ -239,7 +344,7 @@ public:
     uint64_t getLossEvents() const noexcept { return lossEvents.load (std::memory_order_relaxed); }
 
     /// Diagnostics for the harnesses: how often the interpolator restarted
-    /// its pair (a sub-sample step each time), held its last sample for a
+    /// its taps (a sub-sample step each time), held a sample for a
     /// missing look-ahead, and skipped late audio. None of these is loss;
     /// all of them are a seam in the audio, and a take with one per block
     /// is a take with a click per block.
@@ -290,6 +395,20 @@ private:
     // getDeviceBlockSamples().
     size_t previousPushSamples = 0;
     std::atomic<size_t> deviceBlockSamples { 0 };
+
+    // Producer-owned: samples delivered since a pair of deliveries last
+    // reached the device's recent block, the largest pair among them, how
+    // many it takes before the room goes (kHeldRoomReleaseSeconds), and
+    // whether it never goes again (the device grew after its room was given
+    // back); and, published, that recent block -- the device block the
+    // consumer holds room for. It rises with deviceBlockSamples, and falls
+    // to the smaller size once the device has delivered at most half of it
+    // for that long, unless the room is kept.
+    uint64_t smallerRunSamples = 0;
+    size_t smallerRunLargest = 0;
+    uint64_t releaseAfterSamples = 96000;
+    bool keepHeldRoom = false;
+    std::atomic<size_t> recentBlockSamples { 0 };
     std::atomic<size_t> largestPullSamples { 0 };
     size_t usableCapacity() const noexcept;
 
@@ -382,17 +501,30 @@ private:
     bool inGap = false;
     void countGap (int samples) noexcept;
 
-    // Consumer-owned: the largest device block the consumer has accounted
-    // for, and the shift silence it has written (getAlignmentSilenceSamples).
+    // Consumer-owned: the device block the consumer holds room for -- the
+    // largest it has accounted for, until that room is given back
+    // (releaseHeldRoom) -- and the shift silence it has written
+    // (getAlignmentSilenceSamples).
     size_t seenDeviceBlock = 0;
     std::atomic<uint64_t> alignmentSilence { 0 };
+
+    // Consumer-owned: how many of the samples this stream handed on last
+    // were quiet (below kQuietLevel), counting back from the newest; and the
+    // room given back for a block the device no longer runs at.
+    size_t quietRunSamples = 0;
+    std::atomic<uint64_t> releasedHeldSamples { 0 };
+    std::atomic<uint64_t> heldReleases { 0 };
+    void releaseHeldRoom (size_t block, int numSamples) noexcept;
+    void noteQuiet (const float* samples, int numSamples) noexcept;
+    void pullBlock (float* destination, int numSamples) noexcept;
     std::atomic<size_t> settledBlockPublished { 0 };
     std::atomic<size_t> heldBlockPublished { 0 };
     void publishPlaceInTime() noexcept;
 
     /// What this stream holds beyond the base target, with the device's block
-    /// included: the largest block the device has delivered, or a provisional
-    /// one it has moved for.
+    /// included: the block it holds room for (the largest the device has
+    /// delivered, until that room is given back), or a provisional one it
+    /// has moved for.
     size_t heldLatency() const noexcept;
     void recomputeTarget() noexcept;
 
@@ -422,21 +554,34 @@ private:
     static constexpr double kExcessDriftThresholdPpm = 100.0;
     static constexpr double kExcessDriftSustainSeconds = 10.0;
 
-    // Linear-interpolation resampler state. Two samples and a phase is all a
-    // ratio this close to 1.0 needs, and it costs no allocation in the callback.
-    float previousSample = 0.0f;
-    float currentSample = 0.0f;
+    // Resampler state (kResamplerDelaySamples): the last four samples taken
+    // from the ring, oldest first, and how far past taps[1] the next output
+    // lands -- it is played between taps[1] and taps[2]. Fixed storage, so
+    // nothing allocates in the callback. Taps just primed from one sample
+    // are four copies of it.
+    float taps[4] {};
     double phase = 0.0;
     bool primed = false;
 
-    // The sample a pull that ran dry had already read but not yet played: it
-    // was only the interpolator's target. Dropping it with the pair lost one
-    // captured sample at every gap; the next prime starts from it instead.
-    // `heldLast` marks a pull that ended on a held sample, which was played.
-    float carrySample = 0.0f;
+    // Where a pull that ran dry stopped: the three samples the taps would
+    // have kept once the next one arrived, and how far past the first of
+    // them the next output lands. Read but not yet played -- the output had
+    // got no further than taps[1] -- so the next prime picks up from them
+    // with the sample that arrives, and the audio after the gap carries on
+    // from exactly where it stopped. Dropping them would lose captured audio
+    // at every gap and bend the curve at the seam.
+    float carryTaps[3] {};
+    double carryPhase = 0.0;
     bool carryPending = false;
+
+    // The last output was a held sample (taps[2]), its step still pending.
     bool heldLast = false;
     void resetInterpolator() noexcept;
+
+    // Takes the next sample from the ring into the taps. False, with the
+    // taps untouched, when the ring is dry.
+    bool advanceTaps() noexcept;
+
     // Read by the reporting thread too, to know whether there is anything to
     // measure yet; the consumer alone writes it.
     std::atomic<bool> started { false };

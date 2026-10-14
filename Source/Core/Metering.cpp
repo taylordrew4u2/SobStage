@@ -47,6 +47,25 @@ void Metering::processAudioBlock (const float* samples, int numSamples) noexcept
     publishPeak (linearToDb (maxAbs));
 }
 
+void Metering::processLevelOnly (const float* samples, int numSamples, float gain) noexcept
+{
+    float maxAbs = 0.0f;
+
+    for (int i = 0; i < numSamples; ++i)
+        maxAbs = std::max (maxAbs, std::abs (samples[i]));
+
+    publishPeak (linearToDb (maxAbs * std::abs (gain)));
+}
+
+void Metering::noteClipEvents (int events) noexcept
+{
+    if (events <= 0)
+        return;
+
+    clipLatched.store (true, std::memory_order_relaxed);
+    clipCount.fetch_add (events, std::memory_order_relaxed);
+}
+
 void Metering::publishPeak (float blockDb) noexcept
 {
     // Keep the loudest block since the last tick. At 64-sample buffers about

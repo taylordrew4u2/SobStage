@@ -25,7 +25,7 @@
   <a href="docs/images/demo.mp4"><img src="docs/images/demo.gif" alt="A 20-second screen recording: two microphone meters moving, Start recording pressed, the take clock counting while the file count grows, then Stop and a Saved card listing every file with its size" width="680"></a>
 </p>
 
-> **Status:** v1.13.26 release candidate. CI passes on macOS, Windows and Linux against simulated devices; the physical-microphone validation matrix is still open ([details](docs/VERIFICATION.md)).
+> **Status:** v1.13.27 release candidate. CI passes on macOS, Windows and Linux against simulated devices; the physical-microphone validation matrix is still open ([details](docs/VERIFICATION.md)).
 
 ## Why I built it
 
@@ -45,7 +45,7 @@ Podcasts and panels often put a USB microphone in front of each person, but ever
 | Area | What it does |
 |---|---|
 | **Capture** | Up to 8 inputs; one 24-bit WAV per *input* (a four-input interface gives four tracks) plus a summed `MIX.wav`. Stereo mics collapse to mono only after analysis proves both sides identical, remembered per port. |
-| **Monitoring** | One shared mix with per-channel trim, a -3 dBFS brickwall limiter, runaway-level cut and feedback detection. On macOS it plays from every mic's own headphone jack at once. |
+| **Monitoring** | One shared mix with per-channel trim, a -3 dBFS safety limiter after the volume that turns loud moments down instead of squaring them off, runaway-level cut and feedback detection. On macOS it plays from every mic's own headphone jack at once. |
 | **Safety** | Dropouts, unplugged mics, a slow or removed card and low space are announced with the take time they happened. A pre-flight benchmark refuses a card that cannot sustain 2x the needed throughput. Optional local backup copy. |
 | **Recovery** | After a crash or power loss, the next launch repairs the WAV headers from the audio on disk and offers the take back. |
 | **Export** | Podcast-ready loudness copy of the mix (Spotify, Apple Podcasts, EBU R128) with a look-ahead true-peak limiter. Stems and the original mix are never touched. |
@@ -162,7 +162,7 @@ Build options, packaging and every harness: [docs/BUILDING.md](docs/BUILDING.md)
 
 ## Testing
 
-A default build registers **13 CTest targets, all passing**, including **950 engine unit tests**:
+A default build registers **13 CTest targets, all passing**, including **1000 engine unit tests**:
 
 - **Unit tests** (`mma_core_tests`): drift loop, ring buffers, monitor bus, metering, loudness, session writer, crash recovery and more.
 - **Drift harnesses:** `soak_drift` (four-hour, four-clock alignment gate) and `sim_drift_loop` at four buffer-jitter rungs.

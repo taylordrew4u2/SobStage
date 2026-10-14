@@ -27,7 +27,7 @@ void DriftCompensator::update (double fillError, int blockSizeSamples) noexcept
 
     const double target = std::clamp (proportional + candidateIntegral, -maxDeviation, maxDeviation);
 
-    // Never correct instantaneously: limit slew to 5 PPM/second, expressed per this block.
+    // Never correct instantaneously: limit slew to kMaxSlewPpmPerSecond, expressed per this block.
     const double blockSeconds = (sampleRate > 0.0) ? (static_cast<double> (blockSizeSamples) / sampleRate) : 0.0;
     const double maxStep = (slewPpmPerSecond * 1.0e-6) * blockSeconds;
 
@@ -38,11 +38,27 @@ void DriftCompensator::update (double fillError, int blockSizeSamples) noexcept
     // Anti-windup. The actuator is deliberately rate limited, so while it is
     // still slewing towards target the loop cannot deliver what the integral is
     // asking for. Integrating anyway stores up correction that has to be
-    // unwound later -- at the same 5 PPM/s -- and the result is a loop that
-    // swings past target every time instead of settling on it. Integration
-    // therefore pauses whenever the output is rate- or clamp-limited, which is
-    // what makes this a PI controller rather than a PI controller's arithmetic.
-    if (delta == wanted)
+    // unwound later -- at the same slew -- and the result is a loop that
+    // swings past target every time instead of settling on it.
+    //
+    // So integration pauses while the output is rate- or clamp-limited AND
+    // the error would push the integral further the way the output is already
+    // straining. Pausing on every limited block, which this used to do, froze
+    // the integral for good on real hardware: the level the loop reads
+    // carries a sample or two of jitter, the proportional term turns that
+    // into several PPM of request, and the slew step per block is a few
+    // hundredths of a PPM -- so the output was limited on every block and
+    // the integral never moved. The loop ran on its proportional term alone,
+    // holding a microphone 100 PPM off the output 20 samples below its
+    // target for the whole session, and the gaps that left room for did the
+    // correcting instead: a click every few seconds. An error that pulls the
+    // integral back towards the output is never windup, so it is always
+    // taken.
+    const bool limitedUp = delta < wanted;
+    const bool limitedDown = delta > wanted;
+    const bool deeper = (limitedUp && fillError > 0.0) || (limitedDown && fillError < 0.0);
+
+    if (! deeper)
         integralTerm = candidateIntegral;
 
     currentRatioDeviation = std::clamp (currentRatioDeviation + delta, -maxDeviation, maxDeviation);

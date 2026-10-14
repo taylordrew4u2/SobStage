@@ -3,42 +3,6 @@
 
 namespace mma {
 
-void StemOffsetQueue::clear() noexcept
-{
-    head.store (0, std::memory_order_relaxed);
-    tail.store (0, std::memory_order_relaxed);
-}
-
-bool StemOffsetQueue::push (const StemOffsetEvent& event) noexcept
-{
-    const auto h = head.load (std::memory_order_relaxed);
-    const auto t = tail.load (std::memory_order_acquire);
-
-    if (h - t >= kCapacity)
-        return false;
-
-    slots[h % kCapacity] = event;
-    head.store (h + 1, std::memory_order_release);
-    return true;
-}
-
-bool StemOffsetQueue::peek (StemOffsetEvent& event) const noexcept
-{
-    const auto t = tail.load (std::memory_order_relaxed);
-    const auto h = head.load (std::memory_order_acquire);
-
-    if (t == h)
-        return false;
-
-    event = slots[t % kCapacity];
-    return true;
-}
-
-void StemOffsetQueue::pop() noexcept
-{
-    tail.store (tail.load (std::memory_order_relaxed) + 1, std::memory_order_release);
-}
-
 void StemAligner::prepare (int numChannels)
 {
     lines.clear();
@@ -56,7 +20,7 @@ void StemAligner::prepare (int numChannels)
     exact.store (true, std::memory_order_relaxed);
 }
 
-void StemAligner::setOffset (int channel, int samples, StemOffsetKind kind) noexcept
+void StemAligner::setOffset (int channel, int samples, StemOffsetKind kind, int released) noexcept
 {
     if (channel < 0 || channel >= static_cast<int> (lines.size()))
         return;
@@ -105,6 +69,25 @@ void StemAligner::setOffset (int channel, int samples, StemOffsetKind kind) noex
 
             line.dropped.fetch_sub (restored, std::memory_order_relaxed);
             longer -= restored;
+        }
+
+        // The channel's own stream gave back room it held for a block its
+        // device has left: it dropped that much quiet from the newest end of
+        // what it had buffered, so its next sample is that much later in
+        // the room than the newest one waiting here. The silence goes
+        // exactly there -- behind everything waiting, which comes out on
+        // time -- and is counted as silence written to hold the stem back.
+        // At the head, as below, it landed `current` samples before the
+        // quiet moment the stream skipped, inside whatever sound was there,
+        // and put those samples that much late against every other stem.
+        // Any more of the change is another device's growth: at the head.
+        if (kind == StemOffsetKind::released && line.started && released > 0 && longer > 0)
+        {
+            const auto inserted = insertSilence (line, line.size,
+                                                 std::min (longer, static_cast<size_t> (released)));
+
+            line.silenceInserted.fetch_add (inserted, std::memory_order_relaxed);
+            longer -= inserted;
         }
 
         (line.started ? line.silenceOwed : line.paddingOwed) += longer;
@@ -181,7 +164,8 @@ size_t StemAligner::insertSilence (Line& line, size_t position, size_t count) no
     // The samples from `position` on (the newer ones) move along by `count`,
     // newest first so none is overwritten before it has moved, and silence
     // fills the space they leave. Bounded by the line's length, on the writer
-    // thread, once for a refused block.
+    // thread, once for a refused block; at the newest end (room given back)
+    // nothing moves.
     for (size_t i = line.size; i-- > position;)
         line.buffer[(line.head + i + count) % capacity] = line.buffer[(line.head + i) % capacity];
 

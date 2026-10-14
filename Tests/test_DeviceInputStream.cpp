@@ -27,6 +27,25 @@ double runClockRatio (DeviceInputStream& s, int pushPerBlock, int pullPerBlock, 
     return s.getDriftPpm();
 }
 
+// A device running ahead of a stream that is already playing: start the
+// stream at its target, then deliver `surplus` more than the output takes.
+// Before the stream starts the same surplus is pre-roll, dropped as playout
+// begins, and leaves the loop nothing to answer.
+void startThenRunAhead (DeviceInputStream& s, int surplus)
+{
+    const auto target = DeviceInputStream::cushionSamples (64, 48000.0);
+    std::vector<float> block (64, 0.25f), out (64, 0.0f);
+
+    for (size_t pushed = 0; pushed < target; pushed += 64)
+        s.pushBlock (block.data(), 64);
+
+    s.pull (out.data(), 64);
+    REQUIRE (s.hasStarted());
+
+    std::vector<float> extra (static_cast<size_t> (surplus), 0.25f);
+    s.pushBlock (extra.data(), surplus);
+}
+
 struct AlignmentResult
 {
     long long spreadSamples = std::numeric_limits<long long>::max();
@@ -161,10 +180,10 @@ TEST_CASE (DeviceInputStream_FastDeviceIsPulledDown)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    // Start the ring well above its target fill, which is what a device running
-    // fast produces. §3.2 must then raise the playout ratio to drain it.
-    std::vector<float> preload (400, 0.25f);
-    s.pushBlock (preload.data(), 400);
+    // Put the ring well above its target fill while it plays, which is what a
+    // device running fast produces. §3.2 must then raise the playout ratio to
+    // drain it.
+    startThenRunAhead (s, 400);
 
     // Thereafter the device supplies exactly what the clock consumes, so the
     // surplus persists and only the loop can remove it.
@@ -197,7 +216,7 @@ TEST_CASE (DeviceInputStream_CorrectionStaysInsideTheSafetyClamp)
     // A device this far out is broken, not drifting. §3.2 clamps at +/-200 PPM
     // so a bad measurement can never turn into an audible pitch shift. The
     // clamp is what is under test, so this runs long enough to reach it: the
-    // 5 PPM/s slew is deliberately slow, which is the point.
+    // slew is deliberately gradual, which is the point.
     runClockRatio (s, 128, 64, 60000);
 
     REQUIRE (std::abs (s.getDriftPpm()) <= DriftCompensator::kMaxRatioDeviationPpm + 1e-9);
@@ -225,23 +244,44 @@ TEST_CASE (DeviceInputStream_StartsOnceThePreRollTargetIsReached)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    // One block is not enough to start on: it would leave the loop chasing a
-    // fill error that only means "not buffered yet", which reads as drift.
-    std::vector<float> small (64, 0.5f);
-    s.pushBlock (small.data(), 64);
+    // One block short of the target is not enough to start on: it would
+    // leave the loop chasing a fill error that only means "not buffered
+    // yet", which reads as drift -- and the channel a block short of the
+    // late-delivery cushion from its first sample.
+    const auto target = DeviceInputStream::cushionSamples (64, 48000.0);
+    std::vector<float> block (64, 0.5f), out (64, 0.0f);
 
-    std::vector<float> out (64, 0.0f);
+    for (size_t pushed = 0; pushed + 64 < target; pushed += 64)
+        s.pushBlock (block.data(), 64);
+
     s.pull (out.data(), 64);
     REQUIRE_FALSE (s.hasStarted());
 
-    // §5.4: playout starts at kPreRollBlocks, which is the latency this buffer
+    // §5.4: playout starts at the cushion, which is the latency this buffer
     // costs the monitor path -- not some fraction of the ring's headroom.
-    std::vector<float> rest (64, 0.5f);
-    s.pushBlock (rest.data(), 64);
+    s.pushBlock (block.data(), 64);
     s.pull (out.data(), 64);
 
     REQUIRE (s.hasStarted());
     REQUIRE_NEAR (out[0], 0.5f, 1e-4);
+}
+
+TEST_CASE (DeviceInputStream_TheCushionRidesOutSixMillisecondsOfLateDeliveryWithinFourPulls)
+{
+    // One pull the output takes at once, plus 6 ms of late delivery -- a
+    // busy Mac's IOProc, a Windows DPC holding a 3 ms period back -- never
+    // less than one more pull and never more than three. Two pulls, which
+    // this was, left 1.3 ms at 64 samples: every IOProc later than that
+    // wrote silence into the channel, a click in the headphones and a gap
+    // in the stem.
+    REQUIRE (DeviceInputStream::cushionSamples (64, 48000.0) == 256);   // four pulls, 5.3 ms
+    REQUIRE (DeviceInputStream::cushionSamples (128, 48000.0) == 416);  // a pull and 6 ms
+    REQUIRE (DeviceInputStream::cushionSamples (144, 48000.0) == 432);  // Windows' 3 ms period
+    REQUIRE (DeviceInputStream::cushionSamples (256, 48000.0) == 544);
+    REQUIRE (DeviceInputStream::cushionSamples (480, 48000.0) == 960);  // two pulls already ride it out
+    REQUIRE (DeviceInputStream::cushionSamples (512, 48000.0) == 1024);
+    REQUIRE (DeviceInputStream::cushionSamples (64, 44100.0) == 256);
+    REQUIRE (DeviceInputStream::cushionSamples (256, 44100.0) == 256 + 265);
 }
 
 TEST_CASE (DeviceInputStream_UnderrunAfterStartingIsCountedNotFaked)
@@ -249,10 +289,11 @@ TEST_CASE (DeviceInputStream_UnderrunAfterStartingIsCountedNotFaked)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    // Get past pre-roll -- two of the pull, which is what a 256-frame
+    // Get past pre-roll -- the cushion of the pull, which is what a 256-frame
     // output has to have buffered -- then starve it.
-    std::vector<float> in (512, 0.5f);
-    s.pushBlock (in.data(), 512);
+    const auto target = DeviceInputStream::cushionSamples (256, 48000.0);
+    std::vector<float> in (target, 0.5f);
+    s.pushBlock (in.data(), static_cast<int> (target));
 
     std::vector<float> out (256, 0.0f);
     s.pull (out.data(), 256);
@@ -321,6 +362,34 @@ struct ScopedSimulatedClock
 
 } // namespace
 
+TEST_CASE (DeviceInputStream_PlayoutStartsAtTheCushionOfTheOutputsPull)
+{
+    // What the stream really holds before the output takes a sample: a
+    // 144-frame Windows period needs a pull plus 6 ms (432 samples), where
+    // it used to start at two pulls (288) and run dry whenever a delivery
+    // came more than 3 ms late.
+    ScopedSimulatedClock clock;
+    simulatedNs = 1'000'000'000; // zero reads as "nothing delivered yet"
+
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 144);
+
+    std::vector<float> in (144, 0.5f), out (144, 0.0f);
+
+    // Each pull lands the instant a delivery does, so the level it steers by
+    // discounts that whole block: three deliveries are two of cushion.
+    for (int i = 0; i < 3; ++i)
+        s.pushBlock (in.data(), 144);
+
+    s.pull (out.data(), 144);
+    REQUIRE_FALSE (s.hasStarted());
+
+    s.pushBlock (in.data(), 144);
+    s.pull (out.data(), 144);
+    REQUIRE (s.hasStarted());
+    REQUIRE (s.getUnderrunSamples() == 0);
+}
+
 TEST_CASE (DeviceInputStream_SustainedExcessDriftIsFlagged)
 {
     ScopedSimulatedClock clock;
@@ -370,9 +439,8 @@ TEST_CASE (DeviceInputStream_MeasuresADeviceClockWithinTwoPpmInAMinute)
     double nextPushS = 0.0, nextPullS = pullPeriodS * 0.5, nextTickS = 0.1;
     double nowS = 0.0;
 
-    // Long enough for the loop too: at the spec's 5 PPM/s slew, 150 PPM is
-    // reached at 30 s and the level it accumulated meanwhile takes another
-    // minute or so to drain through the clamp.
+    // Long enough for the loop too: at the spec's slew 150 PPM is reached in
+    // seconds, and the level it accumulated meanwhile drains back after it.
     while (nowS < 160.0)
     {
         if (nextPushS <= nextPullS)
@@ -413,13 +481,16 @@ TEST_CASE (DeviceInputStream_CountsALossEventPerBlockNotPerSample)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    // Pre-roll, then pull twice from a ring that has one block: the second
-    // pull runs dry part way through -- one event, not one per sample.
-    std::vector<float> in (128, 0.25f), out (64, 0.0f);
-    s.pushBlock (in.data(), 128);
-    s.pull (out.data(), 64);
-    s.pull (out.data(), 64);
-    s.pull (out.data(), 64);
+    // Pre-roll, then pull the ring down until it has one block left: the
+    // pull after that runs dry part way through -- one event, not one per
+    // sample.
+    const auto target = DeviceInputStream::cushionSamples (64, 48000.0);
+    std::vector<float> in (64, 0.25f), out (64, 0.0f);
+    for (size_t pushed = 0; pushed < target; pushed += 64)
+        s.pushBlock (in.data(), 64);
+
+    for (size_t pulled = 0; pulled <= target; pulled += 64)
+        s.pull (out.data(), 64);
 
     REQUIRE (s.getUnderrunSamples() > 0);
     REQUIRE (s.getLossEvents() >= 1);
@@ -428,7 +499,6 @@ TEST_CASE (DeviceInputStream_CountsALossEventPerBlockNotPerSample)
     // A push that finds the ring full is one event too. Delivered in the
     // device's own blocks: one push of seventeen blocks' worth is a device
     // whose IO size is that, and the ring makes room for sixteen of those.
-    // (The 128 above already gives it room for sixteen of 128.)
     const auto before = s.getLossEvents();
     for (int i = 0; i <= 2 * DeviceInputStream::kRingBlocks && s.getOverrunSamples() == 0; ++i)
         s.pushBlock (in.data(), 64);
@@ -507,9 +577,10 @@ TEST_CASE (DeviceInputStream_UnderrunCountNeverExceedsWhatWasAskedFor)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    // Enough to clear pre-roll (2 blocks) and prime the resampler, and no more.
-    std::vector<float> in (128, 0.5f);
-    s.pushBlock (in.data(), 128);
+    // Enough to clear pre-roll and prime the resampler, and no more.
+    const auto target = DeviceInputStream::cushionSamples (64, 48000.0);
+    std::vector<float> in (target, 0.5f);
+    s.pushBlock (in.data(), static_cast<int> (target));
 
     std::vector<float> out (64, 0.0f);
 
@@ -531,8 +602,9 @@ TEST_CASE (DeviceInputStream_StarvedBlockFallsToSilenceInsteadOfInventingDC)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    std::vector<float> in (128, 0.75f);
-    s.pushBlock (in.data(), 128);
+    const auto target = DeviceInputStream::cushionSamples (64, 48000.0);
+    std::vector<float> in (target, 0.75f);
+    s.pushBlock (in.data(), static_cast<int> (target));
 
     std::vector<float> out (64, -99.0f);
 
@@ -570,9 +642,8 @@ TEST_CASE (DeviceInputStream_DriftLoopIsDrivenByItsOwnRingNotByAnyOtherChannel)
     fast.prepare (48000.0, 64);
     alsoFast.prepare (48000.0, 64);
 
-    std::vector<float> preload (400, 0.25f);
-    fast.pushBlock (preload.data(), 400);
-    alsoFast.pushBlock (preload.data(), 400);
+    startThenRunAhead (fast, 400);
+    startThenRunAhead (alsoFast, 400);
 
     runClockRatio (fast, 64, 64, 400);
     runClockRatio (alsoFast, 64, 64, 400);
@@ -597,8 +668,7 @@ TEST_CASE (DeviceInputStream_NamingAChannelTheReferenceDoesNotStopCorrectingIt)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    std::vector<float> preload (400, 0.25f);
-    s.pushBlock (preload.data(), 400);
+    startThenRunAhead (s, 400);
     runClockRatio (s, 64, 64, 400);
 
     const double afterSettling = s.getDriftPpm();
@@ -620,9 +690,9 @@ TEST_CASE (DeviceInputStream_RingIsHeldAtTargetEvenAtAWideClockOffset)
     // being dropped a sample at a time with the underrun counter reading zero
     // throughout. Corrected, it parks at its pre-roll target and stays there.
     //
-    // Five minutes because §3.2 caps the loop's slew at 5 PPM/s: reaching
-    // 100 PPM and settling takes a couple of minutes, and sampling before then
-    // measures the slew rather than the steady state.
+    // Five minutes because §3.2 caps the loop's slew: reaching 100 PPM and
+    // settling takes a while, and sampling before then measures the slew
+    // rather than the steady state.
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
@@ -825,17 +895,17 @@ double stepBehind (const RampSource& src, const std::vector<float>& out)
 
 constexpr int64_t kBlockNs64 = 64 * 1000000000LL / 48000;
 
-// Pre-roll so the ring sits at the loop's target from the first pull: two
-// blocks plus the half block a pull lands after a delivery, less the sample
-// the interpolator primes with. The loop itself, at 5 PPM/s, would take a
-// minute to walk it there.
+// Pre-roll so the ring sits at the loop's target from the first pull: the
+// cushion plus the half block a pull lands after a delivery, less the sample
+// the interpolator primes with. The loop itself would take many seconds to
+// walk it there.
 void primeAtTarget (DeviceInputStream& s, RampSource& src, std::vector<float>& out)
 {
     simulatedNs = 1'000'000'000; // zero is what the clock hook reads as "nothing delivered yet"
     // In two deliveries, so the one the pull lands right after is the short
     // one: playout starts on the de-quantized level, which discounts the
     // newest delivery's whole block at the instant it lands.
-    src.push (s, 64 + 64);
+    src.push (s, static_cast<int> (DeviceInputStream::cushionSamples (64, 48000.0)));
     src.push (s, 32 + 1);
     s.pull (out.data(), 64);
 }
@@ -1013,7 +1083,7 @@ TEST_CASE (DeviceInputStream_ARingOneBlockDeepIsNotAStarvationInEveryBlock)
 
     // Pre-roll to the target, then let a stall drain it to one block: the
     // device delivers, the pull consumes, and the ring never gets deeper.
-    src.push (s, 256);
+    src.push (s, static_cast<int> (DeviceInputStream::cushionSamples (128, 48000.0)));
     s.pull (out.data(), 128);
     s.pull (out.data(), 128);
     REQUIRE (s.getUnderrunSamples() == 0);
@@ -1464,7 +1534,12 @@ TEST_CASE (DeviceInputStream_AnIoSizeTheDeviceRanAtBeforeIsAbsorbedWithoutAGap)
     // The device runs small for two minutes in the middle: long enough for a
     // loop steering the ring back down to a small block's level (200 PPM is
     // under ten samples a second) to have spent the headroom, so the growth
-    // after it would run dry.
+    // after it would run dry. The microphone hears a ramp, never quiet, so
+    // the room is never given back in that time either (it is only given back
+    // at a quiet moment: see ...RoomHeldForALargerBlockIsGivenBackAtAQuietMoment,
+    // where the cost of a later growth is the one gap or shift any growth
+    // has, and ...ADeviceMovedEveryFewMinutesPaysTwoGapsInAll, where a quiet
+    // device pays that once and then keeps its room).
     const auto r = runBlockSwitches ({ { 0.0, 64 }, { 5.0, 1156 }, { 10.0, 64 }, { 135.0, 1156 },
                                        { 140.0, 512 }, { 145.0, 1156 } },
                                      150.0, 6.0, { 7.0, 12.0, 70.0, 134.0, 137.0, 142.0, 149.0 });
@@ -1569,14 +1644,410 @@ TEST_CASE (DeviceInputStream_ARunOfDryPullsIsOneLossEvent)
     REQUIRE (s.getLossEvents() == 2u);
 }
 
+TEST_CASE (DeviceInputStream_PlayoutStartsAtTheTargetHoweverFarTheDeviceDeliveredAhead)
+{
+    // At 480 samples (a Windows 10 ms period) the pull that first finds the
+    // target can find a whole block or more past it: two deliveries landed
+    // since the pull before. Only an overshoot smaller than a pull used to
+    // be dropped; this one was left to the loop, which at its clamp took a
+    // minute and a half to drain it -- that channel up to 19 ms later in the
+    // headphones than its neighbours meanwhile, and its stem out of line by
+    // as much. Nothing has been played or recorded from the stream yet, so
+    // all of it is pre-roll to drop.
+    ScopedSimulatedClock clock;
+    simulatedNs = 1'000'000'000;
+
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 480);
+
+    RampSource src (480);
+    std::vector<float> out (480, -1.0f);
+
+    // Four blocks by the first pull. The level that pull steers by discounts
+    // the block that has just landed: three blocks, 1440, against a target
+    // of two pulls (960) -- a whole pull over.
+    for (int i = 0; i < 4; ++i)
+        src.push (s, 480);
+
+    s.pull (out.data(), 480);
+    REQUIRE (s.hasStarted());
+
+    // The oldest 480 samples are the overshoot: playout starts on sample 480,
+    // the channel exactly at its target.
+    REQUIRE_NEAR (out[0], 480.0f, 1e-3);
+    REQUIRE (s.getUnderrunSamples() == 0u);
+}
+
+TEST_CASE (DeviceInputStream_AfterAGapTheChannelResumesExactlyWhereItStopped)
+{
+    // A device grows its IO block from 64 to 1156: its ring runs dry, the
+    // stream writes silence for the gap, and the channel carries on later by
+    // exactly that silence -- which is what the writer lines its stem up by.
+    // It used to come back on the sample it stopped at played twice, and
+    // with the resampler's fraction of a sample dropped: a channel up to two
+    // samples later than the silence written for it, its stem out of step
+    // with every other stem by that much after each gap.
+    //
+    // The device runs 150 PPM fast, so the loop moves the resampler between
+    // two samples; a ramp's output carries that fraction, and it must carry
+    // on after the gap. The gap is tried at several moments so that at least
+    // one finds the resampler well between two samples, whatever the loop's
+    // own pace.
+    struct Result
+    {
+        double delayBefore = -1.0, delayAfter = -1.0, fractionBefore = -1.0, fractionAfter = -1.0;
+        int repeats = 0;
+        bool gapSeen = false;
+        uint64_t silence = 0;
+    };
+
+    const auto run = [] (double growAt)
+    {
+        ScopedSimulatedClock clock;
+        DeviceInputStream s (48000.0);
+        s.prepare (48000.0, 64);
+
+        const double deviceRate = 48000.0 * (1.0 + 150.0e-6);
+        std::vector<float> in (1156), out (64);
+        long long produced = 0;
+        double blockStart = 0.0, nextOut = 0.0005;
+        float previous = 0.0f;
+        Result r;
+
+        while (nextOut < growAt + 1.0)
+        {
+            const int block = blockStart < growAt ? 64 : 1156;
+
+            if (blockStart + block / deviceRate <= nextOut)
+            {
+                blockStart += block / deviceRate;
+                simulatedNs = static_cast<int64_t> (blockStart * 1.0e9) + 1;
+                for (int i = 0; i < block; ++i)
+                    in[static_cast<size_t> (i)] = static_cast<float> (produced + i + 1);
+                s.pushBlock (in.data(), block);
+                produced += block;
+                continue;
+            }
+
+            simulatedNs = static_cast<int64_t> (nextOut * 1.0e9) + 1;
+            s.pull (out.data(), 64);
+
+            for (int i = 0; i < 64; ++i)
+            {
+                const float x = out[static_cast<size_t> (i)];
+
+                if (x == 0.0f)
+                    r.gapSeen = r.gapSeen || s.getUnderrunSamples() > 0;
+                else if (r.gapSeen && previous != 0.0f && x - previous < 0.5f)
+                    ++r.repeats;
+
+                // The last sample heard before the gap and the first after
+                // it: where the channel sits, and how far between two of the
+                // device's samples the resampler is.
+                if (x != 0.0f)
+                {
+                    const double delay = (nextOut * 48000.0 + i) - (static_cast<double> (x) - 1.0);
+                    const double fraction = static_cast<double> (x) - std::floor (static_cast<double> (x));
+
+                    if (! r.gapSeen)
+                    {
+                        r.delayBefore = delay;
+                        r.fractionBefore = fraction;
+                    }
+                    else if (r.delayAfter < 0.0)
+                    {
+                        r.delayAfter = delay;
+                        r.fractionAfter = fraction;
+                    }
+                }
+
+                previous = x;
+            }
+
+            nextOut += 64 / 48000.0;
+        }
+
+        r.silence = s.getUnderrunSamples() + s.getAlignmentSilenceSamples();
+        return r;
+    };
+
+    bool wellBetween = false;
+
+    for (double growAt = 2.0; growAt < 6.0; growAt += 0.25)
+    {
+        const auto r = run (growAt);
+
+        REQUIRE (r.gapSeen);
+        REQUIRE (r.silence > 1000u);
+
+        // Not one sample played twice...
+        REQUIRE (r.repeats == 0);
+
+        // ...the resampler where it was, a sample's fraction and all...
+        const double drift = std::abs (r.fractionAfter - r.fractionBefore);
+        REQUIRE (std::min (drift, 1.0 - drift) < 0.01);
+        wellBetween = wellBetween || (r.fractionBefore > 0.25 && r.fractionBefore < 0.75);
+
+        // ...and the channel later by the silence written and nothing else
+        // (the device's clock, 150 PPM fast, moves it a fraction more over
+        // the gap).
+        REQUIRE_NEAR (r.delayAfter - r.delayBefore, static_cast<double> (r.silence), 0.5);
+    }
+
+    // At least one gap found the resampler well between two samples, so a
+    // dropped fraction could not have passed unseen.
+    REQUIRE (wellBetween);
+}
+
+namespace {
+
+// A device at 64 frames whose IO block follows `schedule` (from each time
+// on, that size), pulled 64 at a time for `seconds`. Its microphone hears a
+// 1 kHz tone at -12 dBFS until `loudUntil`, then quiet: digital silence, or
+// room noise of peak `noise` -- and, on top, a one-sample click of 0.5 at
+// each of `clicksAt` (seconds of the device's own clock). Reports when (if
+// ever) the stream gave held room back, how loud the audio around the jump
+// was, and where each click came out of the stream.
+struct ReleaseRun
+{
+    double releasedAt = -1.0;
+    uint64_t released = 0, releases = 0, lossEvents = 0;
+    size_t heldAtEnd = 0;
+    float loudestNearJump = 0.0f;
+    std::vector<double> clickOut; // output sample index of each click (centroid)
+};
+
+ReleaseRun runIoSizeSchedule (const std::vector<std::pair<double, int>>& schedule, double loudUntil,
+                              double seconds, float noise = 0.0f, const std::vector<double>& clicksAt = {})
+{
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    std::vector<float> in (4096), out (64), heard;
+    long long produced = 0;
+    double blockStart = 0.0, nextOut = 0.0005;
+    ReleaseRun r;
+    float recentPeak = 0.0f;
+    uint32_t lcg = 12345u;
+
+    const auto blockAt = [&] (double t)
+    {
+        int block = 64;
+        for (const auto& [at, size] : schedule)
+            if (t >= at)
+                block = size;
+        return block;
+    };
+
+    while (nextOut < seconds)
+    {
+        const int block = blockAt (blockStart);
+
+        if (blockStart + block / 48000.0 <= nextOut)
+        {
+            blockStart += block / 48000.0;
+            simulatedNs = static_cast<int64_t> (blockStart * 1.0e9) + 1;
+
+            for (int i = 0; i < block; ++i)
+            {
+                const long long n = produced + i;
+                const double t = static_cast<double> (n) / 48000.0;
+                float v = t < loudUntil ? static_cast<float> (0.25 * std::sin (2.0 * 3.141592653589793 * 1000.0 * t)) : 0.0f;
+
+                if (t >= loudUntil && noise > 0.0f)
+                {
+                    lcg = lcg * 1664525u + 1013904223u;
+                    v += noise * (static_cast<float> (lcg >> 8) / 8388608.0f - 1.0f);
+                }
+
+                for (double c : clicksAt)
+                    if (n == std::llround (c * 48000.0))
+                        v = 0.5f;
+
+                in[static_cast<size_t> (i)] = v;
+            }
+
+            s.pushBlock (in.data(), block);
+            produced += block;
+            continue;
+        }
+
+        simulatedNs = static_cast<int64_t> (nextOut * 1.0e9) + 1;
+        const auto before = s.getHeldReleases();
+        s.pull (out.data(), 64);
+        heard.insert (heard.end(), out.begin(), out.end());
+
+        float peak = 0.0f;
+        for (float x : out)
+            peak = std::max (peak, std::abs (x));
+
+        if (r.releasedAt < 0.0 && s.getHeldReleases() > before)
+        {
+            r.releasedAt = nextOut;
+            r.loudestNearJump = std::max (recentPeak, peak);
+        }
+
+        recentPeak = peak;
+        nextOut += 64 / 48000.0;
+    }
+
+    // Each click comes out spread over two samples by the interpolator: its
+    // place is the centroid of what stands above the noise.
+    for (size_t n = 0; n < heard.size(); ++n)
+        if (heard[n] > 0.1f)
+        {
+            double w = 0.0, wi = 0.0;
+            for (size_t k = n; k < std::min (heard.size(), n + 3); ++k)
+                if (heard[k] > 0.02f)
+                {
+                    w += heard[k];
+                    wi += heard[k] * static_cast<double> (k);
+                }
+            r.clickOut.push_back (wi / w);
+            n += 3;
+        }
+
+    r.released = s.getReleasedHeldSamples();
+    r.releases = s.getHeldReleases();
+    r.lossEvents = s.getLossEvents();
+    r.heldAtEnd = s.getHeldBlockSamples();
+    return r;
+}
+
+// One excursion: `largeBlock` from 1 s to 2 s, `smallBlock` from then on.
+ReleaseRun runIoSizeExcursion (int largeBlock, int smallBlock, double loudUntil, double seconds, float noise = 0.0f,
+                               const std::vector<double>& clicksAt = {})
+{
+    return runIoSizeSchedule ({ { 0.0, 64 }, { 1.0, largeBlock }, { 2.0, smallBlock } }, loudUntil, seconds, noise, clicksAt);
+}
+
+} // namespace
+
+TEST_CASE (DeviceInputStream_RoomHeldForALargerBlockIsGivenBackAtAQuietMoment)
+{
+    // Held for good, as it was, the room for one excursion to 1024 frames
+    // kept this microphone 20 ms later than the others in the headphones for
+    // the rest of the session. Two seconds after the device is back at 64
+    // it is given back -- but only at a quiet moment, so the jump forward is
+    // quiet to quiet: while the microphone hears a tone, nothing moves.
+    const auto loud = runIoSizeExcursion (1024, 64, 6.0, 8.0);
+
+    REQUIRE (loud.releasedAt > 6.0);              // not while the tone played
+    REQUIRE (loud.releasedAt < 6.1);              // but soon after it stopped
+    REQUIRE (loud.releases == 1u);
+    REQUIRE (loud.released == 960u);              // exactly the room: 1024 - 64
+    REQUIRE (loud.heldAtEnd == 64u);
+    REQUIRE (loud.loudestNearJump < DeviceInputStream::kQuietLevel);
+
+    // Quiet throughout: given back two seconds after the return, not before.
+    const auto quiet = runIoSizeExcursion (1024, 64, 0.0, 5.0);
+    REQUIRE (quiet.releasedAt > 4.0);
+    REQUIRE (quiet.releasedAt < 4.1);
+    REQUIRE (quiet.heldAtEnd == 64u);
+}
+
+TEST_CASE (DeviceInputStream_GivingBackRoomMovesTheChannelByExactlyTheRoom)
+{
+    // The writer lines the stem up by the room given back, so the stream must
+    // move by exactly that: two clicks, one while the room is still held and
+    // one after it was given back, come out exactly 960 samples closer
+    // together than they went in -- not 958 (the interpolator's pair taken
+    // from the wrong samples) or 961 (a sample dropped with its phase).
+    const auto r = runIoSizeExcursion (1024, 64, 0.0, 6.0, 0.0f, { 3.5, 5.0 });
+
+    REQUIRE (r.releases == 1u);
+    REQUIRE (r.releasedAt > 4.0);
+    REQUIRE (r.releasedAt < 4.1);
+    REQUIRE (r.clickOut.size() == 2u);
+    REQUIRE_NEAR ((r.clickOut[1] - r.clickOut[0]) - 1.5 * 48000.0, -960.0, 0.05);
+}
+
+TEST_CASE (DeviceInputStream_RoomIsGivenBackInARoomWithNoiseInIt)
+{
+    // Quiet is not digital silence: the noise of an ordinary room between
+    // words, here up to -46 dBFS. A threshold at -50 dBFS was never met by
+    // it, and the room stayed held for good after all.
+    const auto r = runIoSizeExcursion (1024, 64, 0.0, 5.0, 0.005f);
+
+    REQUIRE (r.releases == 1u);
+    REQUIRE (r.releasedAt > 4.0);
+    REQUIRE (r.releasedAt < 4.1);
+    REQUIRE (r.released == 960u);
+}
+
+TEST_CASE (DeviceInputStream_RoomIsKeptForABlockOnlyALittleLarger)
+{
+    // A device that goes from 1156 to 640 -- more than half -- keeps its
+    // room: devices whose deliveries vary a little must not have room taken
+    // back and grown again, a shift each way. And nothing is given back
+    // within two seconds of a return, in case the larger size comes back.
+    const auto slight = runIoSizeExcursion (1156, 640, 0.0, 6.0);
+    REQUIRE (slight.releasedAt < 0.0);
+    REQUIRE (slight.heldAtEnd == 1156u);
+
+    const auto brief = runIoSizeExcursion (1156, 64, 0.0, 3.9);
+    REQUIRE (brief.releasedAt < 0.0);
+    REQUIRE (brief.heldAtEnd == 1156u);
+}
+
+TEST_CASE (DeviceInputStream_ADeviceThatGoesBackToALargerBlockKeepsItsRoomForGood)
+{
+    // A growth past the room held costs a gap (the device holds its audio
+    // that much longer), and giving the room back means the next growth
+    // costs one again. A device switching between 1156 and 64 every three
+    // seconds -- another app opening and closing it -- had its room given
+    // back two seconds into every spell at 64 and paid a gap every six
+    // seconds, enough to step the buffer ladder. Once it has grown again
+    // after its room was given back, the room is kept, so it pays twice:
+    // the first growth, and the first return.
+    std::vector<std::pair<double, int>> toggling;
+    for (int i = 0; i < 10; ++i)
+        toggling.push_back ({ 1.0 + 3.0 * i, i % 2 == 0 ? 1156 : 64 });
+
+    const auto r = runIoSizeSchedule (toggling, 0.0, 31.0);
+
+    REQUIRE (r.releases == 1u);
+    REQUIRE (r.lossEvents == 2u);
+    REQUIRE (r.heldAtEnd == 1156u);
+}
+
+TEST_CASE (DeviceInputStream_ADeviceMovedEveryFewMinutesPaysTwoGapsInAll)
+{
+    // The same, slower: a call app moves the device to 1156 for two seconds
+    // every 30 s, or every two minutes, in a quiet room. Keeping the room
+    // twice as long at each return, up to 64 s, still gave it back between
+    // every pair of moves, and every return cost a counted gap of about
+    // 23 ms in the headphones and in the track: 5 gaps in five minutes at
+    // 30 s, 10 in twenty minutes at two minutes (1, when room was never
+    // given back at all). Now 2: the first growth and the first return.
+    for (const double period : { 30.0, 120.0 })
+    {
+        const double total = period * 10.0;
+        std::vector<std::pair<double, int>> moves;
+
+        for (int i = 0; i < 10; ++i)
+        {
+            moves.push_back ({ 1.0 + period * i, 1156 });
+            moves.push_back ({ 3.0 + period * i, 64 });
+        }
+
+        const auto r = runIoSizeSchedule (moves, 0.0, total);
+
+        REQUIRE (r.releases == 1u);
+        REQUIRE (r.lossEvents == 2u);
+        REQUIRE (r.heldAtEnd == 1156u);
+    }
+}
+
 TEST_CASE (DeviceInputStream_AStreamsPlaceInTimeIsItsOwnDevicesBlock)
 {
     // A sample waits up to a device block before it is handed over, so a
     // device at 1156 frames plays 1092 samples later than one at 64 -- and
     // nothing more: no stream is held back for any other device, which is
     // what keeps the headphone mix as early as each microphone allows. The
-    // coordinator tells the writer exactly this (two pulls of cushion plus
-    // getDeviceBlockSamples()), and the writer lines the stems up from it.
+    // coordinator tells the writer exactly this (the cushion plus the block
+    // the stream holds room for), and the writer lines the stems up from it.
     const auto delayFor = [] (int deviceBlock, size_t* settledBlock = nullptr)
     {
         ScopedSimulatedClock clock;
@@ -1624,4 +2095,265 @@ TEST_CASE (DeviceInputStream_AStreamsPlaceInTimeIsItsOwnDevicesBlock)
     REQUIRE (largeBlock == 1156u);
     REQUIRE_NEAR (middle - small, 448.0, 2.0);
     REQUIRE_NEAR (large - small, 1092.0, 2.0);
+}
+
+namespace {
+
+// A tone at `frequency` through a stream whose device runs `ppm` off the
+// clock that pulls it: its quietest and loudest over 5 ms windows, in dB
+// against what went in, from ten seconds in (the loop tracking the device,
+// so where each output lands between two samples sweeps round and round)
+// to fifteen.
+struct ToneLevel
+{
+    double quietestDb = 1.0e9;
+    double loudestDb = -1.0e9;
+};
+
+ToneLevel toneLevelThroughADriftingStream (double frequency, double ppm)
+{
+    ScopedSimulatedClock clock;
+    constexpr double rate = 48000.0;
+    constexpr int block = 64;
+    constexpr double amplitude = 0.5;
+    constexpr int window = 240; // a whole number of cycles of every tone tried
+
+    DeviceInputStream s (rate);
+    s.prepare (rate, block);
+
+    const double devicePeriod = block / rate / (1.0 + ppm * 1.0e-6);
+    const double outputPeriod = block / rate;
+    double nextIn = devicePeriod * 0.3, nextOut = outputPeriod;
+    long long produced = 0;
+    std::vector<float> in (block), out (block);
+    double energy = 0.0;
+    int count = 0;
+    ToneLevel level;
+
+    while (nextOut < 15.0)
+    {
+        if (nextIn < nextOut)
+        {
+            simulatedNs = static_cast<int64_t> (nextIn * 1.0e9);
+            for (int i = 0; i < block; ++i)
+                in[static_cast<size_t> (i)] = static_cast<float> (
+                    amplitude * std::sin (2.0 * 3.141592653589793 * frequency * static_cast<double> (produced + i) / rate));
+            produced += block;
+            s.pushBlock (in.data(), block);
+            nextIn += devicePeriod;
+            continue;
+        }
+
+        simulatedNs = static_cast<int64_t> (nextOut * 1.0e9);
+        s.pull (out.data(), block);
+        nextOut += outputPeriod;
+
+        if (nextOut < 10.0)
+            continue;
+
+        for (const float x : out)
+        {
+            energy += static_cast<double> (x) * x;
+
+            if (++count == window)
+            {
+                const double db = 20.0 * std::log10 (std::sqrt (2.0 * energy / window) / amplitude);
+                level.quietestDb = std::min (level.quietestDb, db);
+                level.loudestDb = std::max (level.loudestDb, db);
+                energy = 0.0;
+                count = 0;
+            }
+        }
+    }
+
+    REQUIRE (s.getUnderrunSamples() == 0u);
+    return level;
+}
+
+} // namespace
+
+TEST_CASE (DeviceInputStream_HighFrequenciesKeepTheirLevelAsTheResamplerSweepsBetweenSamples)
+{
+    // Every microphone's loop sits a little off 1.0 -- it is tracking that
+    // device's clock -- so where each output lands between two samples
+    // sweeps through a whole sample over and over: five times a second at
+    // 100 PPM, once a second at 20. A straight line between two samples is
+    // a two-sample average half way between them, and nothing at all on a
+    // sample, so a tone at 12 kHz rose and fell by 3 dB at that rate, and
+    // 16 kHz by 6: the top of every voice warbling, in the headphones and
+    // the stems alike. The cubic swings 1.1 dB at 12 kHz, 3.3 at 16 and
+    // 0.2 at 8, and never adds level.
+    for (const double ppm : { 100.0, -50.0 })
+    {
+        const auto at8 = toneLevelThroughADriftingStream (8000.0, ppm);
+        const auto at12 = toneLevelThroughADriftingStream (12000.0, ppm);
+        const auto at16 = toneLevelThroughADriftingStream (16000.0, ppm);
+
+        REQUIRE (at8.loudestDb - at8.quietestDb < 0.3);    // a straight line: 1.25 dB
+        REQUIRE (at12.loudestDb - at12.quietestDb < 1.2);  // 3.0 dB
+        REQUIRE (at16.loudestDb - at16.quietestDb < 3.5);  // 6.0 dB
+
+        // And it did sweep: on a sample the tone comes through whole.
+        for (const auto& level : { at8, at12, at16 })
+        {
+            REQUIRE (level.loudestDb < 0.02);
+            REQUIRE (level.loudestDb > -0.05);
+        }
+    }
+}
+
+TEST_CASE (DeviceInputStream_GivingBackRoomLeavesTheResamplerOnTheSamplesThatStandThere)
+{
+    // Room held for a larger block is given back by dropping exactly that
+    // much from the ring at a quiet moment (see
+    // ...GivingBackRoomMovesTheChannelByExactlyTheRoom). The resampler
+    // works from four samples, so all four must be the ones that stand at
+    // the new place: two left over from before the jump bend the curve
+    // between the new ones towards audio 960 samples older. A quiet ramp
+    // (never above -48 dBFS) shows it: every output says which captured
+    // sample it is, so after the jump each must sit exactly one sample on
+    // from the last -- and the jump itself exactly 960 on.
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    constexpr double slope = 2.0e-8;
+    constexpr double centre = 200000.5; // the ramp crosses zero near the jump, where floats are finest
+    const auto valueAt = [&] (long long n) { return static_cast<float> (slope * (static_cast<double> (n) - centre)); };
+    const auto sampleOf = [&] (float x) { return static_cast<double> (x) / slope + centre; };
+
+    std::vector<float> in (1024), out (64);
+    long long produced = 0;
+    double blockStart = 0.0, nextOut = 0.0005, previous = -1.0;
+    std::vector<double> jumps;
+    int steps = 0;
+
+    while (nextOut < 5.0)
+    {
+        const int block = blockStart >= 1.0 && blockStart < 2.0 ? 1024 : 64;
+
+        if (blockStart + block / 48000.0 <= nextOut)
+        {
+            blockStart += block / 48000.0;
+            simulatedNs = static_cast<int64_t> (blockStart * 1.0e9) + 1;
+            for (int i = 0; i < block; ++i)
+                in[static_cast<size_t> (i)] = valueAt (produced + i);
+            s.pushBlock (in.data(), block);
+            produced += block;
+            continue;
+        }
+
+        simulatedNs = static_cast<int64_t> (nextOut * 1.0e9) + 1;
+        s.pull (out.data(), 64);
+
+        // Well after the growth's own gap, and before the ramp grows coarse.
+        if (nextOut >= 3.0)
+        {
+            for (const float x : out)
+            {
+                const double at = sampleOf (x);
+
+                if (previous >= 0.0)
+                {
+                    ++steps;
+                    if (std::abs (at - previous - 1.0) > 0.05)
+                        jumps.push_back (at - previous);
+                }
+
+                previous = at;
+            }
+        }
+
+        nextOut += 64 / 48000.0;
+    }
+
+    REQUIRE (s.getHeldReleases() == 1u);
+    REQUIRE (s.getReleasedHeldSamples() == 960u);
+    REQUIRE (steps > 90000);
+
+    // One step of 960 and the sample after it; every other step one sample.
+    REQUIRE (jumps.size() == 1u);
+    REQUIRE_NEAR (jumps.front(), 961.0, 0.05);
+}
+
+TEST_CASE (DeviceInputStream_PreparedAgainAStreamStartsFromItsNewAudioAlone)
+{
+    // prepare() is a fresh start: nothing the resampler held before it --
+    // its four samples, or the ones it was carrying over a gap -- may reach
+    // the audio after it.
+    ScopedSimulatedClock clock;
+    simulatedNs = 1'000'000'000;
+
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    // Each start in two deliveries: the level playout starts on discounts
+    // the newest one whole, at the instant it lands.
+    const auto target = static_cast<int> (DeviceInputStream::cushionSamples (64, 48000.0));
+    std::vector<float> loud (static_cast<size_t> (target) + 64, 0.9f), out (64, 0.0f);
+
+    // Running, then starved part way through a pull: the resampler is
+    // carrying the samples it stopped on.
+    s.pushBlock (loud.data(), target + 32);
+    s.pushBlock (loud.data(), 1);
+    for (int i = 0; i < 8 && s.getUnderrunSamples() == 0; ++i)
+        s.pull (out.data(), 64);
+    REQUIRE (s.hasStarted());
+    REQUIRE (s.getUnderrunSamples() > 0u);
+
+    s.prepare (48000.0, 64);
+
+    std::vector<float> fresh (static_cast<size_t> (target) + 64, 0.25f);
+    s.pushBlock (fresh.data(), target + 32);
+    s.pushBlock (fresh.data(), 1);
+    s.pull (out.data(), 64);
+    REQUIRE (s.hasStarted());
+
+    for (const float x : out)
+        REQUIRE (x == 0.25f);
+}
+
+TEST_CASE (DeviceInputStream_AHeldSampleIsTheOneItsOutputWasLeaving)
+{
+    // A ring one sample short of what a pull needs runs out on the pull's
+    // last output, whose step needs the sample beyond it: that output holds
+    // and the next pull completes the step (see the hold in pullBlock). What
+    // it holds is the sample its output was leaving, the start of the step:
+    // the ramp then never runs backwards, the hold costing a sample of time
+    // and nothing else. Holding the sample before it played the ramp back
+    // by up to a sample at every hold -- a backward step in the waveform.
+    //
+    // A device delivering 63 samples for every 64 pulled leaves every pull
+    // one short once the cushion has run down, and the loop, slewing towards
+    // its clamp, moves the resampler between samples meanwhile.
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    RampSource src (64);
+    std::vector<float> out (64, 0.0f);
+    primeAtTarget (s, src, out);
+
+    float last = out[63];
+    float steepest = 0.0f, backwards = 0.0f;
+
+    for (int i = 0; i < 600; ++i)
+    {
+        src.push (s, 63);
+        simulatedNs += kBlockNs64 / 2;
+        s.pull (out.data(), 64);
+        simulatedNs += kBlockNs64 - kBlockNs64 / 2;
+
+        for (const float x : out)
+        {
+            backwards = std::min (backwards, x - last);
+            steepest = std::max (steepest, x - last);
+            last = x;
+        }
+    }
+
+    REQUIRE (s.getHoldCount() > 100u);
+    REQUIRE (s.getUnderrunSamples() == 0u);
+    REQUIRE (backwards >= -0.01f);
+    REQUIRE (steepest <= 1.01f);
 }

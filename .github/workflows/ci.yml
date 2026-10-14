@@ -175,7 +175,11 @@ jobs:
           # Keep CI's native-architecture generated JUCE build state away
           # from Release's universal macOS tree. GitHub cache keys are shared
           # across workflows and immutable once written.
-          key: ci-app-juce-4f43011b96eb0636104cb3e433894cda98243626-${{ hashFiles('ThirdParty/Patches/juce-7.0.12-camera-lifecycle.patch') }}-${{ runner.os }}-${{ runner.arch }}
+          # The repository's name is in the key because the cached tree records
+          # the absolute path it was configured in (/work/<repo>/<repo>/...):
+          # after the rename from usbmic, the old cache made CMake refuse to
+          # configure.
+          key: ci-app-juce-4f43011b96eb0636104cb3e433894cda98243626-${{ hashFiles('ThirdParty/Patches/juce-7.0.12-camera-lifecycle.patch') }}-${{ github.event.repository.name }}-${{ runner.os }}-${{ runner.arch }}
 
       - name: Configure
         run: cmake -B build-app -DMMA_BUILD_APP=ON -DMMA_ALLOW_TEST_INPUTS=ON -DCMAKE_BUILD_TYPE=Release

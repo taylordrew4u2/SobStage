@@ -81,6 +81,7 @@ bool WritePipeline::start (const std::string& sessionFolder,
 
     stemWriters.clear();
     trimGains.clear();
+    mixWeights.clear();
     startProblem.clear();
     mirrorFailedToOpen.store (false, std::memory_order_release);
 
@@ -116,6 +117,10 @@ bool WritePipeline::start (const std::string& sessionFolder,
 
         stemWriters.push_back (std::move (writer));
         trimGains.push_back (dbToGain (spec.trimDb));
+
+        // §2.1: where this channel starts in MIX.wav. A weight that is not a
+        // number is taken as the plain sum rather than poisoning the mix.
+        mixWeights.push_back (std::isfinite (spec.mixWeight) ? std::clamp (spec.mixWeight, 0.0f, 1.0f) : 1.0f);
     }
 
     mixWriter = std::make_unique<SessionWriter>();
@@ -187,6 +192,11 @@ bool WritePipeline::start (const std::string& sessionFolder,
     stemScratch.assign (drainFrames, 0.0f);
     mixScratch.assign (drainFrames, 0.0f);
 
+    // §6.1: a fresh MIX.wav limiter per take, at unity. Its gain carries from
+    // one drained chunk to the next, so a peak at a chunk's edge is turned
+    // down as smoothly as one in the middle.
+    mixLimiter = MixBusLimiter (rate);
+
     // Every channel's alignment line, and the hand-off for changes to it.
     // Offsets start unpublished, so the first block the audio thread hands
     // over queues each channel's starting offset at frame zero.
@@ -197,6 +207,15 @@ bool WritePipeline::start (const std::string& sessionFolder,
     framesDrained = 0;
     chunkEvents.clear();
     chunkEvents.reserve (StemOffsetQueue::kCapacity);
+
+    // The pair weights start where the specs put them, with nothing moving:
+    // only a change from there is queued, and it ramps.
+    mixWeightTargets = mixWeights;
+    publishedMixWeights = mixWeights;
+    mixWeightQueue.clear();
+    mixWeightStep = static_cast<float> (1.0 / (kMixWeightRampSeconds * std::max (1.0, rate)));
+    chunkWeightEvents.clear();
+    chunkWeightEvents.reserve (decltype (mixWeightQueue)::kCapacity);
 
     {
         // Constructed here because this is where the rate is known, and the
@@ -216,7 +235,8 @@ bool WritePipeline::start (const std::string& sessionFolder,
 }
 
 bool WritePipeline::pushBlock (const float* const* channelData, int numChannels_, int numSamples,
-                               const int* channelOffsets, const StemOffsetKind* channelOffsetKinds) noexcept
+                               const int* channelOffsets, const StemOffsetKind* channelOffsetKinds,
+                               const int* channelReleased, const float* channelMixWeights) noexcept
 {
     if (! running.load (std::memory_order_acquire) || numSamples <= 0)
         return false;
@@ -278,11 +298,34 @@ bool WritePipeline::pushBlock (const float* const* channelData, int numChannels_
                 continue;
 
             const auto kind = channelOffsetKinds != nullptr ? channelOffsetKinds[ch] : StemOffsetKind::settled;
+            const int released = kind == StemOffsetKind::released && channelReleased != nullptr
+                                     ? channelReleased[ch] : 0;
 
-            if (offsetQueue.push ({ frame, ch, wanted, kind }))
+            if (offsetQueue.push ({ frame, ch, wanted, kind, released }))
                 published = wanted;
             else
                 alignmentDeferred.store (true, std::memory_order_relaxed);
+        }
+    }
+
+    // §2.1's pair weights for MIX.wav, the same way: only a channel whose
+    // weight moved, tagged with this block's first frame, queued before the
+    // block itself. A full queue leaves the change for a later block. A
+    // weight that is not a number is not a change.
+    if (channelMixWeights != nullptr)
+    {
+        const auto frame = framesAccepted.load (std::memory_order_relaxed);
+
+        for (int ch = 0; ch < usableChannels && ch < static_cast<int> (publishedMixWeights.size()); ++ch)
+        {
+            const float wanted = channelMixWeights[ch];
+            auto& published = publishedMixWeights[static_cast<size_t> (ch)];
+
+            if (wanted == published || ! std::isfinite (wanted))
+                continue;
+
+            if (mixWeightQueue.push ({ frame, ch, std::clamp (wanted, 0.0f, 1.0f) }))
+                published = wanted;
         }
     }
 
@@ -518,6 +561,16 @@ void WritePipeline::drainOnce (bool finalFlush)
                 offsetQueue.pop();
             }
         }
+        chunkWeightEvents.clear();
+        {
+            MixWeightEvent event;
+            while (chunkWeightEvents.size() < chunkWeightEvents.capacity()
+                   && mixWeightQueue.peek (event) && event.frame < chunkStart + frames)
+            {
+                chunkWeightEvents.push_back (event);
+                mixWeightQueue.pop();
+            }
+        }
         framesDrained += frames;
 
         // §6.5: once degraded, the stems stop but the mix is still summed from
@@ -562,7 +615,7 @@ void WritePipeline::drainOnce (bool finalFlush)
                         done = at;
                     }
 
-                    aligner.setOffset (ch, event.offset, event.kind);
+                    aligner.setOffset (ch, event.offset, event.kind, event.released);
                 }
 
                 aligner.process (ch, stemScratch.data() + done, frames - done);
@@ -571,8 +624,48 @@ void WritePipeline::drainOnce (bool finalFlush)
             // §5.1: unity summing, no attenuation with channel count. Trim
             // applies here and only here -- to the aligned samples, so the
             // mix carries a clap once, not once per device's latency.
-            for (size_t f = 0; f < frames; ++f)
-                mixScratch[f] += stemScratch[f] * gain;
+            //
+            // §2.1: so does a fresh two-input microphone's pair weight, the
+            // one the headphones use. Summed at unity, a mic that sends one
+            // voice on both inputs was in MIX.wav twice (+6 dB) for any take
+            // started before its verdict -- the layout is only rebuilt while
+            // idle -- and that doubled voice drove the -1 dBFS limiter, which
+            // turned everyone in the file down whenever it peaked. Each change
+            // starts at the frame it was handed over for and is reached over
+            // kMixWeightRampSeconds. The stem never sees it: it is written
+            // below from stemScratch, which this only reads.
+            {
+                const auto c = static_cast<size_t> (ch);
+                float weight = mixWeights[c];
+                float target = mixWeightTargets[c];
+                size_t f = 0;
+
+                const auto sumUntil = [&] (size_t end)
+                {
+                    for (; f < end; ++f)
+                    {
+                        if (weight != target)
+                            weight = weight < target ? std::min (target, weight + mixWeightStep)
+                                                     : std::max (target, weight - mixWeightStep);
+
+                        mixScratch[f] += stemScratch[f] * gain * weight;
+                    }
+                };
+
+                for (const auto& event : chunkWeightEvents)
+                {
+                    if (event.channel != ch)
+                        continue;
+
+                    sumUntil (static_cast<size_t> (std::min<uint64_t> (
+                        event.frame > chunkStart ? event.frame - chunkStart : 0, frames)));
+                    target = event.weight;
+                }
+
+                sumUntil (frames);
+                mixWeights[c] = weight;
+                mixWeightTargets[c] = target;
+            }
 
             if (! writeStems)
                 continue;
@@ -598,7 +691,7 @@ void WritePipeline::drainOnce (bool finalFlush)
         // §6.1: the mix file gets its own limiter instance at -1 dBFS, separate
         // from the monitor limiter, so a monitor mute never silences the file.
         for (size_t f = 0; f < frames; ++f)
-            mixScratch[f] = MixBusLimiter::processSample (mixScratch[f]);
+            mixScratch[f] = mixLimiter.processSample (mixScratch[f]);
 
         // Measured from the same buffer that is about to be written, after the
         // limiter, so the loudness reported is the loudness of the file.

@@ -15,7 +15,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STR
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING
     "Minimum macOS version supported by SobStage")
 
-project(SobStage VERSION 1.13.26 LANGUAGES CXX)
+project(SobStage VERSION 1.13.27 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -58,6 +58,7 @@ add_library(mma_core STATIC
     Source/Core/FeedbackDetector.cpp
     Source/Core/AlarmTone.cpp
     Source/Core/MixBusLimiter.cpp
+    Source/Core/PeakLimiter.cpp
     Source/Core/RingBuffer.cpp
     Source/Core/SessionWriter.cpp
     Source/Core/SessionMetadata.cpp

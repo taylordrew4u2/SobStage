@@ -20,22 +20,23 @@ on any platform. That is stated here, in the release checklist, and in the
 ## Implemented and verified
 
 All of `Source/Core` plus the platform-neutral Linux input policy, covered by
-950 unit tests passing in CI on Linux, macOS
+1000 unit tests passing in CI on Linux, macOS
 and Windows. The table below lists the largest areas rather than every file:
 
 | Area | Spec | Tests |
 |---|---|---|
-| `MonitorBus` — sum, trim, brickwall limiter, runaway cut, feedback protection, master volume | §5 | 20 |
+| `MonitorBus` — sum, trim, master volume ahead of the −3 dBFS safety limiter, runaway cut, feedback protection | §5 | 26 |
+| `PeakLimiter` / `MixBusLimiter` — zero-lookahead gain-riding limiter (instant attack, 20 ms hold, 50 ms release) for the headphones and `MIX.wav` | §5.5, §6.1 | 10 |
 | `RecordingEngine` — mid-take unplug/reconnect/new-mic events | §6.5 | 15 |
 | `PreflightThroughputTest` — rolling-minimum throughput, 2x gate, FAT32 | §6.4 | 22 |
 | `SessionFolderNaming` — sanitization, truncation, collision suffixes | §6.2 | 11 |
-| `DriftCompensator` — PI loop, ±200 PPM clamp, 5 PPM/s slew | §3.2 | 11 |
+| `DriftCompensator` — PI loop, ±200 PPM clamp, 20 PPM/s slew | §3.2 | 13 |
 | `DeviceInputStream` — per-device ring, drift loop, resampler onto the pulling clock | §3.2, §3.3 | 29 |
 | `AlsaBackend` — real Linux audio: enumeration, exclusive-mode gate, capture, inotify hotplug | §2, §5.4, §11 | `live_capture` |
 | `AlsaInputPolicy` — fail-closed removable-hardware selection | §2 | 13 |
 | `DeviceManager` — 8-mic cap, 9th exclusion, master selection and failover | §1, §3.1, §3.3 | 18 |
 | `RingBuffer` — lock-free SPSC, 30s / 64 MB minimum sizing | §6.3 | 9 |
-| `Metering` — ballistics, peak hold, clip latch | §8.1 | 9 |
+| `Metering` — ballistics, peak hold, clip latch, the mix bar's level at the headphone volume and limiter-driven CLIP | §8.1 | 15 |
 | `SessionWriter` — RIFF/WAVE headers, auto-split, periodic header rewrite | §6.1, §6.6 | 16 |
 | `SampleRateNegotiator` — highest common rate capped at 48 kHz | §2.2 | 14 |
 | `PolarPatternDetector` — non-cardioid detection | §14.4 | 5 |
@@ -57,7 +58,11 @@ Both found real bugs that the unit-test suite did not:
   long before the deliberately slow 5 PPM/s slew could deliver it, so every
   crossing had to unwind from saturation. Over hours the loop swung between
   +140 and −45 PPM instead of settling, starved rings, and failed §3.4 at
-  3.04 ms. Integration now pauses whenever the output is rate- or clamp-limited.
+  3.04 ms. Integration then paused whenever the output was rate- or
+  clamp-limited -- which, with a level carrying a sample of jitter, was every
+  block, so the integral never moved and the loop ran proportional-only.
+  It now pauses only when the error would push the integral further the way
+  the output is already limited.
 - **Pre-roll sized from ring capacity.** Playout started at half the ring, which
   meant 1024 samples — **21 ms of monitor latency**, on its own more than twice
   the entire §5.4 budget. Pre-roll is now a fixed two blocks, and the monitor
@@ -75,8 +80,12 @@ the §3.2 loop limit-cycled — a device 60 PPM slow never converged, a device
 150 PPM slow dropped a block of audio every few seconds, and every microphone
 in the rig was reported at +200 PPM. `Tools/sim_drift_loop` models delivery
 the real way, deterministically, and is now the test: five clocks at ±150,
-±60 and 0 PPM lock within 1 PPM with no loss, at every rung of the buffer
-ladder with the jitter that rung is meant to absorb. `Tools/e2e_realtime_mics.sh`
+±60 and 0 PPM lock with no loss, at every rung of the buffer ladder with the
+jitter that rung is meant to absorb. Without jitter the loop sits within
+1 PPM RMS of each clock over the last minute; with it, it is held to 20 PPM
+RMS over the last minute rather than at the last instant, since under a
+rung's stalls its figure moves with each one and a single reading of it is
+luck. `Tools/e2e_realtime_mics.sh`
 then does the same through the real app, with the virtual microphones paced
 to real, independent clocks: the take is checked, the ladder is checked, and
 the drift the app reports is checked against the clocks it was given.
@@ -225,7 +234,7 @@ v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a
 first-frame enqueue, but that run did not verify a visibly non-black SobStage
 preview or a completed recording. The simulator drives the
 `CameraDevice::openDevice` boundary, including failures and a hot-plug reorder;
-the v1.13.26 AVFoundation/DirectShow viewer and `startRecordingToFile`
+the v1.13.27 AVFoundation/DirectShow viewer and `startRecordingToFile`
 paths still need the physical macOS and Windows matrix. See *Not yet validated
 against hardware*.
 
@@ -314,7 +323,7 @@ the matrix. In particular:
   during open, and the no-false-recovery policy for a mid-take unplug/replug.
   Separately, an older v1.11.0 build opened `USB2 Video` and AVFoundation logged
   a first-frame enqueue; that did not verify a visible non-black preview or a
-  completed recording, and the v1.13.26 artifacts remain untested with a
+  completed recording, and the v1.13.27 artifacts remain untested with a
   physical capture card.
   Outstanding on real hardware:
   what resolution `openDevice` actually settles on, what the recorded file

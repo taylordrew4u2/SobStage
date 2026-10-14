@@ -87,7 +87,9 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     latencyClamped = false;
     recordingOffsets.assign (chans.size(), 0);
     recordingOffsetKinds.assign (chans.size(), StemOffsetKind::settled);
+    recordingOffsetReleased.assign (chans.size(), 0);
     heldBlockSeen.assign (chans.size(), 0);
+    stemReferenceFloor = 0;
     recordingOffsetView = std::make_unique<std::atomic<int>[]> (std::max<size_t> (1, chans.size()));
     for (size_t i = 0; i < std::max<size_t> (1, chans.size()); ++i)
         recordingOffsetView[i].store (0, std::memory_order_relaxed);
@@ -154,6 +156,44 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     trimGains.clear();
     for (const auto& ch : channels)
         trimGains.push_back (MonitorBus::trimDbToLinearGain (ch.trimDb));
+
+    // §2.1 meets §5.1. Most USB microphones present two inputs carrying the
+    // same voice, and a fresh one keeps both as separate channels until the
+    // analyzer has heard three seconds of it -- for the whole take, if Record
+    // comes first, because the layout is only rebuilt while idle. Summed at
+    // unity, that one voice reached the headphones twice: +6 dB, enough on
+    // its own to push ordinary speech into the safety limiter. So in the
+    // headphones (never in the stems) each side of a pair still being
+    // analysed is heard at half, which is exactly the one voice for a
+    // duplicated microphone and only 6 dB low for a real two-input interface
+    // for those few seconds. Once the verdict is in, the callback follows it
+    // straight away, mid-take included: Mono plays the chosen side alone,
+    // Stereo both at unity. Found here, while nothing is running, so the
+    // callback only reads these.
+    monitorPairAnalyzer.assign (channels.size(), -1);
+    monitorPairSide.assign (channels.size(), 0);
+    for (size_t i = 0; i < channels.size(); ++i)
+    {
+        if (! channels[i].analyzeStereoPair || channels[i].deviceChannel != 0)
+            continue;
+
+        for (size_t j = 0; j < channels.size(); ++j)
+        {
+            if (j == i || channels[j].deviceId != channels[i].deviceId || channels[j].deviceChannel != 1)
+                continue;
+
+            monitorPairAnalyzer[i] = static_cast<int> (i);
+            monitorPairAnalyzer[j] = static_cast<int> (i);
+            monitorPairSide[j] = 1;
+            break;
+        }
+    }
+
+    monitorPairWeight.assign (channels.size(), 1.0f);
+    pairTargetWeights.assign (channels.size(), 1.0f);
+    for (size_t i = 0; i < channels.size(); ++i)
+        if (monitorPairAnalyzer[i] >= 0)
+            monitorPairWeight[i] = pairTargetWeights[i] = kUnsettledPairWeight;
 
     // A headphone/capture-card output is never allowed to make the recording
     // inputs unavailable. Enumeration can say an output supports a rate and
@@ -933,8 +973,12 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     std::vector<WriteChannelSpec> specs;
     specs.reserve (channels.size());
 
-    for (const auto& ch : channels)
-        specs.push_back ({ ch.fileName, ch.trimDb, ch.bitDepth });
+    // §2.1: each channel starts in MIX.wav at the weight the headphones give
+    // it now -- half each for a fresh pair still being decided -- and the
+    // callback hands the writer every change from there.
+    for (size_t i = 0; i < channels.size(); ++i)
+        specs.push_back ({ channels[i].fileName, channels[i].trimDb, channels[i].bitDepth,
+                           pairTargetWeight (i) });
 
     // Opening the files is the take's first write to the card, so it runs on
     // a disposable worker with a deadline. A card pulled at that instant used
@@ -1474,6 +1518,51 @@ void CaptureCoordinator::analyzeStereoPair (int channelIndex, const float* left,
     }
 }
 
+float CaptureCoordinator::pairTargetWeight (size_t channel) const noexcept
+{
+    if (channel >= monitorPairAnalyzer.size() || monitorPairAnalyzer[channel] < 0)
+        return 1.0f;
+
+    const auto analyzer = static_cast<size_t> (monitorPairAnalyzer[channel]);
+
+    if (analyzer >= channelLayouts.size())
+        return 1.0f;
+
+    const auto& layout = *channelLayouts[analyzer];
+
+    // Only a verdict from three seconds of signal. The sixty-second
+    // no-signal Mono is provisional (both sides are quiet, and a quiet
+    // two-input interface must still be able to prove Stereo), so the pair
+    // stays at half each until a real answer. The acquire pairs with the
+    // release that published the decision and its side.
+    if (! layout.decisionPersistable.load (std::memory_order_acquire))
+        return kUnsettledPairWeight;
+
+    switch (static_cast<ChannelLayoutDecision> (layout.decision.load (std::memory_order_acquire)))
+    {
+        case ChannelLayoutDecision::Stereo:
+            return 1.0f;
+
+        case ChannelLayoutDecision::Mono:
+        {
+            const int source = layout.source.load (std::memory_order_relaxed) == 1 ? 1 : 0;
+            return monitorPairSide[channel] == source ? 1.0f : 0.0f;
+        }
+
+        case ChannelLayoutDecision::Pending:
+        default:
+            return kUnsettledPairWeight;
+    }
+}
+
+float CaptureCoordinator::getChannelMonitorWeight (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (monitorPairWeight.size()))
+        return 1.0f;
+
+    return monitorPairWeight[static_cast<size_t> (index)];
+}
+
 int CaptureCoordinator::getChannelLayoutSource (int index) const noexcept
 {
     if (index < 0 || index >= static_cast<int> (channelLayouts.size()))
@@ -1578,11 +1667,13 @@ void CaptureCoordinator::processOutputBlock (float* const* outputs, int numOutpu
         updateRecordingOffsets();
 
         const bool offsetsFit = recordingOffsets.size() >= static_cast<size_t> (channelCount)
-                             && recordingOffsetKinds.size() >= static_cast<size_t> (channelCount);
+                             && recordingOffsetKinds.size() >= static_cast<size_t> (channelCount)
+                             && recordingOffsetReleased.size() >= static_cast<size_t> (channelCount);
         mixAndPublish (devicePointers.data(), channelCount, outputs, numOutputs,
                        frames, frameOffset,
                        offsetsFit ? recordingOffsets.data() : nullptr,
-                       offsetsFit ? recordingOffsetKinds.data() : nullptr);
+                       offsetsFit ? recordingOffsetKinds.data() : nullptr,
+                       offsetsFit ? recordingOffsetReleased.data() : nullptr);
         frameOffset += frames;
     }
 
@@ -1595,10 +1686,13 @@ int CaptureCoordinator::channelOwnLatencyFrames (size_t index, size_t blockFloor
         || channelInputLatency[index] < 0)
         return -1;
 
-    // The block the stream sits at (DeviceInputStream: two pulls of cushion
-    // plus its device's block), or the floor where that is larger -- the
-    // size asked for, before the device has settled on one.
-    const auto block = std::min (std::max (deviceStreams[index]->getDeviceBlockSamples(), blockFloor),
+    // The block the stream sits at (DeviceInputStream: the cushion
+    // plus the block it holds room for), or the floor where that is larger
+    // -- the size asked for, before the device has settled on one. The held
+    // block rather than the largest the device has ever run at: room held
+    // for a size the device has left is given back (at a quiet moment), and
+    // from then on the channel is that much sooner in the headphones.
+    const auto block = std::min (std::max (deviceStreams[index]->getHeldBlockSamples(), blockFloor),
                                  static_cast<size_t> (DeviceInputStream::kLargestDeviceBlock) * 16);
     return channelInputLatency[index] + static_cast<int> (block);
 }
@@ -1629,13 +1723,20 @@ void CaptureCoordinator::updateRecordingOffsets() noexcept
     // delivery is also what a driver handing over a backlog looks like. So
     // each change is tagged for the writer: provisional while the stream
     // holds a block its device has not confirmed, and refused when that
-    // block is taken back (the held block falls, which nothing else makes it
-    // do). The writer then puts back what the provisional change took out,
-    // where it took it from, and the backlog moves nothing in the stem
-    // either. Nothing allocates or locks (§11): the vectors were sized at
+    // block is taken back (the held block falls straight after being
+    // provisional). The writer then puts back what the provisional change
+    // took out, where it took it from, and the backlog moves nothing in the
+    // stem either. A held block that falls from a settled one is room given
+    // back for a block the device has left (DeviceInputStream drops exactly
+    // that much at a quiet moment, from the newest end of what it buffered):
+    // released, a move of its own, handed over with how much it was, which
+    // the writer answers with that much silence where the stream dropped it
+    // -- behind the samples already waiting in the stem's line, not in front
+    // of them. Nothing allocates or locks (§11): the vectors were sized at
     // startMonitoring().
     const size_t count = std::min ({ deviceStreams.size(), recordingOffsets.size(),
-                                     recordingOffsetKinds.size(), heldBlockSeen.size() });
+                                     recordingOffsetKinds.size(), recordingOffsetReleased.size(),
+                                     heldBlockSeen.size() });
     const bool ready = latenciesReady.load (std::memory_order_acquire) && channelInputLatency.size() >= count;
     int reference = 0;
 
@@ -1644,14 +1745,41 @@ void CaptureCoordinator::updateRecordingOffsets() noexcept
             reference = std::max (reference, channelInputLatency[i]
                                                  + static_cast<int> (deviceStreams[i]->getSettledBlockSamples()));
 
+    // The reference never falls while a take is being written. It only could
+    // when the slowest device gives back room it held for a larger block, and
+    // its stream then moves sooner by dropping a moment of quiet: that
+    // channel's own offset grows by the same amount and its stem stays in
+    // line. Had the reference fallen with it, every other stem would have
+    // been brought forward too, and the writer takes that out of the newest
+    // samples waiting -- audio, cut from every other microphone's track at
+    // whatever moment the room was given back. Between takes nothing is
+    // being lined up, so the next take starts from the rig as it stands
+    // rather than from a block some device ran at long before it.
+    if (ready)
+    {
+        if (activePipeline.load (std::memory_order_acquire) == nullptr)
+            stemReferenceFloor = 0;
+
+        reference = std::max (reference, stemReferenceFloor);
+        stemReferenceFloor = reference;
+    }
+
     for (size_t i = 0; i < count; ++i)
     {
         const auto& stream = *deviceStreams[i];
         const auto held = stream.getHeldBlockSamples();
 
+        // Refused: the held block falls from a provisional one. Released: it
+        // falls from a settled one -- room given back for a block the device
+        // no longer runs at, a move of its own by exactly the difference.
+        const bool wasProvisional = recordingOffsetKinds[i] == StemOffsetKind::provisional;
+        const bool fell = held < heldBlockSeen[i];
         recordingOffsetKinds[i] = held > stream.getSettledBlockSamples() ? StemOffsetKind::provisional
-                                : held < heldBlockSeen[i]                ? StemOffsetKind::refused
+                                : fell && wasProvisional                 ? StemOffsetKind::refused
+                                : fell                                   ? StemOffsetKind::released
                                                                          : StemOffsetKind::settled;
+        recordingOffsetReleased[i] = recordingOffsetKinds[i] == StemOffsetKind::released
+                                         ? static_cast<int> (heldBlockSeen[i] - held) : 0;
         heldBlockSeen[i] = held;
 
         // A device that did not open is silent; it is not moved.
@@ -1675,19 +1803,30 @@ double CaptureCoordinator::monitorPathMs (double roundTripMs, int bufferSizeFram
     const int size = std::max (1, bufferSizeFrames);
 
     // Every microphone's ring holds this much ahead of the output, so the
-    // loop can absorb the drift between the two clocks (DeviceInputStream's
-    // target fill: kPreRollBlocks of the largest pull, which is the output
-    // block). A sample waits it out before the output takes it. Leaving it
-    // out made the Advanced panel read two blocks quicker than the
-    // buffer-ladder notice that had just announced the same figure.
-    const int cushion = DeviceInputStream::kPreRollBlocks * std::max (size, outputFrames);
+    // loop can absorb the drift between the two clocks and a device can hand
+    // its audio over a few milliseconds late without a gap
+    // (DeviceInputStream's target fill: cushionSamples of the largest pull,
+    // which is the output block). A sample waits it out before the output
+    // takes it. Leaving it out made the Advanced panel read two blocks
+    // quicker than the buffer-ladder notice that had just announced the
+    // same figure. The same function the streams size their target with, so
+    // the figure the app names cannot drift from what the rings hold.
+    const auto cushion = static_cast<int> (DeviceInputStream::cushionSamples (
+        static_cast<size_t> (std::max (size, outputFrames)), sampleRate));
+
+    // And the resampler that puts each microphone on the output's clock
+    // plays a sample up to two samples after the ring gives it up: it works
+    // between the middle two of four (DeviceInputStream::
+    // kResamplerDelaySamples). 0.04 ms, but it is in the path, so it is in
+    // the figure.
+    const int resampler = DeviceInputStream::kResamplerDelaySamples;
 
     // The round trip counts one input block at the size asked for. A
     // microphone's own path adds its device's input latency, and whatever
     // larger block its device runs at.
     const int extra = std::max (0, inputFrames - size);
 
-    return roundTripMs + 1000.0 * static_cast<double> (cushion + extra) / sampleRate;
+    return roundTripMs + 1000.0 * static_cast<double> (cushion + resampler + extra) / sampleRate;
 }
 
 double CaptureCoordinator::getMonitoringLatencyMs() const noexcept
@@ -1952,7 +2091,7 @@ void CaptureCoordinator::processAudioBlock (const float* const* inputs, int numI
     const int channelCount = std::min (numInputs, static_cast<int> (channels.size()));
 
     // Already lined up by the OS, so the writer leaves every stem where it is.
-    mixAndPublish (inputs, channelCount, outputs, numOutputs, numSamples, 0, nullptr, nullptr);
+    mixAndPublish (inputs, channelCount, outputs, numOutputs, numSamples, 0, nullptr, nullptr, nullptr);
     noteCallbackLoad (callbackStart, numSamples);
 }
 
@@ -1960,13 +2099,26 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
                                         float* const* outputs, int numOutputs,
                                         int numSamples, int outputFrameOffset,
                                         const int* recordingOffsetsForBlock,
-                                        const StemOffsetKind* recordingOffsetKindsForBlock) noexcept
+                                        const StemOffsetKind* recordingOffsetKindsForBlock,
+                                        const int* recordingOffsetReleasedForBlock) noexcept
 {
     if (inputs == nullptr || channelCount <= 0)
         return;
 
+    // §2.1: where each analysed pair's weight is headed this block, for the
+    // headphones below and for MIX.wav alike, so a fresh two-input microphone
+    // is in both once, and both follow its verdict at once. Worked out before
+    // the writer is handed the block, and whether or not anything is
+    // listening. A few atomic loads per pair; sized at startMonitoring().
+    const bool pairTargetsReady = static_cast<int> (pairTargetWeights.size()) >= channelCount;
+
+    if (pairTargetsReady)
+        for (int ch = 0; ch < channelCount; ++ch)
+            pairTargetWeights[static_cast<size_t> (ch)] = pairTargetWeight (static_cast<size_t> (ch));
+
     // §6: recording gets the raw channels. §4 keeps stems at unity and applies
-    // trim only to the mix, which the pipeline does itself.
+    // trim only to the mix, which the pipeline does itself -- as it does the
+    // pair weights.
     //
     // The busy count is taken before the load and released after the call, so
     // stopRecording cannot free the pipeline between the two.
@@ -1983,7 +2135,8 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
         // rejects a mismatched block anyway -- what it does with it now is
         // count it.
         activeWriter->pushBlock (inputs, channelCount, numSamples, recordingOffsetsForBlock,
-                                 recordingOffsetKindsForBlock);
+                                 recordingOffsetKindsForBlock, recordingOffsetReleasedForBlock,
+                                 pairTargetsReady ? pairTargetWeights.data() : nullptr);
     }
 
     pipelineUsers.fetch_sub (1, std::memory_order_release);
@@ -2049,7 +2202,9 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
         || busScratch.size() < static_cast<size_t> (numSamples)
         || alarmScratch.size() < static_cast<size_t> (numSamples)
         || static_cast<int> (trimFrame.size()) < channelCount
-        || static_cast<int> (trimGains.size()) < channelCount)
+        || static_cast<int> (trimGains.size()) < channelCount
+        || static_cast<int> (monitorPairWeight.size()) < channelCount
+        || static_cast<int> (pairTargetWeights.size()) < channelCount)
     {
         for (int ch = 0; ch < numOutputs; ++ch)
             if (outputs[ch] != nullptr)
@@ -2069,30 +2224,80 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     for (size_t ch = static_cast<size_t> (channelCount); ch < trimFrame.size(); ++ch)
         trimFrame[ch] = 0.0f;
 
+    // Whether any analysed pair's headphone weight is still on its way to
+    // the target worked out above (see startMonitoring).
+    bool pairWeightsMoving = false;
+    for (int ch = 0; ch < channelCount; ++ch)
+    {
+        const auto i = static_cast<size_t> (ch);
+        pairWeightsMoving = pairWeightsMoving || monitorPairWeight[i] != pairTargetWeights[i];
+    }
+
+    // A verdict moves the weights over 10 ms rather than in one step: a pair
+    // going from half each to both at unity is a 6 dB jump, a click if it
+    // lands mid-waveform. A duplicated pair crossfading to one side stays the
+    // same level throughout.
+    const float pairWeightStep = sampleRate > 0.0
+                                   ? static_cast<float> (1.0 / (kPairWeightRampSeconds * sampleRate))
+                                   : 1.0f;
+
     for (int s = 0; s < numSamples; ++s)
     {
         // §4: trim is applied to the mix only. The stems the pipeline already
         // received above stay at unity, which is what makes trim a monitoring
-        // decision the recording cannot be damaged by.
+        // decision the recording cannot be damaged by. So is the pair weight.
         for (int ch = 0; ch < channelCount; ++ch)
-            trimFrame[static_cast<size_t> (ch)] =
-                (inputs[ch] != nullptr) ? inputs[ch][s] * trimGains[static_cast<size_t> (ch)] : 0.0f;
+        {
+            const auto i = static_cast<size_t> (ch);
+            float weight = monitorPairWeight[i];
 
-        // §5.1: master volume is an output-stage gain, deliberately outside
-        // processSample, so the bus keeps its -3 dBFS ceiling regardless of how
-        // loud the listener happens to be running their headphones.
-        const float bus = monitorBus.processSample (trimFrame);
-        busScratch[static_cast<size_t> (s)] = bus;
-        mixScratch[static_cast<size_t> (s)] = monitorBus.applyMasterVolume (bus);
+            if (pairWeightsMoving && weight != pairTargetWeights[i])
+            {
+                const float target = pairTargetWeights[i];
+                weight = weight < target ? std::min (target, weight + pairWeightStep)
+                                         : std::max (target, weight - pairWeightStep);
+                monitorPairWeight[i] = weight;
+            }
+
+            trimFrame[i] = (inputs[ch] != nullptr) ? inputs[ch][s] * trimGains[i] * weight : 0.0f;
+        }
+
+        // §5.1/§5.5: the bus, then the listener's volume, then the safety
+        // limiter on what reaches the ears -- all inside processSample. The
+        // volume used to be applied here, after the limiter, which left the
+        // -3 dBFS ceiling acting on the full-level bus: ordinary speech from
+        // a few microphones was squared off, and no volume setting helped.
+        float busBeforeVolume = 0.0f;
+        mixScratch[static_cast<size_t> (s)] = monitorBus.processSample (trimFrame, &busBeforeVolume);
+        busScratch[static_cast<size_t> (s)] = busBeforeVolume;
     }
 
-    // §5.5 feedback protection: the bus as summed and limited, before the
-    // listener's volume and before the app's own tones (pure tones, which a
-    // narrowband detector would take for a howl). A copy into a preallocated
-    // ring; the analysis runs on the guard's own thread (§11).
+    // §5.5 feedback protection: the bus as summed, before the listener's
+    // volume, the limiter and the app's own tones (pure tones, which a
+    // narrowband detector would take for a howl), so the -60 dBFS floor and
+    // the 10 dB rise mean the same at every volume. A copy into a
+    // preallocated ring; the analysis runs on the guard's own thread (§11).
     feedbackGuard.push (busScratch.data(), numSamples);
 
-    mixMeter.processAudioBlock (mixScratch.data(), numSamples);
+    // §8.1: the mix bar shows that bus at the listener's volume, before the
+    // limiter -- exactly the signal the -3 dBFS safety limiter judges -- and
+    // its CLIP latches from that limiter. So the bar's red zone (from -3
+    // dBFS) and CLIP mean the same thing at every volume: the headphones are
+    // at their safety limit. It briefly showed the bus before the volume
+    // instead, which at the default volume (-18 dB) put a mix the limiter
+    // was nowhere near in the red, pinned at 0 dBFS, while CLIP stayed dark;
+    // and before that it showed the signal after a clip that came ahead of
+    // the volume, so a bus being squared off read about -21 dBFS. Applied to
+    // each block's loudest sample: no scratch buffer, one atomic load.
+    mixMeter.processLevelOnly (busScratch.data(), numSamples, monitorBus.getMasterGain());
+
+    if (const auto engagements = monitorBus.getLimiterEngagementCount();
+        engagements != meteredLimiterEngagements)
+    {
+        const auto fresh = engagements - meteredLimiterEngagements;
+        mixMeter.noteClipEvents (static_cast<int> (std::min<uint64_t> (fresh, 1000000)));
+        meteredLimiterEngagements = engagements;
+    }
 
     // The app's own sounds go in after the meter, so the mix bar shows the
     // room and not the siren, and after the mute: a fault alarm has to reach

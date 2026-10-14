@@ -7,6 +7,7 @@ add_executable(mma_core_tests
     test_DeadChannelDetector.cpp
     test_Metering.cpp
     test_MonitorBus.cpp
+    test_PeakLimiter.cpp
     test_FeedbackDetector.cpp
     test_SessionFolderNaming.cpp
     test_CameraSelection.cpp

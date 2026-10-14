@@ -19,6 +19,12 @@ using namespace mma;
 
 namespace {
 
+// What the resampler that puts each microphone on the output's clock adds to
+// every headphone figure, on top of the ring's cushion: it plays a sample up
+// to two samples after the ring gives it up (it works between the middle two
+// of four), and the figure counts both.
+constexpr double kResampler = DeviceInputStream::kResamplerDelaySamples;
+
 std::string tempDir()
 {
     for (const char* var : { "MMA_TEST_TMPDIR", "TMPDIR", "TMP", "TEMP" })
@@ -577,10 +583,12 @@ TEST_CASE (CaptureCoordinator_MicsOnDevicesWithDifferentInputLatencyLineUpInTheF
 
     // The stems are lined up to the slower device; the headphones are not.
     // Their figure is the quicker microphone's own path -- the round trip,
-    // the ring's two-pull cushion and its 12 frames -- with nothing of
-    // Couch's extra 37 frames in it.
+    // the ring's cushion (256 samples at 64: one pull and three more of
+    // late delivery, where it was two pulls and too thin to ride out a late
+    // IOProc), the resampler's two samples and its 12 frames -- with nothing
+    // of Couch's extra 37 frames in it.
     REQUIRE (c.getAlignedInputLatencyFrames() == 49);
-    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 2.0 * 64 + 12) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 256 + kResampler + 12) / 48000.0 * 1000.0, 1e-9);
 
     REQUIRE (c.startRecording (dir, 16, "2026-10-07T00:00:00Z"));
 
@@ -932,8 +940,9 @@ TEST_CASE (CaptureCoordinator_MicsOnDevicesAtDifferentIoSizesLineUpInTheFiles)
     REQUIRE (r.couchAlignmentStart == 0);
 
     // Which the headphones do not hear: two 64-frame buffers, the ring's
-    // two-pull cushion, and Kitchen's own path -- nothing of Couch's block.
-    REQUIRE_NEAR (r.headphoneLatencyMs, (2.0 * 64 + 2.0 * 64) / 48000.0 * 1000.0, 1e-6);
+    // cushion (256 at 64), the resampler's two samples, and Kitchen's own
+    // path -- nothing of Couch's block.
+    REQUIRE_NEAR (r.headphoneLatencyMs, (2.0 * 64 + 256 + kResampler) / 48000.0 * 1000.0, 1e-6);
 }
 
 TEST_CASE (CaptureCoordinator_AnIoSizeThatGrowsMidTakeKeepsEveryStemInStep)
@@ -1286,6 +1295,334 @@ TEST_CASE (CaptureCoordinator_ADriverBacklogMovesNoOtherStem)
     REQUIRE (r.stemsAligned);
 }
 
+namespace {
+
+struct HeldRoomTakeResult
+{
+    long long kitchenClap = -1, couchClap = -1, mixClap = -1;
+    long long headphoneClapSpread = -1;   // first to last loud headphone frame
+    uint64_t releases = 0, released = 0;
+    size_t couchHeldAtEnd = 0;
+    double quickMs = 0.0, slowestWhileHeld = 0.0, slowestAtEnd = 0.0, quickAtEnd = 0.0;
+    int kitchenDropped = 0, kitchenShift = 0, couchDropped = 0, couchShift = 0;
+    bool aligned = false;
+    int nextTakeKitchenStart = -1, nextTakeCouchStart = -1;
+
+    // With a tone: the last frame of it in each stem, and the longest run of
+    // digital silence inside it in Couch's.
+    long long kitchenToneEnd = -1, couchToneEnd = -1, couchSilenceInTone = -1;
+};
+
+// Another app holds Couch's device at 1156 frames for a second, then lets it
+// go back to 64. Silent but for one clap both microphones hear at once, after
+// the room has been given back -- and, when `toneUntil` is given, a steady
+// 1 kHz tone at -12 dBFS both hear from the start until then (the clap is
+// louder). Couch's deliveries may run `couchLate` samples late for a moment
+// around when the room is given back (3.875 s to 4.25 s); after the take, a
+// second one starts on the same streams.
+HeldRoomTakeResult recordAnIoSizeExcursion (int kitchenLatency, int couchLate = 0, long long toneUntil = 0)
+{
+    const auto dir = tempDir() + "/io_size_return_" + std::to_string (kitchenLatency) + "_" + std::to_string (couchLate)
+                   + "_" + std::to_string (toneUntil);
+    std::remove ((dir + "/01_Kitchen.wav").c_str());
+    std::remove ((dir + "/02_Couch.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
+    REQUIRE (makeDir (dir));
+    const auto nextDir = dir + "_next";
+    REQUIRE (makeDir (nextDir));
+
+    DeviceInputStream::setClockForTesting (ioSizeClock);
+    ioSizeClockNs = 1;
+
+    FakeBackend backend;
+    backend.grantedOutputBufferFrames = 64;
+    backend.inputLatencyFrames["dev-a"] = kitchenLatency;
+    backend.inputLatencyFrames["dev-b"] = 0;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
+    REQUIRE (c.startRecording (dir, 16, "2026-10-12T00:00:00Z"));
+
+    HeldRoomTakeResult r;
+    r.quickMs = c.getMonitoringLatencyMs();
+
+    // static: MSVC will not let a lambda without a capture read a local,
+    // even a constexpr one, and couchBlock and fill read these.
+    static constexpr long long growAt = 48000, returnAt = 96000, clapAt = 288000, end = 336000;
+    static constexpr long long lateFrom = 186000, lateUntil = 204000;
+    std::vector<float> a (4096, 0.0f), b (4096, 0.0f), out (64);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+    float* outs[] = { out.data() };
+
+    const auto nsAt = [] (long long sample) { return static_cast<int64_t> (sample * 1.0e9 / 48000.0) + 1; };
+    const auto couchBlock = [] (long long next) { return next >= growAt && next < returnAt ? 1156 : 64; };
+    const auto couchDue = [&] (long long next)
+    {
+        return next + couchBlock (next) + (next >= lateFrom && next < lateUntil ? couchLate : 0);
+    };
+    const auto fill = [toneUntil] (std::vector<float>& v, long long first, int n, long long heardAt)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            // Source time: the clap is at clapAt, heard `heardAt - clapAt` late.
+            const long long t = first + i - (heardAt - clapAt);
+            const float tone = t >= 0 && t < toneUntil
+                                   ? static_cast<float> (0.25 * std::sin (2.0 * 3.141592653589793 * 1000.0
+                                                                          * static_cast<double> (t) / 48000.0))
+                                   : 0.0f;
+            v[static_cast<size_t> (i)] = first + i == heardAt ? 0.3f : tone;
+        }
+    };
+
+    long long aNext = 0, bNext = 0, outFrame = 0, firstLoud = -1, lastLoud = -1, pullAt = 32;
+
+    const auto runUntil = [&] (long long until)
+    {
+        for (; pullAt < until; pullAt += 64)
+        {
+            while (aNext + 64 <= pullAt || couchDue (bNext) <= pullAt)
+            {
+                const int bBlock = couchBlock (bNext);
+
+                if (aNext + 64 <= couchDue (bNext))
+                {
+                    ioSizeClockNs = nsAt (aNext + 64);
+                    fill (a, aNext, 64, clapAt + kitchenLatency);
+                    backend.inputCallbacks[0] (aIn, 1, nullptr, 0, 64);
+                    aNext += 64;
+                }
+                else
+                {
+                    ioSizeClockNs = nsAt (couchDue (bNext));
+                    fill (b, bNext, bBlock, clapAt);
+                    backend.inputCallbacks[1] (bIn, 1, nullptr, 0, bBlock);
+                    bNext += bBlock;
+                }
+            }
+
+            ioSizeClockNs = nsAt (pullAt);
+            c.pullOutputBlock (outs, 1, 64);
+
+            // Back at 64, but not yet for two seconds: the room is still held.
+            if (pullAt > returnAt + 48000 && pullAt < returnAt + 72000)
+                r.slowestWhileHeld = c.getSlowestMonitoringLatencyMs();
+
+            // The clap, not the tone: nothing reaches the headphones before
+            // it is heard.
+            for (int i = 0; i < 64; ++i, ++outFrame)
+                if (outFrame >= clapAt && std::abs (out[static_cast<size_t> (i)]) > 0.1f)
+                {
+                    firstLoud = firstLoud < 0 ? outFrame : firstLoud;
+                    lastLoud = outFrame;
+                }
+        }
+    };
+
+    runUntil (end);
+
+    const auto couch = c.getChannelHeldRoom (1);
+    r.releases = couch.releases;
+    r.released = couch.releasedSamples;
+    r.couchHeldAtEnd = couch.heldBlock;
+    r.slowestAtEnd = c.getSlowestMonitoringLatencyMs();
+    r.quickAtEnd = c.getMonitoringLatencyMs();
+    r.headphoneClapSpread = firstLoud < 0 ? -1 : lastLoud - firstLoud;
+
+    c.stopRecording();
+    r.kitchenDropped = c.getDeviceAlignmentDroppedFramesThisTake ("dev-a");
+    r.kitchenShift = c.getDeviceAlignmentSilenceFramesThisTake ("dev-a");
+    r.couchDropped = c.getDeviceAlignmentDroppedFramesThisTake ("dev-b");
+    r.couchShift = c.getDeviceAlignmentSilenceFramesThisTake ("dev-b");
+    r.aligned = c.areStemsAligned();
+
+    // The next take, on the same streams: lined up to the rig as it stands.
+    runUntil (end + 4800);
+    REQUIRE (c.startRecording (nextDir, 16, "2026-10-12T00:01:00Z"));
+    runUntil (end + 24000);
+    r.nextTakeKitchenStart = c.getDeviceAlignmentStartFrames ("dev-a");
+    r.nextTakeCouchStart = c.getDeviceAlignmentStartFrames ("dev-b");
+    c.stopRecording();
+
+    c.stopMonitoring();
+    DeviceInputStream::setClockForTesting ([]() -> int64_t { return 0; });
+
+    r.kitchenClap = loudestSampleIn (dir + "/01_Kitchen.wav");
+    r.couchClap = loudestSampleIn (dir + "/02_Couch.wav");
+    r.mixClap = loudestSampleIn (dir + "/MIX.wav");
+
+    if (toneUntil > 0)
+    {
+        // Loud enough to be the tone (-30 dBFS), and before the clap.
+        const auto lastOfTone = [] (const std::vector<int16_t>& stem, long long before, long long& first)
+        {
+            long long last = -1;
+            first = -1;
+
+            for (long long i = 0; i < std::min (before, static_cast<long long> (stem.size())); ++i)
+                if (std::abs (static_cast<int> (stem[static_cast<size_t> (i)])) > 1000)
+                {
+                    first = first < 0 ? i : first;
+                    last = i;
+                }
+
+            return last;
+        };
+
+        const auto kitchen = stemSamples (dir + "/01_Kitchen.wav");
+        const auto couch = stemSamples (dir + "/02_Couch.wav");
+        long long kitchenFirst = -1, couchFirst = -1;
+        r.kitchenToneEnd = lastOfTone (kitchen, r.kitchenClap - 4800, kitchenFirst);
+        r.couchToneEnd = lastOfTone (couch, r.couchClap - 4800, couchFirst);
+
+        long long run = 0;
+        r.couchSilenceInTone = 0;
+
+        for (long long i = couchFirst; i >= 0 && i <= r.couchToneEnd; ++i)
+        {
+            run = couch[static_cast<size_t> (i)] == 0 ? run + 1 : 0;
+            r.couchSilenceInTone = std::max (r.couchSilenceInTone, run);
+        }
+    }
+
+    return r;
+}
+
+} // namespace
+
+TEST_CASE (CaptureCoordinator_RoomHeldForABlockTheDeviceLeftIsGivenBackAndTheStemsStayInLine)
+{
+    // The room Couch's ring held for 1156 used to stay held for the rest of
+    // the session: Couch 23 ms later than Kitchen in the headphones for
+    // good -- the talker hearing themselves late, and their voice in the mix
+    // twice, 23 ms apart, through Kitchen's microphone. Two seconds after the
+    // device is back at 64 the room is given back at the first quiet moment,
+    // and the stems stay in line through it: Couch's is held back by what its
+    // stream dropped, and nothing is taken out of Kitchen's.
+    const auto r = recordAnIoSizeExcursion (0);
+
+    // Given back, once, exactly the room, and the headphone delay the app
+    // names said so: Couch's own path was 1092 samples longer while it was
+    // held, and is Kitchen's again now.
+    REQUIRE (r.releases == 1u);
+    REQUIRE (r.released == 1092u);
+    REQUIRE_NEAR (r.slowestWhileHeld - r.quickMs, 1092.0 / 48.0, 1e-6);
+    REQUIRE_NEAR (r.slowestAtEnd, r.quickAtEnd, 1e-9);
+    REQUIRE (r.couchHeldAtEnd == 64u);
+
+    // In the headphones the clap is one clap: both microphones' at the same
+    // frame, not two 23 ms apart.
+    REQUIRE (r.headphoneClapSpread >= 0);
+    REQUIRE (r.headphoneClapSpread <= 2);
+
+    // In the files: one frame in both stems and the mix. Couch was the
+    // slowest device while it ran at 1156, and the stems stay lined up to
+    // that: Couch's stem is held back by what its stream dropped -- silence
+    // where a moment of quiet was -- and nothing came out of Kitchen's.
+    REQUIRE (r.kitchenClap > 0);
+    REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+    REQUIRE (std::llabs (r.mixClap - r.couchClap) <= 1);
+    REQUIRE (r.kitchenDropped == 0);
+    REQUIRE (static_cast<uint64_t> (r.couchShift) == r.released);
+    REQUIRE (r.aligned);
+
+    // That 1092 the stems were lined up to is for the take it happened in.
+    // The next take starts from the rig as it stands, both devices at 64:
+    // neither stem opens 23 ms late.
+    REQUIRE (r.nextTakeKitchenStart == 0);
+    REQUIRE (r.nextTakeCouchStart == 0);
+}
+
+TEST_CASE (CaptureCoordinator_RoomGivenBackWhileADeliveryIsLateKeepsTheStemsInLine)
+{
+    // Couch's deliveries run a millisecond late just as its room is given
+    // back, so its ring reads 48 samples lower than it will a moment later.
+    // Dropping what the level read above the smaller target moved Couch by
+    // 48 samples less than the 1092 the writer held its stem back by: the
+    // clap 48 samples apart in the files. Exactly the room is dropped.
+    const auto r = recordAnIoSizeExcursion (0, 48);
+
+    REQUIRE (r.releases == 1u);
+    REQUIRE (r.released == 1092u);
+    REQUIRE (r.kitchenClap > 0);
+    REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+    REQUIRE (std::llabs (r.mixClap - r.couchClap) <= 1);
+    REQUIRE (r.headphoneClapSpread <= 2);
+    REQUIRE (r.aligned);
+}
+
+TEST_CASE (CaptureCoordinator_RoomGivenBackOnTheQuickerDeviceIsNotTakenForARefusedBlock)
+{
+    // Kitchen's interface reports 1400 frames more input latency, so Couch is
+    // the quicker device throughout: when it grew to 1156 the writer took
+    // the move's silence back out of its stem, provisionally, then for good
+    // once the device confirmed the size. Giving the room back later is a
+    // move of its own -- the held block falls from a settled one -- and the
+    // writer must hold the stem back for it, not "undo" the growth by
+    // putting that silence back where it was taken from (which also struck
+    // the 1092 samples from the take's record of what it had taken out).
+    const auto r = recordAnIoSizeExcursion (1400);
+
+    REQUIRE (r.releases == 1u);
+    REQUIRE (r.released == 1092u);
+
+    // In the headphones Couch is back to its own path: its clap 1400
+    // samples before Kitchen's, not 308.
+    REQUIRE (std::llabs (r.headphoneClapSpread - 1400) <= 2);
+
+    REQUIRE (r.kitchenClap > 0);
+    REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+    REQUIRE (std::llabs (r.mixClap - r.couchClap) <= 1);
+
+    // The record: the growth's silence taken out of Couch's stem, the room
+    // given back as silence written into it, and Kitchen's stem untouched.
+    REQUIRE (r.couchDropped >= 1092 - 2);
+    REQUIRE (r.couchDropped <= 1092 + 2);
+    REQUIRE (static_cast<uint64_t> (r.couchShift) == r.released);
+    REQUIRE (r.kitchenDropped == 0);
+    REQUIRE (r.kitchenShift == 0);
+    REQUIRE (r.aligned);
+
+    // Kitchen is the slowest device in the next take too: Couch opens 1400
+    // samples late, Kitchen on time.
+    REQUIRE (r.nextTakeKitchenStart == 0);
+    REQUIRE (r.nextTakeCouchStart == 1400);
+}
+
+TEST_CASE (CaptureCoordinator_RoomGivenBackOnTheQuickerDeviceLeavesNoGapInItsSound)
+{
+    // Couch is the quicker device, held back in its stem behind Kitchen
+    // (which reports 1400 frames more input latency, then 3000): 308 samples
+    // while Couch runs at 1156, 1908 at 3000. Both microphones hear a tone
+    // until a moment before Couch's room is given back. Couch's stream
+    // skips that much quiet at the newest sample it has handed over, so the
+    // silence the writer puts in for it belongs there, behind the samples
+    // already waiting in Couch's line. Written at the head of the line it
+    // landed inside the tone -- 1092 samples of digital silence, with tone
+    // either side of it -- and the waiting tone came out 1092 samples late:
+    // Couch's tone ended 23 ms after Kitchen's in the files.
+    for (const int kitchenLatency : { 1400, 3000 })
+    {
+        const auto r = recordAnIoSizeExcursion (kitchenLatency, 0, 200000);
+
+        REQUIRE (r.releases == 1u);
+        REQUIRE (r.released == 1092u);
+
+        REQUIRE (r.couchToneEnd > 0);
+        REQUIRE (r.couchSilenceInTone >= 0);
+        REQUIRE (r.couchSilenceInTone <= 2); // a sine's own zero crossing
+        REQUIRE (std::llabs (r.kitchenToneEnd - r.couchToneEnd) <= 1);
+
+        REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+        REQUIRE (std::llabs (r.mixClap - r.couchClap) <= 1);
+        REQUIRE (static_cast<uint64_t> (r.couchShift) == r.released);
+        REQUIRE (r.kitchenDropped == 0);
+        REQUIRE (r.kitchenShift == 0);
+        REQUIRE (r.aligned);
+    }
+}
+
 TEST_CASE (CaptureCoordinator_ADriverBacklogMovesNothingInItsOwnStem)
 {
     // The same backlog on Kitchen, now the quicker device: Couch reports more
@@ -1338,9 +1675,10 @@ TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
     REQUIRE (c.getMonitorInputFrames (128) == 40 + 128);
     REQUIRE (c.getSlowestMonitorInputFrames (128) == 100 + 128);
     REQUIRE (c.getSlowestMonitoringDeviceId() == "dev-a");
-    // Each with the round trip and the two-pull cushion every ring holds.
-    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 2.0 * 64 + 40) / 48000.0 * 1000.0, 1e-9);
-    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs(), (2.0 * 64 + 2.0 * 64 + 100) / 48000.0 * 1000.0, 1e-9);
+    // Each with the round trip, the cushion every ring holds (256 at 64)
+    // and the resampler's two samples.
+    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 256 + kResampler + 40) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs(), (2.0 * 64 + 256 + kResampler + 100) / 48000.0 * 1000.0, 1e-9);
 
     std::vector<float> a (64, 0.0f), b (1156, 0.0f), out (64);
     const float* aIn[] = { a.data() };
@@ -1367,16 +1705,17 @@ TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
 
     // At the size it runs at now it is what the headphone figure carries:
     // Kitchen's 100 frames of input latency, none of Couch's 1156.
-    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 2.0 * 64 + 100) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 256 + kResampler + 100) / 48000.0 * 1000.0, 1e-9);
 
     // And the slowest figure is Couch's own path: its block in place of the
     // one asked for, and its input latency.
-    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs(), (64.0 + 2.0 * 64 + 1156 + 40) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs(), (64.0 + 256 + kResampler + 1156 + 40) / 48000.0 * 1000.0, 1e-9);
 
     // What the ladder says a step to 128 will cost: the round trip and the
-    // cushion at 128, and each path's own input side at it.
-    REQUIRE_NEAR (c.getMonitoringLatencyMsAt (128), (2.0 * 128 + 2.0 * 128 + 100) / 48000.0 * 1000.0, 1e-9);
-    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMsAt (128), (128.0 + 2.0 * 128 + 1156 + 40) / 48000.0 * 1000.0, 1e-9);
+    // cushion at 128 (a pull and 6 ms: 416), and each path's own input side
+    // at it.
+    REQUIRE_NEAR (c.getMonitoringLatencyMsAt (128), (2.0 * 128 + 416 + kResampler + 100) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMsAt (128), (128.0 + 416 + kResampler + 1156 + 40) / 48000.0 * 1000.0, 1e-9);
 
     c.stopMonitoring();
     REQUIRE (c.getMonitorInputFrames (128) == 128);
@@ -1391,7 +1730,7 @@ TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
 TEST_CASE (CaptureCoordinator_ARigTheLadderTookPastTheCeilingNamesNoMicrophoneForABlock)
 {
     // At 128 frames every microphone's own path is past 10 ms (round trip,
-    // the ring's cushion and its input side: 13.3 ms). Couch's interface
+    // the ring's cushion and its input side: 14 ms). Couch's interface
     // reports 48 frames more input latency than Kitchen's -- one millisecond
     // -- and was named in the activity log as running "at a larger buffer
     // than the others", with advice to close apps and replug it.
@@ -2753,6 +3092,391 @@ TEST_CASE (CaptureCoordinator_OneDuplicatedFinalBlockCannotCollapseMostlyStereoA
     REQUIRE (c.getChannels().size() == 2);
 }
 
+namespace {
+
+/// The largest |sample| in a 16-bit mono stem.
+int loudestMagnitudeIn (const std::string& path)
+{
+    std::ifstream f (path, std::ios::binary);
+    REQUIRE (f.is_open());
+    const auto bytes = readU32LE (f, kDataSizeOffset);
+    f.seekg (kAudioDataOffset);
+
+    int loudest = 0;
+
+    for (uint32_t i = 0; i < bytes / 2; ++i)
+    {
+        unsigned char lo = 0, hi = 0;
+        f.read (reinterpret_cast<char*> (&lo), 1);
+        f.read (reinterpret_cast<char*> (&hi), 1);
+        const auto v = static_cast<int16_t> (static_cast<uint16_t> (lo) | (static_cast<uint16_t> (hi) << 8));
+        loudest = std::max (loudest, std::abs (static_cast<int> (v)));
+    }
+
+    return loudest;
+}
+
+/// A fresh two-input USB device, both inputs selected, its layout unknown:
+/// what ChannelPlan hands over before §2.1 has heard it.
+std::vector<CaptureChannel> freshStereoPair()
+{
+    CaptureChannel left { "device", "Fresh USB 1", "01_Fresh-USB-1", 0.0f };
+    left.deviceChannel = 0;
+    left.analyzeStereoPair = true;
+    CaptureChannel right { "device", "Fresh USB 2", "02_Fresh-USB-2", 0.0f };
+    right.deviceChannel = 1;
+    return { left, right };
+}
+
+} // namespace
+
+TEST_CASE (CaptureCoordinator_AFreshDuplicatedPairIsHeardOnceNotTwice)
+{
+    // Most USB microphones present two inputs carrying the same voice. Until
+    // §2.1 has heard three seconds of it, both are kept as separate channels
+    // -- and both were summed into the headphones at unity: the one voice
+    // twice, +6 dB, into the safety limiter. Each side of an unsettled pair
+    // is now heard at half, which is the voice once.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (freshStereoPair(), "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
+
+    const std::vector<float> voice (64, 0.2f);
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+
+    for (int block = 0; block < 100; ++block) // 0.13 s: long before any verdict
+    {
+        pushStereo (backend, 0, voice, voice);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Pending);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (0), 0.5f, 1e-6);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (1), 0.5f, 1e-6);
+    REQUIRE_NEAR (out.back(), 0.2f, 1e-5);
+
+    // Past three seconds §2.1 calls it Mono (the sides are identical) and the
+    // headphones take the chosen side alone, straight away -- the capture
+    // still has both channels until the idle rebuild.
+    for (int block = 0; block < 2300; ++block)
+    {
+        pushStereo (backend, 0, voice, voice);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Mono);
+    REQUIRE (c.getChannels().size() == 2);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (0), 1.0f, 1e-6);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (1), 0.0f, 1e-6);
+    REQUIRE_NEAR (out.back(), 0.2f, 1e-5);
+    c.stopMonitoring();
+}
+
+TEST_CASE (CaptureCoordinator_AVerdictReachedMidTakeReachesTheHeadphonesAndMixButNotTheStems)
+{
+    // Record pressed before the verdict: the layout is only rebuilt while
+    // idle, so the doubled voice used to last the whole take. The verdict now
+    // reaches the headphones the moment it is reached, and MIX.wav from the
+    // same frame, and the stems -- both of them, each at unity -- are exactly
+    // what they were.
+    const auto dir = tempDir() + "/fresh_pair_mid_take";
+    std::filesystem::create_directories (dir);
+    std::remove ((dir + "/01_Fresh-USB-1.wav").c_str());
+    std::remove ((dir + "/02_Fresh-USB-2.wav").c_str());
+
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (freshStereoPair(), "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
+    REQUIRE (c.startRecording (dir, 16, "2026-10-13T00:00:00Z"));
+
+    // The capsule is wired to the right input; the left is silent.
+    const std::vector<float> silent (64, 0.0f);
+    const std::vector<float> voice (64, 0.4f);
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+
+    for (int block = 0; block < 100; ++block)
+    {
+        pushStereo (backend, 0, silent, voice);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    REQUIRE_NEAR (out.back(), 0.2f, 1e-5); // half, while it is being worked out
+
+    for (int block = 0; block < 2300; ++block)
+    {
+        pushStereo (backend, 0, silent, voice);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Mono);
+    REQUIRE (c.getChannelLayoutSource (0) == 1);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (0), 0.0f, 1e-6);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (1), 1.0f, 1e-6);
+    REQUIRE_NEAR (out.back(), 0.4f, 1e-5); // the live side, alone, at unity
+
+    c.stopRecording();
+    c.stopMonitoring();
+
+    REQUIRE (loudestMagnitudeIn (dir + "/01_Fresh-USB-1.wav") == 0);
+    REQUIRE (std::abs (loudestMagnitudeIn (dir + "/02_Fresh-USB-2.wav") - static_cast<int> (std::lround (0.4 * 32767.0))) <= 1);
+
+    // MIX.wav follows the headphones: the live side at half while it was
+    // being worked out, then alone at unity once the verdict was in.
+    const auto mix = stemSamples (dir + "/MIX.wav");
+    REQUIRE (mix.size() > 48000u * 3u);
+    REQUIRE (std::abs (mix[48000] - static_cast<int> (std::lround (0.2 * 32767.0))) <= 1);
+    REQUIRE (std::abs (static_cast<int> (mix.back()) - static_cast<int> (std::lround (0.4 * 32767.0))) <= 1);
+
+    std::remove ((dir + "/01_Fresh-USB-1.wav").c_str());
+    std::remove ((dir + "/02_Fresh-USB-2.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
+}
+
+TEST_CASE (CaptureCoordinator_AFreshPairIsInMixWavOnceBeforeAndAfterItsVerdict)
+{
+    // MIX.wav is summed from every take channel, so a fresh duplicated USB
+    // microphone recorded before its verdict was in it twice -- +6 dB, for
+    // the whole take, since the layout is only rebuilt while idle -- and
+    // that one doubled voice drove the file's -1 dBFS limiter. The writer is
+    // now handed the headphones' pair weights: half each until the verdict,
+    // the chosen side alone after it. Both stems stay at full level.
+    const auto dir = tempDir() + "/fresh_pair_mix_once";
+    std::filesystem::create_directories (dir);
+    for (const char* name : { "/01_Fresh-USB-1.wav", "/02_Fresh-USB-2.wav", "/MIX.wav" })
+        std::remove ((dir + name).c_str());
+
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (freshStereoPair(), "out-device"));
+    REQUIRE (c.startRecording (dir, 16, "2026-10-14T00:00:00Z"));
+
+    const std::vector<float> voice (64, 0.3f);
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+
+    for (int block = 0; block < 2400; ++block) // 3.2 s: the verdict lands mid-take
+    {
+        pushStereo (backend, 0, voice, voice);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Mono);
+    REQUIRE (c.getChannels().size() == 2);
+
+    c.stopRecording();
+    c.stopMonitoring();
+
+    const int once = static_cast<int> (std::lround (0.3 * 32767.0));
+    const auto mix = stemSamples (dir + "/MIX.wav");
+    REQUIRE (mix.size() > 48000u * 3u);
+
+    int loudest = 0;
+    for (const auto v : mix)
+        loudest = std::max (loudest, std::abs (static_cast<int> (v)));
+
+    REQUIRE (std::abs (loudest - once) <= 1);                        // never twice
+    REQUIRE (std::abs (mix[48000] - once) <= 1);                     // 1 s in, before the verdict
+    REQUIRE (std::abs (static_cast<int> (mix.back()) - once) <= 1);  // after it
+
+    REQUIRE (loudestMagnitudeIn (dir + "/01_Fresh-USB-1.wav") == once);
+    REQUIRE (loudestMagnitudeIn (dir + "/02_Fresh-USB-2.wav") == once);
+
+    for (const char* name : { "/01_Fresh-USB-1.wav", "/02_Fresh-USB-2.wav", "/MIX.wav" })
+        std::remove ((dir + name).c_str());
+}
+
+TEST_CASE (CaptureCoordinator_AStereoVerdictBringsBothSidesBackToUnity)
+{
+    // A real two-input interface, two different people: half each for the
+    // three seconds it takes to tell, then both at unity -- moved over 10 ms,
+    // not in one 6 dB step.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (freshStereoPair(), "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
+
+    std::vector<float> left (64), right (64), out (64, 0.0f);
+    float* outs[] = { out.data() };
+    float biggestStep = 0.0f, previous = 0.0f;
+    bool sawVerdict = false;
+
+    for (int block = 0; block < 2400; ++block)
+    {
+        for (int i = 0; i < 64; ++i)
+        {
+            const double t = static_cast<double> (block * 64 + i) / 48000.0;
+            left[static_cast<size_t> (i)] = static_cast<float> (0.2 * std::sin (6.283185307179586 * 3.0 * t));
+            right[static_cast<size_t> (i)] = 0.1f;
+        }
+
+        pushStereo (backend, 0, left, right);
+        c.pullOutputBlock (outs, 1, 64);
+
+        if (! sawVerdict && c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Stereo)
+            sawVerdict = true;
+
+        for (const auto sample : out)
+        {
+            if (block >= 200) // once the ring is playing out
+                biggestStep = std::max (biggestStep, std::abs (sample - previous));
+            previous = sample;
+        }
+    }
+
+    REQUIRE (sawVerdict);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (0), 1.0f, 1e-6);
+    REQUIRE_NEAR (c.getChannelMonitorWeight (1), 1.0f, 1e-6);
+    // A 3 Hz tone moves 0.0008 a sample at most; the 6 dB jump of the right
+    // side's 0.1 would have been a 0.05 step in one sample.
+    REQUIRE (biggestStep < 0.002f);
+    c.stopMonitoring();
+}
+
+TEST_CASE (CaptureCoordinator_APairWithOneSideLeftOutIsNotTurnedDown)
+{
+    // Half each is only for a pair the analyzer is actually hearing. With one
+    // of the two inputs not in the take there is nothing to analyse and no
+    // verdict to wait for, so the input that is there plays at unity.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    auto pair = freshStereoPair();
+    pair.pop_back();
+    REQUIRE (c.startMonitoring (pair, "out-device"));
+    REQUIRE_NEAR (c.getChannelMonitorWeight (0), 1.0f, 1e-6);
+    c.stopMonitoring();
+}
+
+TEST_CASE (CaptureCoordinator_TheMixBarShowsWhatTheLimiterJudgesAndItsClipIsTheLimiter)
+{
+    // The mix bar once read the headphone signal after a clip that came ahead
+    // of the volume, so at the default volume a bus squared off at -3 dBFS
+    // showed as about -21 dBFS, and its CLIP (three samples at -0.1 dBFS)
+    // could never be reached under a -3 dBFS ceiling: the crackle had no
+    // visible cause. It now shows the bus at the volume, before the limiter
+    // -- the very signal the limiter judges -- and CLIP whenever that limiter
+    // has had to turn the headphones down.
+    //
+    // Changed deliberately from "the bar reads the bus before the volume"
+    // (-4.4 dBFS here): read that way, at the default volume the bar sat in
+    // its red zone and pinned at 0 dBFS on mixes the limiter was 18 dB away
+    // from, with CLIP dark. See TheMixBarIsRedOnlyWhereTheLimiterActs.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    std::vector<float> a (64, 0.3f), b (64, 0.3f), out (64, 0.0f);
+    const float* ins[] = { a.data(), b.data() };
+    float* outs[] = { out.data() };
+
+    // Default volume: a 0.6 bus (-4.4 dBFS) reaches the ears at -22.4 dBFS,
+    // and that is what the bar shows.
+    c.processAudioBlock (ins, 2, outs, 1, 64);
+    for (int i = 0; i < 30; ++i)
+        c.getMixMetering().tick (1.0 / 60.0);
+
+    const float defaultGainDb = 20.0f * std::log10 (MonitorBus::monitorVolumeToLinearGain (MonitorBus::kDefaultMonitorVolume));
+    REQUIRE_NEAR (c.getMixMetering().getDisplayedLevelDb(), 20.0f * std::log10 (0.6f) + defaultGainDb, 0.1f);
+    REQUIRE_NEAR (c.getMixMetering().getDisplayedLevelDb(), 20.0f * std::log10 (std::abs (out[63])), 0.1f);
+    REQUIRE_FALSE (c.getMixMetering().isClipped());
+
+    // At full volume the same bus is what reaches the ears, and the bar
+    // reads it unchanged.
+    c.getMonitorBus().setMasterVolume (100.0);
+    c.processAudioBlock (ins, 2, outs, 1, 64);
+    for (int i = 0; i < 30; ++i)
+        c.getMixMetering().tick (1.0 / 60.0);
+    REQUIRE_NEAR (c.getMixMetering().getDisplayedLevelDb(), 20.0f * std::log10 (0.6f), 0.1f);
+    REQUIRE_FALSE (c.getMixMetering().isClipped());
+
+    // Full volume: the same bus doubled reaches the ceiling, and the bar says so.
+    c.getMonitorBus().setMasterVolume (100.0);
+    std::fill (a.begin(), a.end(), 0.6f);
+    std::fill (b.begin(), b.end(), 0.6f);
+    c.processAudioBlock (ins, 2, outs, 1, 64);
+
+    REQUIRE (c.getMixMetering().isClipped());
+    REQUIRE (c.getMixMetering().getClipCount() >= 1);
+    REQUIRE (std::abs (out[63]) <= std::pow (10.0f, MonitorBus::kLimiterCeilingDb / 20.0f) + 1e-6f);
+
+    // Tapped, it clears, and a bus that is merely hot at a sane volume does
+    // not bring it back: a bus over full scale at the default volume is
+    // turned down by the volume, not clipped.
+    c.getMixMetering().acknowledgeClip();
+    for (int i = 0; i < 48000 / 64; ++i) // let the limiter come back to unity
+        c.processAudioBlock (ins, 2, outs, 1, 64);
+    c.getMixMetering().acknowledgeClip();
+    c.getMonitorBus().setMasterVolume (MonitorBus::kDefaultMonitorVolume);
+    c.processAudioBlock (ins, 2, outs, 1, 64);
+    REQUIRE_FALSE (c.getMixMetering().isClipped());
+    c.stopMonitoring();
+}
+
+TEST_CASE (CaptureCoordinator_TheMixBarIsRedOnlyWhereTheLimiterActs)
+{
+    // The bar turns red from -3 dBFS, the safety limiter's ceiling, and its
+    // CLIP is that limiter acting. Those must agree at every volume: a mix
+    // just under the limit at the ears is short of red with CLIP dark, and
+    // one just over it is in the red with CLIP lit. Read before the volume,
+    // the bar showed a mix 0.4 dB short of the limit at the default volume as
+    // 0 dBFS -- pinned, red -- with CLIP dark; at volume 40, 36 dB of room
+    // looked the same.
+    const float ceiling = std::pow (10.0f, MonitorBus::kLimiterCeilingDb / 20.0f);
+
+    for (const double volume : { 40.0, MonitorBus::kDefaultMonitorVolume, 85.0, 100.0 })
+    {
+        for (const float overCeiling : { 0.95f, 1.2f })
+        {
+            FakeBackend backend;
+            CaptureCoordinator c (backend, 48000.0, 64);
+            c.setSoftwareClockEnabled (false);
+            REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+            c.getMonitorBus().setMasterVolume (volume);
+
+            // Two microphones whose sum, at this volume, lands at
+            // overCeiling times the limiter's ceiling.
+            const float gain = MonitorBus::monitorVolumeToLinearGain (volume);
+            const float each = 0.5f * overCeiling * ceiling / gain;
+            std::vector<float> a (64, each), b (64, each), out (64, 0.0f);
+            const float* ins[] = { a.data(), b.data() };
+            float* outs[] = { out.data() };
+
+            for (int block = 0; block < 20; ++block)
+                c.processAudioBlock (ins, 2, outs, 1, 64);
+            for (int i = 0; i < 30; ++i)
+                c.getMixMetering().tick (1.0 / 60.0);
+
+            const float shown = c.getMixMetering().getDisplayedLevelDb();
+            const bool red = shown >= MonitorBus::kLimiterCeilingDb;
+            const bool clip = c.getMixMetering().isClipped();
+
+            if (overCeiling < 1.0f)
+            {
+                REQUIRE (! red);
+                REQUIRE (! clip);
+                REQUIRE_NEAR (shown, MonitorBus::kLimiterCeilingDb + 20.0f * std::log10 (overCeiling), 0.1f);
+            }
+            else
+            {
+                REQUIRE (red);
+                REQUIRE (clip);
+                REQUIRE_NEAR (shown, MonitorBus::kLimiterCeilingDb + 20.0f * std::log10 (overCeiling), 0.1f);
+            }
+
+            c.stopMonitoring();
+        }
+    }
+}
+
 TEST_CASE (CaptureCoordinator_ExplicitStereoMicVerdictStillUsesItsLiveSide)
 {
     // A persisted analyzer verdict distinguishes this known stereo-presenting
@@ -3774,9 +4498,10 @@ TEST_CASE (CaptureCoordinator_TheMonitoringLatencyReachesTheCaller)
 
     REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
 
-    // The backend's round trip, and the two pulls every microphone's ring
-    // holds ahead of the output.
-    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - (10.67 + 2.0 * 256 / 48000.0 * 1000.0)) < 1e-9);
+    // The backend's round trip, the cushion every microphone's ring holds
+    // ahead of the output -- at 256 a pull and 6 ms of late delivery, 544
+    // samples -- and the resampler's two.
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - (10.67 + (544.0 + kResampler) / 48000.0 * 1000.0)) < 1e-9);
 }
 
 // Nothing monitoring means no monitoring latency. A figure left standing would
@@ -3878,12 +4603,14 @@ TEST_CASE (CaptureCoordinator_TheLatencyDescribesTheBufferTheDeviceGranted)
     // 512 frames at 48 kHz is 10.667 ms one way, so the round trip is 21.333 --
     // twice the estimate, because the device gave twice the buffer -- and
     // every microphone's ring is pulled 512 at a time, so it holds two of
-    // those ahead of the output.
-    const double expected = (512.0 / 48000.0) * 1000.0 * 2.0 + (2.0 * 512.0 / 48000.0) * 1000.0;
+    // those ahead of the output (two pulls of 512 already ride out more
+    // than the 6 ms of late delivery the cushion is sized for), and the
+    // resampler adds its two samples.
+    const double expected = (512.0 / 48000.0) * 1000.0 * 2.0 + ((2.0 * 512.0 + kResampler) / 48000.0) * 1000.0;
     REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - expected) < 1e-9);
 
     // And it is emphatically not the estimate's any more.
-    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - (10.67 + 2.0 * 256 / 48000.0 * 1000.0)) > 1.0);
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - (10.67 + 544.0 / 48000.0 * 1000.0)) > 1.0);
 }
 
 // Bluetooth headphones add well over 100 ms after the buffers. The figure
@@ -3904,14 +4631,14 @@ TEST_CASE (CaptureCoordinator_TheLatencyIncludesWhatTheOutputDeviceAdds)
 
     REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
 
-    const double expected = ((2.0 * 64.0 + 2.0 * 64.0 + 7200.0) / 48000.0) * 1000.0;
+    const double expected = ((2.0 * 64.0 + 256.0 + kResampler + 7200.0) / 48000.0) * 1000.0;
     REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - expected) < 1e-9);
     REQUIRE (coordinator.getMonitoringLatencyMs() > 150.0);
 
     // And it is still there after a buffer step: the ladder's figure for 128
     // keeps what the device adds.
     REQUIRE (std::abs (coordinator.getMonitoringLatencyMsAt (128)
-                       - ((2.0 * 128.0 + 2.0 * 128.0 + 7200.0) / 48000.0) * 1000.0) < 1e-9);
+                       - ((2.0 * 128.0 + 416.0 + kResampler + 7200.0) / 48000.0) * 1000.0) < 1e-9);
 }
 
 // A backend that cannot say keeps the estimate. Zero is not a small latency,
@@ -3931,7 +4658,7 @@ TEST_CASE (CaptureCoordinator_ABackendThatCannotSayKeepsTheEstimate)
     mic.fileName = "01_Singer";
 
     REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
-    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - (10.67 + 2.0 * 256 / 48000.0 * 1000.0)) < 1e-9);
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - (10.67 + (544.0 + kResampler) / 48000.0 * 1000.0)) < 1e-9);
 }
 
 // A device that granted exactly what was asked for reports exactly the
@@ -3952,7 +4679,7 @@ TEST_CASE (CaptureCoordinator_AGrantedBufferMatchingTheRequestChangesNothing)
 
     REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
 
-    const double expected = (256.0 / 48000.0) * 1000.0 * 2.0 + (2.0 * 256.0 / 48000.0) * 1000.0;
+    const double expected = (256.0 / 48000.0) * 1000.0 * 2.0 + ((544.0 + kResampler) / 48000.0) * 1000.0;
     REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - expected) < 1e-9);
 }
 

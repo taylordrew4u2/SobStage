@@ -54,9 +54,15 @@ One strip per microphone: a little crying face that fills with the level (it
 sheds a tear when you get loud, two when you clip), the name, a level track with
 a peak tick, and the number. The summed **MIX** sits on the same row in its own
 lighter cell, because §9.1 requires the bus to be distinguishable from a channel
-at a glance rather than by reading the label. Under them the take name and the
-one button worth pressing; everything else — how much room is left, where the
-files are going, the monitor level — sits quietly in the footer.
+at a glance rather than by reading the label. MIX shows the headphone mix as
+loud as your monitor volume makes it, so turning the volume down moves it down
+too. It turns red when the mix gets near the headphones' safety limit, and if it
+says **CLIP**, that limit has had to turn the mix down: everyone together is too
+loud for it at this volume. Turn the monitor volume down, or the trims or the
+microphones (the knob on the mic, if it has one); click MIX to clear it.
+Under them the take name and the one button worth pressing; everything else —
+how much room is left, where the files are going, the monitor level — sits
+quietly in the footer.
 
 <p align="center">
   <img src="images/settings.png" alt="The Settings drawer open down the right-hand side of the window, with the live main screen -- strips, mix bar, record button and footer -- still on the left" width="660">
@@ -153,7 +159,7 @@ files really are empty and the card says so instead of calling it saved.
 
 > The screenshots are historical UI checkpoints from several earlier binaries;
 > the version visible in each masthead identifies the build. They are retained
-> to show the implemented flows, not as proof of the v1.13.26 release candidate.
+> to show the implemented flows, not as proof of the v1.13.27 release candidate.
 > They were rendered headless on Linux by
 > [`Tools/screenshot_app.sh`](../Tools/screenshot_app.sh) against the virtual ALSA microphones
 > [`Tools/setup_alsa_fixture.sh`](../Tools/setup_alsa_fixture.sh) creates — the
@@ -230,7 +236,22 @@ files really are empty and the card says so instead of calling it saved.
   in its own channel only, and where there is one its delay is shown beside
   it ("slowest mic"). If that one is past 10 ms while the others are not,
   or 5 ms or more behind them, the app tells you which microphone it is, in
-  the activity list.
+  the activity list. When a Mac moves a microphone to a larger buffer for a
+  while and then back, that microphone is late in your headphones only
+  while the larger buffer lasts: about two seconds after it is back, at the
+  first quiet moment, it catches up with the others, and the delay shown
+  follows it. Its track gets the same few milliseconds of silence in that
+  quiet moment, never in the middle of what someone is saying, so the
+  tracks stay lined up. That happens once: if something moves the
+  microphone to the larger buffer again after that, the move costs a short
+  gap of about 20 ms in your headphones, and usually in that microphone's
+  track too, which the app counts as a dropout; from then on the microphone
+  keeps the larger delay for as long as the app has it open, so later moves
+  cost nothing. The delay shown stays up with it. The figure includes a small
+  safety margin, the same for every microphone: about 5 ms at the smallest
+  buffer. It lets a computer that is busy for a moment hand a microphone's
+  sound over a few milliseconds late without a click or a gap in your
+  headphones or the recording.
 
   `session.json` records how each device was lined up: its delay
   (`inputLatencyFrames`), the buffer it really ran at (`ioBlockFrames`), how
@@ -259,6 +280,30 @@ files really are empty and the card says so instead of calling it saved.
   the folder becomes `2026-08-27_1030_<name>`. Leaving it empty is fine.
 - **Spacebar** mutes and unmutes the headphones instantly. Recording is never
   affected by muting.
+- **Headphones distorting when several people talk at once?** Turn the monitor
+  volume down. The headphones have a safety limit at −3 dBFS, and it works on
+  what you actually hear, after the volume: at the usual volume even a lively
+  room stays well under it. When the mix does reach it, the limit turns the
+  mix down for a moment rather than squashing the loud bits, and MIX says
+  CLIP. It never touches the recording.
+- **Every microphone keeps its own time.** No two USB microphones' clocks
+  run at exactly the same speed, so the app keeps easing each one onto the
+  headphones' clock. The way it used to do that made the very top of the
+  sound — "s" sounds, breaths, cymbals — swell and fade a few times a second,
+  a faint warble or swirl in the headphones and in the tracks. It now follows
+  the sound much more closely: at the very top the swell is about a third of
+  what it was, and lower down it is too small to hear. That adds a few
+  hundredths of a millisecond to the headphone delay, which the figure under
+  Advanced includes.
+- **A new two-channel USB microphone.** Many USB microphones send the same
+  voice on two channels, and the app listens for about three seconds of
+  sound to tell that from two separate inputs. Until it knows, the
+  headphones and `MIX.wav` take each channel at half level, so a mic like
+  that is heard once, at its true level, rather than twice as loud. As soon
+  as it knows, they take just the one channel, or both at full level if they
+  really are two inputs (which sound a little quiet until then), even
+  mid-take. The microphone's own tracks keep both channels, each at full
+  level, until you stop.
 - **The Mac sleeping (macOS).** Close the lid with the app open and, when the
   Mac wakes, the app waits for your microphones and headphones to start again
   rather than calling them unplugged. The same goes for the Mac waking with
