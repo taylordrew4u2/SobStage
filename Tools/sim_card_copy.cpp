@@ -1167,7 +1167,9 @@ int main()
         const auto r = waitForResult (copier, 20s);
         check (r.has_value() && r->result.outcome == cardcopy::Outcome::Copied,
                "the copy follows the folder to its new name");
-        check (r.has_value() && fs::path (r->folderNow) == renamed, "and says where it is now");
+        // Compared as folders: a Mac answers with /private/var for /var.
+        std::error_code same;
+        check (r.has_value() && fs::equivalent (fs::path (r->folderNow), renamed, same), "and says where it is now");
         check (sameOnCard (renamed, f.card / "2026-10-15_0050_Found"), "every file is on the card");
         check (copier.summary().onlyOnComputer == 0, "nothing is left only on this computer");
        #else
