@@ -741,6 +741,9 @@ int main()
         check (cardcopy::classifyPosixError (ENODEV) == cardcopy::FsError::NotFound, "ENODEV is a card gone");
         check (cardcopy::classifyWindowsError (21) == cardcopy::FsError::NotFound, "ERROR_NOT_READY is a card gone");
         check (cardcopy::classifyWindowsError (19) == cardcopy::FsError::ReadOnly, "ERROR_WRITE_PROTECT is locked");
+        // Windows' FAT driver refuses a write past 4 GB with this too, never
+        // with ERROR_FILE_TOO_LARGE: the copy tells that apart at the 4 GB
+        // mark (TakeCopy_AFullCardAtTheFourGigabyteMarkWithRoomLeftIsAFileTooBig).
         check (cardcopy::classifyWindowsError (112) == cardcopy::FsError::NoSpace, "ERROR_DISK_FULL is full");
         check (cardcopy::classifyWindowsError (5) == cardcopy::FsError::NotAllowed, "ERROR_ACCESS_DENIED is not allowed");
         check (cardcopy::classifyWindowsError (223) == cardcopy::FsError::TooBig, "ERROR_FILE_TOO_LARGE is too big");

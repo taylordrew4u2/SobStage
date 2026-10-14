@@ -640,6 +640,20 @@ if (MMA_BUILD_APP)
                 -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
                 -DFILES=Tools/sim_card_copy.cpp
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckWindowsBranches.cmake)
+
+        # Where a MinGW cross compiler is installed, the card copy's Windows
+        # code itself -- the Win32 calls behind NativeCopyFileSystem -- is
+        # read against the real Windows headers too. Not on the CI runners,
+        # whose Windows job builds it for real.
+        find_program(MMA_MINGW_CXX x86_64-w64-mingw32-g++)
+        if (MMA_MINGW_CXX)
+            add_test(NAME windows_sources_compile_mingw
+                COMMAND ${CMAKE_COMMAND}
+                    -DCOMPILER=${MMA_MINGW_CXX}
+                    -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                    "-DFILES=Source/Platform/NativeCopyFileSystem.cpp;Source/Platform/VolumeCapacity.cpp;Source/App/CardCopier.cpp;Source/Core/TakeCopy.cpp;Tools/sim_card_copy.cpp;Tests/test_TakeCopy.cpp"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckWindowsBranches.cmake)
+        endif()
     endif()
 
     if (WIN32)

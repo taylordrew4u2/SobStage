@@ -89,6 +89,11 @@ public:
     std::optional<Failure> failSyncFolder;
     /// A read hands back at most this much at a time.
     size_t readPiece = 1u << 20;
+    /// Files on this computer of this size, all zeros, never held in memory:
+    /// a camera's movie past 4 GB.
+    std::map<std::string, uint64_t> hugeFiles;
+    /// Writes to a file whose name contains this are counted, not kept.
+    std::string discardWritesTo;
 
     struct Call
     {
@@ -156,7 +161,7 @@ public:
     bool exists (const std::string& path) override
     {
         calls.push_back ({ "exists", path });
-        return files.count (path) > 0 || folders.count (path) > 0;
+        return files.count (path) > 0 || folders.count (path) > 0 || hugeFiles.count (path) > 0;
     }
 
     FsResult list (const std::string& folder, std::vector<Entry>& entries) override
@@ -168,6 +173,9 @@ public:
         for (const auto& [path, content] : files)
             if (parentOf (path) == folder)
                 entries.push_back ({ lastPartOf (path), content.size(), false });
+        for (const auto& [path, size] : hugeFiles)
+            if (parentOf (path) == folder)
+                entries.push_back ({ lastPartOf (path), size, false });
         for (const auto& f : folders)
             if (f != folder && parentOf (f) == folder)
                 entries.push_back ({ lastPartOf (f), 0, true });
@@ -246,9 +254,32 @@ public:
         }
     };
 
+    struct ZerosReader : Reader
+    {
+        uint64_t left = 0;
+        size_t piece = 0;
+
+        FsResult read (void* buffer, size_t n, size_t& got) override
+        {
+            got = static_cast<size_t> (std::min<uint64_t> ({ n, piece, left }));
+            std::fill_n (static_cast<char*> (buffer), got, '\0');
+            left -= got;
+            return {};
+        }
+    };
+
     std::unique_ptr<Reader> openRead (const std::string& path, bool bypassCache, FsResult& result) override
     {
         calls.push_back ({ "openRead", path, {}, bypassCache });
+
+        if (const auto huge = hugeFiles.find (path); huge != hugeFiles.end())
+        {
+            auto zeros = std::make_unique<ZerosReader>();
+            zeros->left = huge->second;
+            zeros->piece = readPiece;
+            result = {};
+            return zeros;
+        }
 
         for (const auto& [key, failure] : failOpenRead)
             if (path.find (key) != std::string::npos)
@@ -299,7 +330,9 @@ public:
             if (fs->files.count (path) == 0)
                 return { FsError::NotFound, 2 };
 
-            fs->files[path].append (static_cast<const char*> (data), n);
+            if (fs->discardWritesTo.empty() || path.find (fs->discardWritesTo) == std::string::npos)
+                fs->files[path].append (static_cast<const char*> (data), n);
+
             written += n;
             return {};
         }
@@ -941,6 +974,71 @@ TEST_CASE (TakeCopy_FileTooBigForTheCard)
     REQUIRE (late.files.count (card ("02_Bob.wav")) == 1);
     REQUIRE (late.files.count (card ("activity.log")) == 1);
     REQUIRE (late.files.count (card ("session.json")) == 0);
+}
+
+// The bug: Windows' FAT driver refuses a write past 4 GB with ERROR_DISK_FULL
+// -- never ERROR_FILE_TOO_LARGE -- and so does a FAT drive behind a server
+// that calls it "NTFS". A camera's movie over 4 GB, on a card whose format
+// was not known beforehand, stopped the whole copy as "The card is full." on
+// a card with room to spare, and the sound after it never went. Mutation:
+// a full card at the 4 GB mark not told from a full card.
+TEST_CASE (TakeCopy_AFullCardAtTheFourGigabyteMarkWithRoomLeftIsAFileTooBig)
+{
+    const uint64_t movie = kFat32FileLimitBytes + (64u << 20);
+
+    // Its format not known (limitedTo4GiBFiles false), room for all of it.
+    FakeFs fs;
+    finishedTake (fs);
+    fs.hugeFiles[local ("V01_Cam.mov")] = movie;
+    fs.discardWritesTo = "V01_Cam.mov";
+    fs.writeFailPath = "V01_Cam.mov";
+    fs.writeFailAfterBytes = kFat32FileLimitBytes - 1;
+    fs.writeFailure = { FsError::NoSpace, 112 };
+    fs.cardFree = 64ull << 30;
+
+    const auto r = run (fs);
+    REQUIRE (r.outcome == Outcome::FileTooBig);
+    REQUIRE (r.fileName == "V01_Cam.mov");
+    REQUIRE (describe (r, kLocal).find ("The card is full") == std::string::npos);
+    REQUIRE (describe (r, kLocal).find ("V01_Cam.mov is too big") == 0);
+    for (const char* name : { "MIX.wav", "01_Alice.wav", "02_Bob.wav", "activity.log" })
+        REQUIRE (fs.files.count (card (name)) == 1 && fs.files[card (name)] == fs.files[local (name)]);
+    REQUIRE (fs.files.count (card ("V01_Cam.mov")) == 0);
+    REQUIRE (fs.files.count (card ("session.json")) == 0);
+    REQUIRE (noWorkingFilesOnCard (fs));
+
+    // A card that really is full at that mark, without room for the rest:
+    // full, as it says. Room enough before writing (the refusal before
+    // writing is not what is tested), none once the movie has been tried.
+    struct FillsUp : FakeFs
+    {
+        bool tried = false;
+        std::optional<uint64_t> freeBytes (const std::string& path) override
+        {
+            for (const auto& c : calls)
+                if (c.op == "write" && c.path.find ("V01_Cam.mov") != std::string::npos)
+                    tried = true;
+            return tried ? std::optional<uint64_t> (1u << 20) : FakeFs::freeBytes (path);
+        }
+    };
+    FillsUp fills;
+    finishedTake (fills);
+    fills.hugeFiles[local ("V01_Cam.mov")] = movie;
+    fills.discardWritesTo = "V01_Cam.mov";
+    fills.writeFailPath = "V01_Cam.mov";
+    fills.writeFailAfterBytes = kFat32FileLimitBytes - 1;
+    fills.writeFailure = { FsError::NoSpace, 112 };
+    fills.cardFree = 64ull << 30;
+    REQUIRE (run (fills).outcome == Outcome::CardFull);
+
+    // Full well before the mark: full.
+    FakeFs early;
+    finishedTake (early);
+    early.writeFailPath = "MIX.wav";
+    early.writeFailAfterBytes = 1000;
+    early.writeFailure = { FsError::NoSpace, 112 };
+    early.cardFree = 64ull << 30;
+    REQUIRE (run (early).outcome == Outcome::CardFull);
 }
 
 // Mutation: replace allowed for audio. A different MIX.wav already on the card

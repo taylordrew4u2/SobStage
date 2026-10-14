@@ -722,8 +722,23 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
 
                 if (const auto wr = writer->write (bufferA.data(), got); ! wr.ok())
                 {
-                    const auto outcome = outcomeForCardError (fs, root, wr);
+                    auto outcome = outcomeForCardError (fs, root, wr);
                     abandon (writer);
+
+                    // Windows' FAT driver refuses a write past 4 GB as a full
+                    // disk (ERROR_DISK_FULL), never as a file too large, and so
+                    // does a FAT drive shared by a server that says "NTFS". A
+                    // card "full" exactly at the 4 GB mark while it still has
+                    // room for the rest of the take is a file too big for it --
+                    // the sound must not stay off the card for a movie, nor the
+                    // user be told a card with room on it is full.
+                    if (outcome == Outcome::CardFull && (done - doneBefore) + got >= kFat32FileLimitBytes)
+                    {
+                        const auto stillToWrite = toWrite > doneBefore ? toWrite - doneBefore : 0;
+
+                        if (const auto free = fs.freeBytes (cardFolder); ! free.has_value() || *free >= stillToWrite)
+                            outcome = Outcome::FileTooBig;
+                    }
 
                     // The card's format said so only now: the same as one
                     // known to be FAT32 before writing. The rest still goes.
