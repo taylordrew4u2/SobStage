@@ -310,6 +310,15 @@ struct PosixWriter : cardcopy::CopyFileSystem::Writer
             {
                 if (errno == EINTR)
                     continue;
+               #if defined(__APPLE__)
+                // With F_NOCACHE on, a Mac answers a write that crosses the
+                // largest file the volume (or the process) allows with
+                // ERANGE, not EFBIG: measured on macOS 14, 4 MB written past
+                // a 1 MB limit. Read as "too big", so the file stays on this
+                // computer and the rest of the take still goes.
+                if (errno == ERANGE)
+                    return { FsError::TooBig, ERANGE };
+               #endif
                 return fromErrno (errno);
             }
             if (n == 0)
