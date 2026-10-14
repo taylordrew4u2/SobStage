@@ -12,17 +12,23 @@
   microphones' hub, can no longer cost you sound. The saved-take card shows
   how the copy is going, says where the take is safe if the card is out,
   full or locked, and has a **Copy again** button. A card that was out is
-  copied when it comes back, and a copy cut off by quitting finishes at the
-  next launch. The combined video and podcast-ready copy follow once they are
-  made. On a FAT32 card, a movie too big for it stays on this computer and
-  everything else is copied. If this computer couldn't hold as much as the
-  card could, the take goes straight to the card as before, and you are told.
-  A take goes to its own card: if another card is in its place (cards often
-  share a name, and Windows can give a card reader's letter to a USB stick),
-  nothing is written to it and the take waits for its card; **Copy again**
-  copies it to the card that is in. If you choose **Quit When Done** and the
-  copy then fails, SobStage says so and where the take is safe instead of
-  closing as though it were on the card.
+  copied as soon as it is back -- quit then, and SobStage asks to wait for
+  that copy -- and a copy cut off by quitting finishes the next time you open
+  SobStage with the card in. The combined video and podcast-ready copy follow
+  once they are made. On a FAT32 card, a movie too big for it stays on this
+  computer and everything else is copied; reformat the card as ExFAT or use
+  another card, and the take goes to that one. If this computer couldn't hold
+  as much as the card could, the take goes straight to the card as before,
+  and you are told. A take goes to its own card: if another card is in its
+  place (cards often share a name, and Windows can give a card reader's
+  letter to a USB stick), nothing is written to it and the take waits for its
+  card; **Copy again** copies it to the card that is in. A take recorded with
+  the card out is for the card last seen there; one that never knew its card
+  says which card it went to, so you can check it. Quitting while a take is
+  still being copied says the take isn't on the card yet and where it stays.
+  If you choose **Quit When Done** and the copy then fails -- even a retry
+  failing just as the copy before it did -- SobStage says so and where the
+  take is safe instead of closing as though it were on the card.
 
 ### Fixed
 
@@ -33,8 +39,10 @@
   that keeps dropping gets "Try another cable or USB port." The activity list
   now gives every mic that would not open its own reason. A mic that drops
   off while it is being opened, as one short of power does, still counts, and
-  so does a hub losing all its mics at once mid-take, and a mic that fails
-  again after being plugged back in.
+  so does a hub losing all its mics at once mid-take or refusing them all as
+  they are opened, a mic that fails again after being plugged back in, and a
+  second mic failing where the first has come back. Mics dropping as a
+  Windows laptop wakes from sleep no longer count.
 
 ## v1.13.27 -- 2026-10-14 (release candidate)
 
