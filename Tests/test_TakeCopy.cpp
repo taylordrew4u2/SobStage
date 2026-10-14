@@ -1808,6 +1808,67 @@ TEST_CASE (TakeCopy_TheFirstCardReachedBecomesTheTakesCard)
     REQUIRE (old.has_value() && old->cardIdentity.empty());
 }
 
+// The bug: a take armed with the card out knew no card, and the first one
+// mounted at its place -- a camera card also called "NO NAME" -- became its
+// card in silence: "Copied to the card: /Volumes/NO NAME/...". With the card
+// last seen at the save location remembered, that is only a take that never
+// knew any card; it is still copied, and the card is named as the one in now,
+// to be checked. Mutation: cardFirstSeen never set, or worded as "the card".
+TEST_CASE (TakeCopy_ATakeThatKnewNoCardSaysWhichCardItReached)
+{
+    FakeFs fs;
+    finishedTake (fs);
+    fs.cardId = "uuid:CAMERA";
+    const auto r = run (fs);
+    REQUIRE (r.outcome == Outcome::Copied);
+    REQUIRE (r.cardFirstSeen);
+    const auto line = describe (r, kLocal);
+    REQUIRE (line.find ("Copied to the card that's in now: " + kCardTake + ".") == 0);
+    REQUIRE (line.find ("check this is the one you meant") != std::string::npos);
+
+    // A take for this card: just "the card".
+    FakeFs known;
+    finishedTake (known);
+    known.cardId = "uuid:CARD";
+    const auto mine = run (known, { kRoot, {}, "uuid:CARD" });
+    REQUIRE (mine.outcome == Outcome::Copied);
+    REQUIRE_FALSE (mine.cardFirstSeen);
+    REQUIRE (describe (mine, kLocal) == "Copied to the card: " + kCardTake + ".");
+
+    // "Copy again" chose the card in: nothing to check.
+    FakeFs chosen;
+    finishedTake (chosen);
+    chosen.cardId = "uuid:CAMERA";
+    Control copyAgain;
+    copyAgain.anyCard = true;
+    REQUIRE_FALSE (run (chosen, toTheCard(), &copyAgain).cardFirstSeen);
+
+    // A card whose identity cannot be told is not "first seen" either.
+    FakeFs unknown;
+    finishedTake (unknown);
+    REQUIRE_FALSE (run (unknown).cardFirstSeen);
+}
+
+// The bug: a take armed with the card out was for no card at all, so any card
+// mounted in its place was taken. It is for the card last seen there.
+// Mutation: the card last seen not consulted with none seen now.
+TEST_CASE (TakeCopy_ATakeArmedWithTheCardOutIsForTheCardLastSeenThere)
+{
+    const std::map<std::string, std::string> lastSeen { { "/Volumes/NO NAME/Shows", "uuid:MINE" } };
+
+    REQUIRE (cardForTake ("uuid:IN-NOW", lastSeen, "/Volumes/NO NAME/Shows") == "uuid:IN-NOW");
+    REQUIRE (cardForTake ({}, lastSeen, "/Volumes/NO NAME/Shows") == "uuid:MINE");
+    REQUIRE (cardForTake ({}, lastSeen, "/Volumes/OTHER/Shows").empty());
+
+    // And the copy holds to it: another card at the same place is not written to.
+    FakeFs other;
+    finishedTake (other);
+    other.cardId = "uuid:CAMERA";
+    const auto r = run (other, { kRoot, {}, cardForTake ({}, { { kRoot, "uuid:MINE" } }, kRoot) });
+    REQUIRE (r.outcome == Outcome::DifferentCard);
+    REQUIRE (other.callsUnder (kCardTake) == 0);
+}
+
 TEST_CASE (TakeCopy_TheComputerCopyGoneIsSaid)
 {
     FakeFs fs;

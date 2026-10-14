@@ -31,6 +31,10 @@
 #            not at the next timed retry, and closing the window straight
 #            after asks to wait for it; "Quit When Done" quits once the take
 #            is on the card
+#   othercard the card is out when Record is pressed, and another card -- the
+#            same name, a different size, as a camera card is -- goes in
+#            first: nothing is written to it, and the take waits for the card
+#            last seen at the save location, which it then reaches
 #
 # MMA_E2E_ONLY="quit requit" runs only the scenarios named.
 #
@@ -802,6 +806,77 @@ else
     check_copy_matches cardback "$TAKE"
   fi
 fi
+fi
+[ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
+stop_app
+fi
+
+if want othercard; then
+# -------------------------------------------------------------------------
+echo
+echo "=== The card is out at Record, and another card goes in first ==="
+# The shim has the card report itself a FAT card of the size in $FATMB: one
+# card is told from another by that, as a camera card called "NO NAME" is
+# told from the user's own. The user's card is seen at the save location at
+# launch, then taken out; the take is recorded with it out; another card of
+# another size goes in at the same place.
+BEFORE_FAIL=$FAILED
+FATMB="$WORK/othercard.fatmb"
+echo 7600 > "$FATMB"
+launch othercard fresh MMA_STALL_CARD_FAT_MB_FILE="$FATMB"
+dismiss_cards
+sleep 2   # the card seen, and remembered, at its save location
+
+mv "$CARD_ROOT" "$CARD_ROOT.users"
+sleep 2
+press_record
+
+if ! TAKE=$(wait_for_new_take "$STAGING"); then
+  fail "othercard: no take started with the card out"
+else
+  pass "othercard: with the card out, the take started on this computer in $(basename "$TAKE")"
+  sleep 4
+  press_stop
+  wait_for_log "Saved on this computer" 20 || fail "othercard: the take was not saved"
+  dismiss_saved
+  wait_for_log "The card isn't plugged in" 20 || fail "othercard: the copy with the card out was not reported"
+
+  # Another card at the same place: the same path, another size.
+  echo 3800 > "$FATMB"
+  mkdir -p "$CARD"
+
+  if wait_for_log "isn't the one this take is for" 30; then
+    pass "othercard: the card in now is said not to be the take's"
+  else
+    fail "othercard: the other card was not refused within 30 s"
+  fi
+  if grep -q "Copied .* to the card" "$LOG"; then
+    fail "othercard: the take was reported copied to another card"
+  else
+    pass "othercard: nothing was called copied"
+  fi
+  if [ -e "$CARD/$(basename "$TAKE")" ]; then
+    fail "othercard: the take was written to another card"
+  else
+    pass "othercard: nothing of the take was written to the other card"
+  fi
+
+  # The user's own card back.
+  LINES_BEFORE=$(wc -l < "$LOG")
+  rm -rf "$CARD_ROOT"
+  mv "$CARD_ROOT.users" "$CARD_ROOT"
+  echo 7600 > "$FATMB"
+  COPIED=""
+  for _ in $(seq 1 40); do
+    tail -n +"$(( LINES_BEFORE + 1 ))" "$LOG" | grep -q "Copied .* to the card" && { COPIED=yes; break; }
+    sleep 1
+  done
+  if [ -n "$COPIED" ]; then
+    pass "othercard: its own card back, the take is copied to it"
+    check_copy_matches othercard "$TAKE"
+  else
+    fail "othercard: the take did not reach its own card within 40 s"
+  fi
 fi
 [ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
 stop_app

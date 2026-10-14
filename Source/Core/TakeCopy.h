@@ -299,6 +299,11 @@ struct Result
     /// The card the take is for now (Marker::cardIdentity), once known, for
     /// the next attempt.
     std::string cardIdentity;
+    /// The take did not know which card it was for -- none had ever been seen
+    /// at its save location when it was armed -- and the card this attempt
+    /// reached became its card. Said with "Copied": it may be a camera card
+    /// also called "NO NAME", or a USB stick given the reader's letter.
+    bool cardFirstSeen = false;
 };
 
 /// Copies the finished take in `localFolder` to the card, checks every file
@@ -425,6 +430,14 @@ struct Tally
 /// take is on the card. Never says a take is only on this computer when the
 /// rest of it is on the card, which its saved-take card says.
 std::string tallyLine (const Tally& tally);
+
+/// Which card a take armed now is for: the one seen at its save location
+/// (`seenNow`), or, with the card out or not looked at yet, the last one seen
+/// there (`lastSeen`, by save location). Empty when no card was ever seen
+/// there: then the first card the copy reaches becomes the take's, and is
+/// said to be (Result::cardFirstSeen).
+std::string cardForTake (const std::string& seenNow, const std::map<std::string, std::string>& lastSeen,
+                         const std::string& saveLocation);
 
 /// Whether `path` is on the save location for the take recording now, by
 /// path arithmetic only: asking the disk is the very call that hangs on a

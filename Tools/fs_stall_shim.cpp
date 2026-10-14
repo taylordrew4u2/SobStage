@@ -32,6 +32,11 @@
  *
  *   MMA_STALL_CARD_FREE_MB  the card reports no more free space than this
  *
+ *   MMA_STALL_CARD_FAT_MB_FILE  a file holding a size in MB: the card reports
+ *                               itself a FAT card of that size, which is what
+ *                               tells one card from another (cardIdentityOf).
+ *                               Another size written there is another card.
+ *
  * The gates' "card" is a folder on this computer's own disk, and whether a
  * take is recorded here and copied, or goes straight to the card, depends on
  * how much the card could hold against how much this computer has. On one
@@ -235,6 +240,42 @@ int capCardFree (int result, const char* path, Stat* out, unsigned long blockSiz
         out->f_bfree = capBlocks;
 
     return result;
+}
+
+// MMA_STALL_CARD_FAT_MB_FILE: statfs under the prefix reports a FAT card the
+// size, in MB, that this file holds -- so the card has an identity (a FAT
+// card's is its format and size), and a gate puts "another card" in its place
+// by writing another size. Read on every call; an empty or missing file
+// leaves the answer as it is.
+template <typename Stat>
+void fakeFatCard (const char* path, Stat* out)
+{
+    static const char* file = [] {
+        const char* v = std::getenv ("MMA_STALL_CARD_FAT_MB_FILE");
+        return v != nullptr && *v != 0 ? v : nullptr;
+    }();
+
+    if (file == nullptr || out == nullptr || out->f_bsize <= 0 || ! underPrefix (path))
+        return;
+
+    static const auto realOpen = real<int (*) (const char*, int, ...)> ("open");
+    static const auto realRead = real<ssize_t (*) (int, void*, size_t)> ("read");
+    static const auto realClose = real<int (*) (int)> ("close");
+
+    char text[32] = {};
+    const int fd = realOpen (file, O_RDONLY);
+    if (fd < 0)
+        return;
+    const auto got = realRead (fd, text, sizeof (text) - 1);
+    realClose (fd);
+
+    const long long mb = got > 0 ? std::atoll (text) : 0;
+    if (mb <= 0)
+        return;
+
+    out->f_type = 0x4d44; // MSDOS_SUPER_MAGIC
+    out->f_blocks = static_cast<unsigned long long> (mb) * 1024ull * 1024ull
+                  / static_cast<unsigned long long> (out->f_bsize);
 }
 
 } // namespace
@@ -531,6 +572,8 @@ int statfs (const char* path, struct statfs* out)
     touchPath (path);
     static const auto fn = real<int (*) (const char*, struct statfs*)> ("statfs");
     const int r = fn (path, out);
+    if (r == 0)
+        fakeFatCard (path, out);
     return capCardFree (r, path, out, r == 0 ? static_cast<unsigned long> (out->f_bsize) : 0);
 }
 
@@ -539,6 +582,8 @@ int statfs64 (const char* path, struct statfs64* out)
     touchPath (path);
     static const auto fn = real<int (*) (const char*, struct statfs64*)> ("statfs64");
     const int r = fn (path, out);
+    if (r == 0)
+        fakeFatCard (path, out);
     return capCardFree (r, path, out, r == 0 ? static_cast<unsigned long> (out->f_bsize) : 0);
 }
 

@@ -55,6 +55,13 @@ struct AppSettings
     /// TakeRoute). On by default; off records straight to the card, exactly
     /// as before this existed.
     bool recordOnComputerThenCopy = true;
+
+    /// The card last seen at each save location (cardIdentityOf), by its
+    /// path. A take armed with the card out is still for that card: without
+    /// it, the take went to whatever card was next mounted there -- a camera
+    /// card also called "NO NAME", a USB stick given the reader's drive
+    /// letter -- and was reported copied "to the card".
+    std::map<std::string, std::string> cardAtSaveLocation;
     std::string aggregateName = "SobStage"; // §7, what other apps see
     double masterVolume = 70.0;                         // §5.1 default
     /// Stable id of the monitor output the user explicitly chose. §5.3 makes

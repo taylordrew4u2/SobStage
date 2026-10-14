@@ -2958,7 +2958,13 @@ void Application::toggleRecording()
                 sessionStartIso = now.toISO8601 (true);
                 currentTakeRoute = route;
                 currentCopyRoot = juce::String (destinationFolder);
-                currentCopyCardIdentity = onComputer ? cardIdentityAtDestination() : std::string();
+                // The card in now, or with it out, the one last seen here: a
+                // card first mounted at its place after the take -- a camera
+                // card also called "NO NAME" -- is then not this take's.
+                currentCopyCardIdentity = onComputer ? cardcopy::cardForTake (cardIdentityAtDestination(),
+                                                                              cardAtSaveLocation,
+                                                                              destinationFolder)
+                                                     : std::string();
 
                 // Beside the take, on this computer: it still has to go to the
                 // card, and where to. What lets a quit or a crash before the
@@ -3581,7 +3587,17 @@ void Application::reportFinishedCardCopies()
         stallReportedFor.erase (juce::String (done.localFolder));
         stallReportedFor.erase (juce::String (done.folderNow));
 
-        if (done.result.outcome == cardcopy::Outcome::Copied)
+        if (done.result.outcome == cardcopy::Outcome::Copied && done.result.cardFirstSeen)
+        {
+            // Not the card it was armed for -- it knew none -- so not simply
+            // "the card": the one in now, which may be someone else's.
+            noteActivity (ActivityLevel::Warning, "Card copy",
+                          "Copied " + juce::File (juce::String (done.folderNow)).getFileName()
+                              + " to the card that's in now. SobStage didn't know which card this take was "
+                                "for, so check this is the one you meant.",
+                          true);
+        }
+        else if (done.result.outcome == cardcopy::Outcome::Copied)
         {
             noteActivity (ActivityLevel::Stopped, "Card copy",
                           "Copied " + juce::File (juce::String (done.folderNow)).getFileName() + " to the card.",
@@ -3652,6 +3668,17 @@ void Application::tickCardCopies()
     // recovered-takes card has since written, are tried again on their own.
     // Every other failure waits for the next Stop or "Copy again".
     const auto now = juce::Time::getMillisecondCounterHiRes();
+
+    // The card at the save location, remembered with the settings, so a take
+    // armed with it out is still for it.
+    if (const auto seen = cardIdentityAtDestination(); ! seen.empty())
+    {
+        if (auto& known = cardAtSaveLocation[destinationFolder]; known != seen)
+        {
+            known = seen;
+            saveSettings();
+        }
+    }
 
     // A card seen back in, where it was seen out: the takes waiting for it
     // go now, not at the next timed retry, and a quit meanwhile waits for
@@ -7733,6 +7760,7 @@ void Application::loadSettings()
     setupGuideDone = rememberedSettings.setupGuideDone;
     mirrorPolicy.setEnabledByUser (rememberedSettings.mirrorEnabled);
     recordOnComputerThenCopy = rememberedSettings.recordOnComputerThenCopy;
+    cardAtSaveLocation = rememberedSettings.cardAtSaveLocation;
     // §7: what other apps see. A settings file written under the app's previous
     // name carries that name here, and carrying it forward would leave the
     // device in everyone's Zoom and OBS still called the old thing -- a rename
@@ -7891,6 +7919,7 @@ void Application::saveSettings()
     settings.setupGuideDone = setupGuideDone;
     settings.mirrorEnabled = mirrorPolicy.isEnabledByUser();
     settings.recordOnComputerThenCopy = recordOnComputerThenCopy;
+    settings.cardAtSaveLocation = cardAtSaveLocation;
     settings.aggregateName = aggregateName.toStdString();
     settings.masterVolume = masterVolume;
     settings.rememberedOutputDeviceId = rememberedOutputDeviceId;

@@ -997,6 +997,10 @@ private:
     std::string currentCopyCardIdentity;
     /// The card at the destination as the probe last saw it, between takes.
     std::string cardIdentityAtDestination() const;
+    /// The card last seen at each save location, kept with the settings: a
+    /// take armed with the card out is for that card (cardcopy::cardForTake),
+    /// not for whatever card is next mounted in its place.
+    std::map<std::string, std::string> cardAtSaveLocation;
     bool lastTakeCopiesToCard = false;
     juce::String lastCopyRoot;
     /// "This computer is nearly full, so this take is going straight to the

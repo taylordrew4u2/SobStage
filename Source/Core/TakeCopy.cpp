@@ -480,6 +480,8 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
         if (! marker.cardIdentity.empty())
             cardFolderWanted.clear();
 
+        // Not chosen: the take never knew its card. Said, not taken silently.
+        result.cardFirstSeen = marker.cardIdentity.empty() && ! control.anyCard;
         result.cardIdentity = here;
         result.cardFolder = cardFolderWanted;
         rememberOnThisComputer ({ root, cardFolderWanted, here });
@@ -945,6 +947,16 @@ bool isSameOrInside (const std::string& path, const std::string& folder)
 
 } // namespace
 
+std::string cardForTake (const std::string& seenNow, const std::map<std::string, std::string>& lastSeen,
+                         const std::string& saveLocation)
+{
+    if (! seenNow.empty())
+        return seenNow;
+
+    const auto found = lastSeen.find (saveLocation);
+    return found != lastSeen.end() ? found->second : std::string();
+}
+
 bool isOnTheSaveLocationWhileRecording (const std::string& path, TakeRoute route, const std::string& backupFolder)
 {
     if (route == TakeRoute::ComputerThenCard)
@@ -1099,6 +1111,10 @@ std::string describeWholeTake (const Result& result, const std::string& localFol
     switch (result.outcome)
     {
         case Outcome::Copied:
+            if (result.cardFirstSeen)
+                return "Copied to the card that's in now: " + result.cardFolder + ". SobStage didn't know which "
+                       "card this take was for, so check this is the one you meant.";
+
             return "Copied to the card: " + result.cardFolder + ".";
         case Outcome::NotFinishedYet:
             return "This take didn't finish recording, so it hasn't been copied to the card yet."

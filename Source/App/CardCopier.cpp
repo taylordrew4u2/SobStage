@@ -772,6 +772,16 @@ void CardCopier::run (std::shared_ptr<State> s)
         }
 
         const bool copied = result.outcome == cardcopy::Outcome::Copied;
+
+        // A card first seen by an attempt that then failed is still the one
+        // the take went to, when a later attempt copies it.
+        record.cardFirstSeen = record.cardFirstSeen || result.cardFirstSeen;
+        if (copied)
+        {
+            result.cardFirstSeen = record.cardFirstSeen;
+            record.cardFirstSeen = false;
+        }
+
         const bool repeat = sameAttempt (record.last, result);
         const bool quietResync = copied && record.resync && result.filesCopied == 0;
 

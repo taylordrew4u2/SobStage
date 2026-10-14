@@ -229,6 +229,10 @@ private:
         /// the take's -- not refused as "not the one this take is for", for
         /// ever. Until an attempt reaches a card.
         bool takeNextCard = false;
+        /// An attempt took the card it reached as the take's, the take not
+        /// knowing its card (cardcopy::Result::cardFirstSeen): said when the
+        /// take is copied, even by a later attempt.
+        bool cardFirstSeen = false;
     };
 
     /// Under the lock: whether a queued take is work a quit would cut off.

@@ -1251,6 +1251,36 @@ int main()
        #endif
     }
 
+    // A take that never knew its card -- none had been seen at its save
+    // location -- takes the first one it reaches, and says so when it is
+    // copied, even if the attempt that reached it failed (the card full).
+    std::printf ("\n19. A card first seen by a take\n");
+    {
+        Fixture f;
+        const auto local = f.take ("2026-10-15_0120_NoCardKnown");
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:CAMERA";
+        }
+        f.gate->cardFull = true;
+
+        CardCopier copier (f.factory());
+        copier.start (f.job (local));
+        const auto full = waitForResult (copier, 15s);
+        check (full.has_value() && full->result.outcome == cardcopy::Outcome::CardFull, "the card reached is full");
+
+        f.gate->cardFull = false;
+        copier.retry ([] (const cardcopy::Result&) { return true; });
+        const auto copied = waitForResult (copier, 15s);
+        check (copied.has_value() && copied->result.outcome == cardcopy::Outcome::Copied
+                   && copied->result.cardFirstSeen,
+               "copied later, it is still said to be the card in now, to be checked");
+        check (copier.view (local.string()).result.cardFirstSeen
+                   && cardcopy::describe (copier.view (local.string()).result, local.string())
+                          .find ("check this is the one you meant") != std::string::npos,
+               "on its saved-take card too");
+    }
+
     std::printf ("\n%s (%d checks, %d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILED", checks, failures);
     return failures == 0 ? 0 : 1;
 }
