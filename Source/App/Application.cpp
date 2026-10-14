@@ -3662,6 +3662,18 @@ void Application::tickCardCopies()
                       *resumed == 1 ? juce::String ("Copying 1 earlier take to the card.")
                                     : "Copying " + juce::String (*resumed) + " earlier takes to the card.");
 
+    // A take whose file was too big for its card took the next one, as the
+    // user was told; the takes that went to the card it replaced -- erased,
+    // if it was reformatted -- go to this one too, and are said to.
+    if (const auto again = cardCopier.takeRecopiedCount(); again.has_value() && *again > 0)
+        noteActivity (ActivityLevel::Warning, "Card copy",
+                      *again == 1
+                          ? juce::String ("1 earlier take was for the card that was in before (replaced, or "
+                                          "reformatted), so it's being copied to this one too.")
+                          : juce::String (*again) + " earlier takes were for the card that was in before "
+                                "(replaced, or reformatted), so they're being copied to this one too.",
+                      true);
+
     // A card put back in, and an interrupted take whose stop time the
     // recovered-takes card has since written, are tried again on their own.
     // Every other failure waits for the next Stop or "Copy again".

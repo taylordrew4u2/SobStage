@@ -1236,10 +1236,15 @@ std::string describeWholeTake (const Result& result, const std::string& localFol
 
             return PreflightThroughputTest::writeFailureReason (EACCES, kind) + safe;
         case Outcome::FileTooBig:
+            // Another card first, and why not this one reformatted: erasing
+            // it erases every take already copied to it. Asked to, a card
+            // reformatted with SobStage open has those takes copied to it
+            // again (CardCopier), but never one reformatted after a quit.
             return (result.fileName.empty() ? std::string ("A file") : result.fileName)
                    + " is too big for the way this card is formatted, so it wasn't copied. The rest of the "
-                     "take was. To copy it, reformat the card as ExFAT (this erases it) or use another "
-                     "card." + safe;
+                     "take was. To copy it, put in another card formatted as ExFAT, and the whole take is "
+                     "copied to that one. Don't reformat this card to make it fit: that erases the takes "
+                     "already on it." + safe;
         case Outcome::NameTakenOnCard:
             return "The card already has a different file called " + result.fileName + "." + safe;
         case Outcome::CopyDidNotMatch:

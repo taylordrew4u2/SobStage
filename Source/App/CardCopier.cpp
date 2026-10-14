@@ -574,6 +574,62 @@ void CardCopier::scan (State& s, cardcopy::CopyFileSystem& fs, const std::string
     s.resumedCount = added;
 }
 
+void CardCopier::recopyForCardTakenLocked (State& s, TakeId taker, const std::string& cardBefore)
+{
+    const auto& root = s.records[taker].job.marker.destinationRoot;
+    const auto cardNow = s.records[taker].job.marker.cardIdentity;
+    int queuedNow = 0;
+
+    for (auto& [id, record] : s.records)
+    {
+        if (id == taker || record.job.marker.destinationRoot != root
+            || record.job.marker.cardIdentity != cardBefore
+            || (record.last.has_value() && record.last->outcome == cardcopy::Outcome::ComputerCopyMissing))
+            continue;
+
+        // Checked on the card that went: nothing of it is trusted on this one.
+        if (! record.job.marker.cardFolder.empty())
+        {
+            const auto prefix = cardcopy::joinPath (record.job.marker.cardFolder, {});
+            for (auto it = s.verified.begin(); it != s.verified.end();)
+                it = it->compare (0, prefix.size(), prefix) == 0 ? s.verified.erase (it) : std::next (it);
+        }
+
+        // For this card now, in a folder it chooses on it.
+        record.job.marker.cardIdentity = cardNow;
+        record.job.marker.cardFolder.clear();
+        record.job.marker.takeNextCard = false;
+        record.copiedFiles.clear();
+        record.resync = false;
+
+        const auto folder = record.folderNow.empty() ? record.job.localFolder : record.folderNow;
+
+        if (record.phase == Phase::Copied || record.phase == Phase::StillOnComputer)
+        {
+            // Not on this card: a copy a quit would cut off, said as one.
+            record.countsAsWork = true;
+            s.notesToWrite.emplace_back (folder, record.job.marker);
+            enqueueLocked (s, id);
+            ++queuedNow;
+        }
+        else if (record.phase == Phase::Waiting)
+        {
+            s.notesToWrite.emplace_back (folder, record.job.marker);
+        }
+    }
+
+    if (queuedNow > 0)
+        s.recopiedCount = s.recopiedCount.value_or (0) + queuedNow;
+}
+
+std::optional<int> CardCopier::takeRecopiedCount()
+{
+    const std::lock_guard<std::mutex> lock (state->lock);
+    auto count = state->recopiedCount;
+    state->recopiedCount.reset();
+    return count;
+}
+
 void CardCopier::run (std::shared_ptr<State> s)
 {
    #if defined(__APPLE__)
@@ -590,6 +646,22 @@ void CardCopier::run (std::shared_ptr<State> s)
 
     for (;;)
     {
+        // The notes on this computer for takes queued again for another card
+        // (recopyForCardTakenLocked): a quit before their copy then still has
+        // them copied at the next launch. Disk calls, so outside the lock.
+        {
+            std::vector<std::pair<std::string, cardcopy::Marker>> notes;
+            {
+                const std::lock_guard<std::mutex> lock (s->lock);
+                notes.swap (s->notesToWrite);
+            }
+
+            for (const auto& [folder, marker] : notes)
+                if (fs != nullptr && fs->exists (folder))
+                    (void) fs->replaceText (cardcopy::joinPath (folder, cardcopy::kMarkerFileName),
+                                            cardcopy::markerToJson (marker));
+        }
+
         TakeId key = 0;
         Job job;
         std::string scanRoot;
@@ -732,6 +804,8 @@ void CardCopier::run (std::shared_ptr<State> s)
         // is never copied twice into "_2" and "_3"; and the card it is for.
         const bool cardTaken = ! result.cardIdentity.empty()
                             && result.cardIdentity != record.job.marker.cardIdentity;
+        const bool tookTheNextCard = cardTaken && record.job.marker.takeNextCard;
+        const auto cardBefore = record.job.marker.cardIdentity;
 
         if (! result.cardFolder.empty())
             record.job.marker.cardFolder = result.cardFolder;
@@ -761,6 +835,16 @@ void CardCopier::run (std::shared_ptr<State> s)
             record.job.marker.takeNextCard = true;
         else if (cardTaken || result.outcome == cardcopy::Outcome::Copied)
             record.job.marker.takeNextCard = false;
+
+        // The card that file was too big for has been replaced -- by another
+        // card, or by itself reformatted as the user was told, which erased
+        // every take on it. Which of the two cannot be told, so every other
+        // take of this run that went to it, or was waiting for it, at this
+        // save location goes to this card too: copied and checked again, and
+        // counted as waiting until it is. A take that stayed "Copied to the
+        // card" read as safe on a card that had been erased.
+        if (tookTheNextCard && ! cardBefore.empty())
+            recopyForCardTakenLocked (*s, key, cardBefore);
 
         if (result.outcome == cardcopy::Outcome::Yielded)
         {

@@ -173,6 +173,13 @@ public:
     /// How many takes resumePendingIn() found, once, after it has looked.
     std::optional<int> takeResumedCount();
 
+    /// How many takes were queued again, since the last call, because the
+    /// card they had gone to was replaced at their save location: a take
+    /// whose file was too big for it took the next card, as the user was
+    /// told (use another card, or reformat this one -- which erases every
+    /// take on it). Nothing when none were.
+    std::optional<int> takeRecopiedCount();
+
     /// The takes whose last attempt failed, counted as cardcopy::Tally says:
     /// only on this computer, on the card but for a file too big for it, or
     /// on the card but for a file added since.
@@ -246,6 +253,11 @@ private:
         std::string scanRoot;               // a resumePendingIn() still to do
         std::set<std::string> expected;     // expect(): takes of this run not yet started
         std::optional<int> resumedCount;
+        std::optional<int> recopiedCount;
+        /// Notes to put back on this computer, by take folder, for takes
+        /// queued again for another card. Written by the worker, outside
+        /// the lock, before its next copy.
+        std::vector<std::pair<std::string, cardcopy::Marker>> notesToWrite;
         bool running = false;
         std::atomic<bool> cancelling { false };
         std::atomic<bool> held { false };
@@ -265,6 +277,11 @@ private:
     /// Under the lock: the newest take at `localFolder`, or nothing.
     static Record* newestLocked (State& s, const std::string& localFolder, TakeId* id = nullptr);
     void startWorkerIfNeeded (bool needed);
+
+    /// Under the lock, on the worker: `taker` took the next card at its save
+    /// location in place of `cardBefore`. Every other take for that card
+    /// there goes to this one.
+    static void recopyForCardTakenLocked (State& s, TakeId taker, const std::string& cardBefore);
 
     static void run (std::shared_ptr<State> state);
     static void scan (State& s, cardcopy::CopyFileSystem& fs, const std::string& root);

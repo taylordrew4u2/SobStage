@@ -1001,7 +1001,11 @@ TEST_CASE (TakeCopy_FileTooBigForTheCard)
     REQUIRE (r.fileName == "V01_Cam.mov");
     REQUIRE (big.count ("createNew", "V01_Cam.mov") == 0);
     REQUIRE (describe (r, kLocal).find ("V01_Cam.mov is too big") == 0);
-    REQUIRE (describe (r, kLocal).find ("reformat the card as ExFAT") != std::string::npos);
+    // Another card, never this one erased: it holds the takes already
+    // copied to it.
+    REQUIRE (describe (r, kLocal).find ("put in another card formatted as ExFAT") != std::string::npos);
+    REQUIRE (describe (r, kLocal).find ("Don't reformat this card") != std::string::npos);
+    REQUIRE (describe (r, kLocal).find ("reformat the card as ExFAT") == std::string::npos);
 
     // The sound is not held back by a movie that can never fit: everything
     // else is on the card, but not session.json, so the card's folder never

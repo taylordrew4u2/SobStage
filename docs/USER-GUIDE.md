@@ -430,8 +430,12 @@ copies it to the card when you press Stop.
 - **A card formatted FAT32** (most cards of 32 GB and smaller) can't hold a
   file over 4 GB, such as a camera's movie after about 18 minutes. The movie
   stays on this computer, everything else from the take goes to the card, and
-  the take's line says so. To copy the movie too, reformat the card as ExFAT
-  (this erases it) or use another card.
+  the take's line says so. To copy the movie too, put in another card
+  formatted as ExFAT, and the whole take is copied to that one. Don't
+  reformat the card the take went to: that erases every take already on it.
+  (If you do reformat it while SobStage is open, SobStage copies tonight's
+  takes to it again, and the line under the record button counts them until
+  they are on it; it can't do that for a card reformatted after you quit.)
 - **A take started while another is still copying comes first.** The copy
   steps aside, and finishes after you stop.
 - **If this computer is nearly full** — it couldn't hold as much as the card

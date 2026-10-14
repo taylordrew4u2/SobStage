@@ -1332,6 +1332,104 @@ int main()
        #endif
     }
 
+    // The FAT32 advice once said "reformat the card as ExFAT (this erases
+    // it)". Followed, it erased the night's earlier takes from the card, and
+    // they stayed "Copied to the card" with the line under Record empty --
+    // every take on the card -- while only this computer held them. The
+    // card replaced (reformatted, or another one), every take that went to
+    // it goes to the new one too, and is counted until it is there.
+    std::printf ("\n18c. Earlier takes, when the card a file was too big for is replaced\n");
+    {
+       #if ! defined(_WIN32)
+        Fixture f;
+        const auto one = f.take ("2026-10-15_0130_One");
+        const auto two = f.take ("2026-10-15_0140_Two");
+        const auto three = f.take ("2026-10-15_0150_Movie");
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:FAT32-CARD";
+        }
+
+        CardCopier copier (f.factory());
+        for (const auto& t : { one, two })
+        {
+            auto job = f.job (t);
+            job.marker.cardIdentity = "uuid:FAT32-CARD";
+            job.stoppedHere = true;
+            copier.start (job);
+        }
+        const auto first = collectResults (copier, 2, 15s);
+        check (first.size() == 2u && first[0].result.outcome == cardcopy::Outcome::Copied
+                   && first[1].result.outcome == cardcopy::Outcome::Copied,
+               "two takes are copied to the FAT32 card");
+
+        rlimit old {};
+        getrlimit (RLIMIT_FSIZE, &old);
+        rlimit small = old;
+        small.rlim_cur = 1u << 20;
+        {
+            auto job = f.job (three);
+            job.marker.cardIdentity = "uuid:FAT32-CARD";
+            job.stoppedHere = true;
+            setrlimit (RLIMIT_FSIZE, &small);
+            copier.start (job);
+            const auto tooBig = waitForResult (copier, 15s);
+            setrlimit (RLIMIT_FSIZE, &old);
+            check (tooBig.has_value() && tooBig->result.outcome == cardcopy::Outcome::FileTooBig,
+                   "the third has a file too big for it");
+            check (tooBig.has_value()
+                       && cardcopy::describe (tooBig->result, three.string()).find ("Don't reformat this card")
+                              != std::string::npos,
+                   "and the user is told to use another card, not to erase this one");
+        }
+
+        // Reformatted anyway: erased, and a new identity. The first take's
+        // copy to it is held in its first write, to be looked at.
+        fs::remove_all (f.card);
+        fs::create_directories (f.card);
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:EXFAT-CARD";
+            f.gate->blockWritesTo = "0130_One";
+            f.gate->afterWrites = 0;
+            f.gate->writesSoFar = 0;
+            f.gate->open = false;
+        }
+
+        copier.retryWithCardIn (f.card.string(), "uuid:EXFAT-CARD", false);
+        const auto taken = waitForResult (copier, 15s);
+        check (taken.has_value() && taken->localFolder == three.string()
+                   && taken->result.outcome == cardcopy::Outcome::Copied,
+               "the third take goes to the reformatted card");
+
+        check (f.gate->waitUntilBlocked (10s), "the first take is being copied to it again");
+        check (copier.takeRecopiedCount() == std::optional<int> (2),
+               "both earlier takes are queued for it, and said to be");
+        check (copier.view (one.string()).phase == CardCopier::Phase::Copying
+                   && copier.view (two.string()).phase == CardCopier::Phase::Waiting,
+               "neither reads as copied while it is not on this card");
+        check (copier.summary().waiting == 1 && ! copier.summary().copyingFolder.empty(),
+               "the line under Record counts them");
+        check (copier.hasWorkToFinish() && copier.takesToFinish() == 2,
+               "and a quit asks to wait for them");
+        check (fs::exists (one / cardcopy::kMarkerFileName) && fs::exists (two / cardcopy::kMarkerFileName),
+               "both are marked to be copied on this computer again, so a quit keeps them");
+
+        f.gate->release();
+        const auto again = collectResults (copier, 2, 20s);
+        check (again.size() == 2u && again[0].result.outcome == cardcopy::Outcome::Copied
+                   && again[1].result.outcome == cardcopy::Outcome::Copied,
+               "both are copied to it again");
+        for (const auto& t : { one, two, three })
+            check (sameOnCard (t, f.card / t.filename()), t.filename().string() + " is on the reformatted card");
+        check (copier.summary().waiting == 0 && copier.summary().onlyOnComputer == 0
+                   && copier.summary().partlyOnCard == 0,
+               "and nothing is left waiting");
+       #else
+        check (true, "(RLIMIT_FSIZE is POSIX)");
+       #endif
+    }
+
     // A take that never knew its card -- none had been seen at its save
     // location -- takes the first one it reaches, and says so when it is
     // copied, even if the attempt that reached it failed (the card full).
