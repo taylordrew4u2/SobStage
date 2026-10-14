@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Takes going to an SD card or USB stick are now recorded on this
+  computer and copied to the card when you stop, then checked.** The
+  computer keeps its copy, in `RECORDINGS-MIRROR` in your home folder. Turn
+  this off in Settings to record straight to the card. Nothing is written to
+  the card while you record, so a slow or cheap card, or a card reader on the
+  microphones' hub, can no longer cost you sound. The saved-take card shows
+  how the copy is going, says where the take is safe if the card is out,
+  full or locked, and has a **Copy again** button. A card that was out is
+  copied when it comes back, and a copy cut off by quitting finishes at the
+  next launch. If this computer is nearly full, the take goes straight to the
+  card as before, and you are told.
+
+### Fixed
+
+- **"Your microphones need more power" appeared when the cause was something
+  else**, such as a mic in use by another app or one mic dropping twice. It
+  now names the mics ("Kitchen and Hall both lost their connection. They may
+  need more power: use a USB hub with its own power adapter."), and one mic
+  that keeps dropping gets "Try another cable or USB port." The activity list
+  now gives every mic that would not open its own reason.
+
 ## v1.13.27 -- 2026-10-14 (release candidate)
 
 Headphone sound fixes on Mac and Windows: clicks, warble and distortion.

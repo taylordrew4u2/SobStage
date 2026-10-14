@@ -1,8 +1,10 @@
 # SobStage — multi-microphone aggregator, recorder, and monitor
 ## Build Specification — v3, self-contained
 Cross-platform desktop application (macOS + Windows). Records multiple external
-microphones as separate channels directly to a selected destination and outputs
-one shared live monitor mix to headphones. On macOS it also publishes a
+microphones as separate channels to a selected destination — for a card, USB
+stick or external drive, on the computer's own drive first and copied to the
+card after each take (§6.3) — and outputs one shared live monitor mix to
+headphones. On macOS it also publishes a
 transient combined input while the app runs; Windows v1 is standalone. Must be
 operable by someone who has never configured audio hardware.
 Reference hardware: Blue Yeti (standard model). Section 14 is written against its measured behavior and constrains decisions elsewhere in this document.
@@ -25,7 +27,7 @@ Reference hardware: Blue Yeti (standard model). Section 14 is written against it
 | Minimum macOS | 13.0 |
 | Minimum Windows | Windows 10 22H2 |
 | Minimum RAM | 4 GB |
-| Minimum free internal disk | 2 GB, or the local mirror is disabled |
+| Minimum free internal disk | 2 GB plus one hour of recording (audio and cameras), or a take for a card goes straight to the card and the local mirror is disabled |
 | Languages at v1 | English only. All user-facing strings externalized for later localization. |
 **Single-microphone case.** With one mic the app is still a recorder and monitor.
 That input is corrected onto the monitor/output callback's clock like every
@@ -223,14 +225,24 @@ A novice losing track of their recording is a total product failure even when th
 - On folder name collision, append `_2`, `_3`, and so on. Never overwrite, never prompt.
 - `session.json` contains: app version, start and stop timestamps, sample rate, bit depth, buffer size, measured latency, device list with names and USB IDs, trim values, per-device drift log, buffer-size changes, dropout events, master failover events, and mirror status.
   - And how the stems were lined up (§6.1): per device its input latency (`inputLatencyFrames`, with the driver's own figure as `reportedInputLatencyFrames` where it was past belief and bounded), the IO block it ran at (`ioBlockFrames`), how far its stems sit later than its audio arrived when the take began (`alignmentStartFrames`, the silence each of them opens with) and when it ended (`alignmentDelayFrames`; the two differ only when an IO block grew mid-take; in the record kept current while the take runs, the one a crash leaves, all of these stand as they did when it was last written, the starting offset already the one the stems open with), the silence written into them (`alignmentSilenceFrames`) or samples taken out of them (`alignmentDroppedFrames`) mid-take to keep them in step, and the silence its own stream left in them when its IO block grew by less than its ring's cushion and the writer could not take it back out because the device was, or became, the slowest (`ioShiftFrames`: no audio lost, so not a dropout, but a gap at the same frame as the silence the other stems were given for it); at the top level the slowest input latency (`alignedInputLatencyFrames`) and whether the writer lined everything up exactly (`stemsAligned`). Where it did not, each device's offsets are what to slide its stems by in an editor.
-- On stop, show the location and offer to open the containing folder.
+- On stop, show the location and offer to open the containing folder. A take recorded on this computer for a card (§6.3) shows the folder on this computer at once, and the card's copy, with its folder, once the copy is verified; until then its line says how the copy is going or why it stopped.
 ### 6.3 Write pipeline
 - Lock-free ring buffer in RAM, dedicated writer thread. **No allocation, locking, logging, or file I/O inside the audio callback. Ever.**
 - RAM buffer sized for 30 seconds at current channel count and rate, minimum 64 MB.
-- **Redundant local mirror**, default on. If internal free space exceeds 2 GB plus the projected session size, write a second copy to the user's home directory in parallel. Converts most card failures from data loss into inconvenience.
+- **Record on this computer, then copy to the card**, default on. A destination not on the disk that holds `~/RECORDINGS-MIRROR` (an SD card, a USB stick, an external drive, or a disk that cannot be identified, such as a card that is not plugged in) is not written during a take. The take records into `~/RECORDINGS-MIRROR/<take>/` and is copied to the destination after Stop. Card writes during a take are what fail on cheap cards and bus-powered readers.
+  - Nothing touches the card during the take: no pre-flight, no folder, no card recovery scan holding Record. Only the `RECORDINGS-MIRROR` recovery scan gates Record.
+  - A hidden marker (`.sobstage-card-copy.json`) in the take's folder on this computer holds the destination and, once chosen, the card folder. It is written before that folder is made, so a crash cannot leave a second `_2` behind. It is removed once every file is on the card and verified, and is the only thing the copy ever changes on this computer. **The computer's copy is never deleted or changed.**
+  - Each file is written under a working name (`.<name>.sobcopy`), flushed to the device (F_FULLFSYNC / fsync / FlushFileBuffers), read back with the cache bypassed and compared byte for byte, and only then renamed to its real name. A mismatch removes the working file and is retried once. `session.json` goes last, so a card folder holding it is complete.
+  - Audio already on the card under a take's file name is never overwritten: a different file there stops the copy. `session.json` and `activity.log` are records and are replaced.
+  - Before writing anything the copy refuses a card without room for the take plus 16 MB, a missing card (it never creates a missing mount point), and a file of 4 GiB or more on a FAT32 card.
+  - The copy runs on one worker at the lowest disk priority, never during a take: a take starting stops it at the next 4 MB chunk, removes the half-written file, and it resumes after Stop. Quitting cancels it after asking; the marker stays and the copy resumes at the next launch, after the recovery scans.
+  - Retries: at every Stop for earlier failures, every 10 s for a missing card or a take not finished yet, and on the user's **Copy again**.
+  - If this computer has 2 GB plus one hour of recording (audio and cameras) or less free at arm time, the take goes straight to the card and the user is told; everything below then applies.
+  - Off, or with the destination on this computer's own disk, every take goes straight to the destination.
+- **Redundant local mirror**, default on, when recording straight to a card. If internal free space exceeds 2 GB plus the projected session size, write a second copy to the user's home directory in parallel. Converts most card failures from data loss into inconvenience. Not used for a take recorded on this computer: that take is already the copy here.
 - If internal space drops below 1 GB during recording, stop the mirror, keep the card write going, and note it in `session.json`. Do not interrupt the recording and do not show a modal.
 ### 6.4 Pre-flight
-Run on volume selection and again on arming; cache per volume ID with a 30-day expiry.
+Only for a destination that takes are recorded straight to (§6.3): a take recorded on this computer and copied to the card afterwards never writes to the card during a take, so the card is not benchmarked. Run on volume selection and again on arming; cache per volume ID with a 30-day expiry.
 - A result belongs to the volume it measured, not the path: a different card
   can mount at the same `/Volumes/<name>`. Record the measured volume's identity
   (mount point, filesystem type, device, volume UUID, size) with the result.
@@ -262,8 +274,11 @@ Run on volume selection and again on arming; cache per volume ID with a 30-day e
 | Microphone reconnected mid-take | Streams are not reopened mid-take, so a mic that left the device list keeps writing silence to its existing channel until the take ends; never report it as recording again. Log the return and state in one line that it rejoins when the user presses Stop, then Record. Restore name and trim per §2.4. |
 | New microphone plugged in mid-take | Do **not** add to the in-progress recording, and nothing is opened mid-take, so it is not in the monitor mix yet either. State in one line: "Mic plugged in. It isn't in this take or the headphones yet. It'll be recorded starting with your next take." |
 | Clock master unplugged | Failover per §3.3. Recording continues. |
-| **Target card removed** | Stop immediately, finalize every open file, alert loudly. If the mirror is running, state that a complete copy survives locally and give its path. |
-| Card full | Stop at the last complete buffer block, finalize, report that available time was exhausted. Warn at 10 minutes and 2 minutes remaining. |
+| **Target card removed** (recording straight to the card) | Stop immediately, finalize every open file, alert loudly. If the mirror is running, state that a complete copy survives locally and give its path. |
+| Card full (recording straight to the card), or this computer full (recording on it) | Stop at the last complete buffer block, finalize, report that available time was exhausted. Warn at 10 minutes and 2 minutes remaining. |
+| Card missing, full, locked or refusing permission when the take is copied after Stop | The take stays on this computer. One sentence says why and where the take is safe ("The card isn't plugged in. This take is safe on this computer in …, and will be copied when the card is back."). A missing card is retried every 10 s. |
+| Card stops answering during the copy | The window is unaffected. After 15 s without progress: "The card stopped answering. This take is safe on this computer in …". The copy finishes by itself if the card answers again. |
+| A copy that does not match on read-back | Removed from the card, tried once more; twice is reported and the take stays on this computer. |
 | Sustained buffer overrun | Warn visually at 50% ring fill. Never silently drop. At 90% fill, fall back to writing the mix file only on both destinations and log the exact sample position of degradation. A mirror shares the same upstream ring and cannot make overflowing stems safe. |
 | Output device disappears | Monitoring stops, recording continues uninterrupted. Re-select per §5.3 and resume monitoring automatically. |
 ### 6.6 Crash and power loss
@@ -281,6 +296,7 @@ Run on volume selection and again on arming; cache per volume ID with a 30-day e
   current scans settle, repair headers and present any recovered recordings
   before recording can begin.
 - Discard any recovered file containing under 1 second of audio; report it as empty rather than presenting an unplayable stub.
+- Once both recovery scans have settled, resume every take in `~/RECORDINGS-MIRROR` still marked to be copied to a card, oldest first, and say how many. A copy cut off part way resumes: it removes its own `.sobcopy` leftovers, verifies the files already on the card by comparison, and copies the rest. An interrupted take is copied once the recovered-takes card has written its stop time. The card's own scan skips a folder with no `session.json`, so a copy cut off before its last file is never offered as a recovered take.
 - **Inhibit system sleep, screensaver, and display sleep for the duration of a recording.** A laptop sleeping mid-take is a common and total failure.
 - A Mac that sleeps anyway (its lid closed between takes, or on battery mid-take, which no assertion prevents) must not wake to a rig of "unplugged" devices. CoreAudio says nothing when a device stops calling its IOProc, so the backend calls a stream dead after 5 s without a callback; that watchdog runs on the host clock, which stops during sleep. Sleep itself is noticed by CLOCK_MONOTONIC_RAW (which counts through sleep and, unlike the time of day, is never stepped by a time sync) gaining on the host clock between polls, and the watchdog then waits until audio runs on any open device (the Mac fully awake, audio back on: not a dark wake with the lid shut) before giving every device its 5 s again. If nothing runs within a minute it resumes anyway, so a rig that never comes back is still reported. That minute counts only while the Mac says its audio is on (IOKit's system capabilities): a dark wake (Power Nap, a backup, iCloud, with the lid shut) can last minutes with the app polling and CoreAudio stopped, and none of it counts, however long it lasts. The watchdog is held the same way when it is about to call a device dead and the Mac says its audio is off with no sleep seen yet, which is the Mac on its way to sleep. The power manager is asked only then, never on an ordinary poll. Holding the watchdog is not silence about the sleep: once per sleep with the rig open the backend reports it, against no device, and a take running across it gets "The Mac went to sleep: this take has a gap here." in its session.json dropouts at that moment and a warning in activity.log, since its stems join the audio from before the sleep to the audio from after it. No microphone is marked dead and nothing is reopened for it; between takes nothing is said.
 - Monitor for thermal throttling and sustained CPU pressure above 80% for 30 seconds; warn before it causes dropouts.
@@ -307,7 +323,8 @@ Keep future app-facing outputs behind a swappable interface:
 | **D — own signed WDM driver.** | System-wide endpoint. | Post-v1 legal, signing, installer and support program. |
 - The UI always shows which backend is active and names, in plain language, which applications can and cannot see the aggregate device.
 - Do not imply that an unavailable backend is installed, signed or working.
-- macOS differentiation is automatic setup, direct-to-card recording,
+- macOS differentiation is automatic setup, recording that survives a cheap
+  card (on the computer's own drive, copied to the card after each take),
   always-on shared monitoring and drift telemetry, not an installed driver.
 ---
 ## 8. Metering
@@ -386,13 +403,15 @@ Visible by default:
 **No audio jargon in the default view.** Not "aggregate device," "ASIO," "buffer," "sample rate," "gain staging," "monitor bus." Say microphones, headphones, where it saves, how long you can record.
 ### 10.3 Advanced panel — exhaustive contents
 One door, one click, nothing behind it required for correct operation:
-sample rate · bit depth · buffer size · measured latency · clock master selection · per-device drift in PPM · per-microphone trim · output device selection · active app-facing backend and its limitations · local mirror on/off · destination folder · diagnostics export.
+sample rate · bit depth · buffer size · measured latency · clock master selection · per-device drift in PPM · per-microphone trim · output device selection · active app-facing backend and its limitations · record on this computer, then copy to the card on/off · local mirror on/off · destination folder · diagnostics export.
 ### 10.4 Record button behavior
 - Idle → press → recording starts immediately, no countdown, no confirmation.
-- Recording → press → recording stops immediately, files finalize, location is shown. No confirmation dialog. Stopping is not destructive.
+- Recording → press → recording stops immediately, files finalize, location is shown. No confirmation dialog. Stopping is not destructive. A take recorded on this computer says so ("Saved on this computer. Copying to the card.") and the copy follows.
 - Disabled when zero microphones are connected, a required recovery scan is
   pending or failed, or pre-flight (§6.4) is pending or failed; the reason and
-  applicable next step are shown next to the button.
+  applicable next step are shown next to the button. A take recorded on this
+  computer waits only for the scan of `~/RECORDINGS-MIRROR`; nothing about the
+  card can disable the button.
 ### 10.5 Physical setup guidance
 Novices fail on hardware, not software. Detect and explain, with the fix stated:
 - Bus power exhausted → a hub **with its own wall adapter** is needed, and why.
@@ -409,7 +428,7 @@ Novices fail on hardware, not software. Detect and explain, with the fix stated:
 - Buttons say what happens. "Start recording" → "Recording." "Stop recording" → a file, and where it went.
 - Technical detail is never hidden from someone who wants it, and never shown to someone who doesn't. That is what the Advanced panel is for.
 ### 10.7 Acceptance test
-Hand the app and a bag of microphones to someone who has never recorded audio. They must reach a finished recording on a card, with everyone hearing everyone, without asking a question or reading anything. **Every question they ask is a bug in the interface, not a gap in the documentation.**
+Hand the app and a bag of microphones to someone who has never recorded audio. They must reach a finished recording on a card — recorded on the computer and copied there, checked, when they press Stop — with everyone hearing everyone, without asking a question or reading anything. **Every question they ask is a bug in the interface, not a gap in the documentation.**
 ---
 ## 11. Engineering constraints
 - Suggested stack: C++ with JUCE, or PortAudio/miniaudio. CoreAudio on macOS;
@@ -447,7 +466,7 @@ Test before release, not after.
 ---
 ## 13. Build order
 1. Multi-device capture with drift compensation. Gated on §3.4.
-2. Direct-to-card write pipeline with throughput benchmarking and the §12 hostile-event matrix.
+2. Write pipeline to the computer's own drive with a verified copy to the card after each take (direct to the card when that setting is off or the computer is full, with throughput benchmarking), and the §12 hostile-event matrix.
 3. Shared monitor bus with limiter, mute, and feedback protection. Gated on the §5.4 latency ceiling.
 4. Metering.
 5. Transient macOS aggregate input; keep post-v1 virtual backends isolated.
@@ -473,6 +492,7 @@ Yeti draws 150 mA. USB 2.0 port budget is 500 mA; USB 3.0 is 900 mA.
 Most laptops route all USB ports to one controller. Sustained SD card writes on the same controller as four isochronous audio streams cause dropouts that present as an application fault.
 - Prefer a built-in SD slot over a USB card reader.
 - If a USB reader is used, place it on a different controller from the microphones where the OS exposes controller topology.
+- A take recorded on this computer for a card (§6.3) writes nothing to the card while it records: the copy never runs during a take, so card writes cannot compete with the audio streams then.
 - Detect the co-located case and warn **before arming**, not during: "Your card reader and microphones share one USB connection. Use the built-in card slot if you have one."
 ### 14.4 Polar pattern — the sleeper failure
 - The pattern knob is physical with no software readback. Omni, stereo, and bidirectional capture the whole room.
@@ -515,7 +535,8 @@ These were resolved deliberately. They look like oversights and are not. Do not 
 | Pre-flight blocks rather than degrading mid-take | A novice cannot act on a mid-take warning. A delayed start beats a corrupted three-hour recording. |
 | New mics join monitoring but not the in-progress take | Channel count cannot change inside a WAV file. |
 | Unplugged mics write silence rather than shrinking the file | Same reason. File layout is fixed at record start. |
-| Local mirror on by default | For this user, silent data loss is worse than a full internal drive. |
+| Local mirror on by default, when recording straight to a card | For this user, silent data loss is worse than a full internal drive. |
+| Record on this computer, copy to the card after each take (default for cards) | Card writes during a take are what fail on cheap cards and bus-powered readers. Cost: until the copy is verified the take exists only on the computer's drive, and that drive must have room for it. |
 | Bit depth follows the device | Upconverting 16-bit Yeti audio to 24-bit adds size and no information. |
 | Monitor mute never silences the recording | Separate limiter instances exist specifically to guarantee this. |
 | 8-microphone ceiling | Above that, bus power, controller bandwidth, and room bleed all fail before the software does. |
