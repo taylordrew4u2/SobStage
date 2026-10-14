@@ -1509,7 +1509,6 @@ void Application::syncAfterTakeHolds()
     // The copy to the card waits for the same things, and for the launch's
     // interrupted-take checks too: one of them may be repairing a take on
     // the card, or still deciding whether a take on this computer is finished.
-    // And for the card's speed test, which must have the card to itself.
     cardCopier.setHeld (held || destinationRecoveryTask.isRunning() || mirrorRecoveryTask.isRunning());
 
     // And copies to the card at the save location wait for that card's speed
