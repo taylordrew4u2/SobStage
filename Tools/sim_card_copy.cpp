@@ -1582,6 +1582,61 @@ int main()
                "on its saved-take card too");
     }
 
+    // The card's 200 MB speed test started while a copy was writing and
+    // flushing to the same card, and a card fast enough alone could be
+    // measured "too slow" -- a verdict kept. The card is reserved for the
+    // test: the copy to it steps aside at its next chunk and none to it
+    // starts, while copies to other cards go on.
+    std::printf ("\n20. A card reserved for its speed test\n");
+    {
+        Fixture f;
+        const auto cardB = f.base / "CARD-B" / "RECORDINGS";
+        fs::create_directories (cardB);
+        const auto forA = f.take ("2026-10-15_0300_A");
+        const auto forB = f.take ("2026-10-15_0310_B");
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->blockWritesTo = "0300_A";
+            f.gate->afterWrites = 0;
+            f.gate->open = false;
+        }
+
+        CardCopier copier (f.factory());
+        copier.start (f.job (forA));
+        check (f.gate->waitUntilBlocked (15s), "a copy to card A is writing to it");
+        check (copier.hasCopyToCardUnderWayOrDue (f.card.string(), {}), "which the speed test of card A waits for");
+        check (! copier.hasCopyToCardUnderWayOrDue (cardB.string(), {}), "but a test of card B need not");
+
+        copier.setCardReserved (f.card.string(), {});
+        f.gate->release();
+
+        bool steppedAside = false;
+        for (int i = 0; i < 500 && ! steppedAside; ++i)
+        {
+            steppedAside = ! copier.hasCopyToCardUnderWayOrDue (f.card.string(), {});
+            std::this_thread::sleep_for (10ms);
+        }
+        check (steppedAside, "card A reserved, its copy steps aside");
+        check (! workingFilesOn (f.card / "2026-10-15_0300_A"), "leaving nothing half-written on it");
+        check (! fs::exists (f.card / "2026-10-15_0300_A" / "session.json"), "and not called done");
+
+        auto jobB = f.job (forB);
+        jobB.marker.destinationRoot = cardB.string();
+        copier.start (jobB);
+        const auto b = waitForResult (copier, 15s);
+        check (b.has_value() && b->localFolder == forB.string() && b->result.outcome == cardcopy::Outcome::Copied,
+               "a copy to card B goes on meanwhile");
+        check (! copier.hasCopyToCardUnderWayOrDue (f.card.string(), {}) && copier.isRunning(),
+               "while the copy to card A still waits");
+
+        copier.setCardReserved ({}, {});
+        const auto a = waitForResult (copier, 15s);
+        check (a.has_value() && a->localFolder == forA.string() && a->result.outcome == cardcopy::Outcome::Copied,
+               "the test done, the copy to card A finishes");
+        check (sameOnCard (forA, f.card / "2026-10-15_0300_A") && sameOnCard (forB, cardB / "2026-10-15_0310_B"),
+               "and each take is on its own card");
+    }
+
     std::printf ("\n%s (%d checks, %d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILED", checks, failures);
     return failures == 0 ? 0 : 1;
 }

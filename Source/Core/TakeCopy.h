@@ -91,6 +91,57 @@ private:
     double since = 0.0;
 };
 
+/// The card's 200 MB speed test (§6.4) and the copy to the card take turns.
+///
+/// A test measured while a copy writes, flushes and reads back on the same
+/// card keeps its slowest second, which can fall under the bar for a card
+/// that is fast enough alone -- and that "too slow" verdict is kept, refusing
+/// Record at the very moment this computer is too full to hold the next take.
+/// Its scratch file also took 200 MB of the room the copy had just checked.
+/// So the test waits for the copy in flight to step aside, and copies wait,
+/// held, while the test is wanted and while it runs.
+class SpeedTestTurn
+{
+public:
+    /// A want not asked again for this long holds nothing: the Record gate
+    /// asks on every refresh, and one that stopped asking -- a microphone
+    /// unplugged, the save location changed -- must not hold the copies for
+    /// a test nobody is waiting for.
+    static constexpr double kWantedForMs = 5000.0;
+
+    /// The Record gate wants the test. `copyInFlight`: a copy is under way,
+    /// held or not, or about to start. True when it may start now; otherwise
+    /// it waits, and the copies are held so the one in flight stops at its
+    /// next chunk and none starts.
+    bool mayStart (bool copyInFlight, double nowMs) noexcept
+    {
+        wantedAtMs = copyInFlight ? nowMs : -1.0;
+        return ! copyInFlight;
+    }
+
+    /// Not wanted any more: a verdict is there, or none is needed.
+    void clear() noexcept { wantedAtMs = -1.0; }
+
+    /// Waiting for the copy in flight to step aside.
+    bool waiting (double nowMs) const noexcept
+    {
+        return wantedAtMs >= 0.0 && nowMs - wantedAtMs <= kWantedForMs;
+    }
+
+    /// Copies are held while the test waits for them, and while it runs.
+    bool holdsCopies (bool testRunning, double nowMs) const noexcept
+    {
+        return testRunning || waiting (nowMs);
+    }
+
+    /// What Record says meanwhile. `copyStalled`: the copy in flight has not
+    /// moved for a while, and cannot step aside until the card answers.
+    static std::string waitingReason (bool copyStalled);
+
+private:
+    double wantedAtMs = -1.0;
+};
+
 namespace cardcopy {
 
 /// Hidden file in the take's folder on this computer: the take still has to

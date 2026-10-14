@@ -175,6 +175,59 @@ bool CardCopier::isCopying() const
     return state->inFlight != 0 && ! state->held.load (std::memory_order_acquire);
 }
 
+bool CardCopier::forReservedCardLocked (const State& s, const Record& record)
+{
+    if (s.reservedRoot.empty())
+        return false;
+
+    return record.job.marker.destinationRoot == s.reservedRoot
+        || (! s.reservedIdentity.empty() && record.job.marker.cardIdentity == s.reservedIdentity);
+}
+
+void CardCopier::setCardReserved (const std::string& destinationRoot, const std::string& cardIdentity)
+{
+    {
+        const std::lock_guard<std::mutex> lock (state->lock);
+
+        if (state->reservedRoot == destinationRoot
+            && state->reservedIdentity == (destinationRoot.empty() ? std::string() : cardIdentity))
+            return;
+
+        state->reservedRoot = destinationRoot;
+        state->reservedIdentity = destinationRoot.empty() ? std::string() : cardIdentity;
+    }
+
+    state->changed.notify_all();
+}
+
+bool CardCopier::hasCopyToCardUnderWayOrDue (const std::string& destinationRoot,
+                                             const std::string& cardIdentity) const
+{
+    const std::lock_guard<std::mutex> lock (state->lock);
+
+    const auto forThatCard = [&] (TakeId id)
+    {
+        const auto found = state->records.find (id);
+        if (found == state->records.end())
+            return false;
+
+        const auto& marker = found->second.job.marker;
+        return marker.destinationRoot == destinationRoot
+            || (! cardIdentity.empty() && marker.cardIdentity == cardIdentity);
+    };
+
+    // One in flight writes to the card until it reaches its next chunk, held
+    // or reserved; one queued starts any moment unless something holds it.
+    if (state->inFlight != 0 && forThatCard (state->inFlight))
+        return true;
+
+    if (state->held.load (std::memory_order_acquire)
+        || (state->reservedRoot == destinationRoot && ! destinationRoot.empty()))
+        return false;
+
+    return std::any_of (state->queued.begin(), state->queued.end(), forThatCard);
+}
+
 bool CardCopier::isWorkLocked (const Record& record)
 {
     // A retry of a card that was out, full or locked is not work a quit cuts
@@ -809,10 +862,19 @@ void CardCopier::run (std::shared_ptr<State> s)
         {
             std::unique_lock<std::mutex> lock (s->lock);
 
+            // The first queued take not for a card reserved for its speed
+            // test (setCardReserved): copies to other cards go on meanwhile.
+            const auto nextFree = [&s]
+            {
+                return std::find_if (s->queued.begin(), s->queued.end(), [&s] (TakeId id)
+                                     { return ! forReservedCardLocked (*s, s->records[id]); });
+            };
+
             // Bounded steps rather than one wait: cancel() is noticed promptly
             // even if its notify lands between a check and a wait.
-            while (s->held.load (std::memory_order_acquire)
-                   && ! s->cancelling.load (std::memory_order_acquire))
+            while (! s->cancelling.load (std::memory_order_acquire)
+                   && (s->held.load (std::memory_order_acquire)
+                       || (s->scanRoot.empty() && ! s->queued.empty() && nextFree() == s->queued.end())))
                 s->changed.wait_for (lock, std::chrono::milliseconds (100));
 
             if (s->cancelling.load (std::memory_order_acquire)
@@ -830,8 +892,9 @@ void CardCopier::run (std::shared_ptr<State> s)
             }
             else
             {
-                key = s->queued.front();
-                s->queued.pop_front();
+                const auto next = nextFree();
+                key = *next;
+                s->queued.erase (next);
 
                 auto& record = s->records[key];
                 record.phase = Phase::Copying;
@@ -882,7 +945,15 @@ void CardCopier::run (std::shared_ptr<State> s)
         control.verified = &s->verified;
         control.copiedBefore = &copiedBefore;
         control.anyCard = anyCard;
-        control.shouldYield = [&s] { return s->held.load (std::memory_order_acquire); };
+        // Held for a take, or this card reserved for its speed test.
+        control.shouldYield = [&s, &key]
+        {
+            if (s->held.load (std::memory_order_acquire))
+                return true;
+
+            const std::lock_guard<std::mutex> lock (s->lock);
+            return forReservedCardLocked (*s, s->records[key]);
+        };
         control.progress = [&s, &key] (uint64_t done, uint64_t total)
         {
             const std::lock_guard<std::mutex> lock (s->lock);

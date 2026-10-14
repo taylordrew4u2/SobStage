@@ -41,6 +41,15 @@ TakeRoute decideTakeRoute (const TakeRouteInputs& in) noexcept
     return TakeRoute::ComputerThenCard;
 }
 
+std::string SpeedTestTurn::waitingReason (bool copyStalled)
+{
+    if (copyStalled)
+        return "The card stopped answering while a take was being copied to it, so its speed can't be checked. "
+               "Check it's plugged in, or choose another place to save.";
+
+    return "Pausing the copy to the card to check this card is fast enough...";
+}
+
 namespace cardcopy {
 
 namespace {

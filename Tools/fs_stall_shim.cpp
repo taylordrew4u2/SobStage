@@ -36,6 +36,12 @@
  *                          stalled prefix: a gate that stalls this computer's
  *                          own folder still has a card that reports itself one
  *
+ *   MMA_STALL_COMPUTER_PREFIX, MMA_STALL_COMPUTER_FREE_MB_FILE  this
+ *                          computer's home folder, and a file holding a size
+ *                          in MB: while it holds one, everything under that
+ *                          folder but the card reports no more free space than
+ *                          that -- this computer "nearly full", on demand
+ *
  *   MMA_STALL_CARD_FAT_MB_FILE  a file holding a size in MB: the card reports
  *                               itself a FAT card of that size, which is what
  *                               tells one card from another (cardIdentityOf).
@@ -256,6 +262,56 @@ int capCardFree (int result, const char* path, Stat* out, unsigned long blockSiz
         return result;
 
     const auto capBlocks = static_cast<unsigned long long> (capMb) * 1024ull * 1024ull / blockSize;
+
+    if (static_cast<unsigned long long> (out->f_bavail) > capBlocks)
+        out->f_bavail = capBlocks;
+    if (static_cast<unsigned long long> (out->f_bfree) > capBlocks)
+        out->f_bfree = capBlocks;
+
+    return result;
+}
+
+// MMA_STALL_COMPUTER_FREE_MB_FILE: a file holding a size in MB. While it
+// holds one, statfs under MMA_STALL_COMPUTER_PREFIX -- this computer's folder
+// for takes -- reports no more free space than that: a gate fills this
+// computer up, and empties it again, by writing the file. Read on every call;
+// an empty or missing file leaves the answer as it is.
+template <typename Stat>
+int capComputerFree (int result, const char* path, Stat* out, unsigned long blockSize)
+{
+    static const std::string computer = [] {
+        const char* v = std::getenv ("MMA_STALL_COMPUTER_PREFIX");
+        std::string s = v != nullptr ? v : "";
+        while (s.size() > 1 && s.back() == '/')
+            s.pop_back();
+        return s;
+    }();
+    static const char* file = [] {
+        const char* v = std::getenv ("MMA_STALL_COMPUTER_FREE_MB_FILE");
+        return v != nullptr && *v != 0 ? v : nullptr;
+    }();
+
+    // The card may be a folder inside it -- the gates' cards are under their
+    // home -- and is never this computer.
+    if (result != 0 || out == nullptr || file == nullptr || blockSize == 0 || ! underGivenPrefix (path, computer)
+        || underCardPrefix (path))
+        return result;
+
+    static const auto realOpen = real<int (*) (const char*, int, ...)> ("open");
+    static const auto realRead = real<ssize_t (*) (int, void*, size_t)> ("read");
+    static const auto realClose = real<int (*) (int)> ("close");
+
+    char text[32] = {};
+    const int fd = realOpen (file, O_RDONLY);
+    if (fd < 0)
+        return result;
+    const auto got = realRead (fd, text, sizeof (text) - 1);
+    realClose (fd);
+
+    if (got <= 0)
+        return result;
+
+    const auto capBlocks = static_cast<unsigned long long> (std::atoll (text)) * 1024ull * 1024ull / blockSize;
 
     if (static_cast<unsigned long long> (out->f_bavail) > capBlocks)
         out->f_bavail = capBlocks;
@@ -579,6 +635,7 @@ int statvfs (const char* path, struct statvfs* out)
     touchPath (path);
     static const auto fn = real<int (*) (const char*, struct statvfs*)> ("statvfs");
     const int r = fn (path, out);
+    capComputerFree (r, path, out, r == 0 ? (out->f_frsize != 0 ? out->f_frsize : out->f_bsize) : 0);
     return capCardFree (r, path, out, r == 0 ? (out->f_frsize != 0 ? out->f_frsize : out->f_bsize) : 0);
 }
 
@@ -587,6 +644,7 @@ int statvfs64 (const char* path, struct statvfs64* out)
     touchPath (path);
     static const auto fn = real<int (*) (const char*, struct statvfs64*)> ("statvfs64");
     const int r = fn (path, out);
+    capComputerFree (r, path, out, r == 0 ? (out->f_frsize != 0 ? out->f_frsize : out->f_bsize) : 0);
     return capCardFree (r, path, out, r == 0 ? (out->f_frsize != 0 ? out->f_frsize : out->f_bsize) : 0);
 }
 
@@ -597,6 +655,7 @@ int statfs (const char* path, struct statfs* out)
     const int r = fn (path, out);
     if (r == 0)
         fakeFatCard (path, out);
+    capComputerFree (r, path, out, r == 0 ? static_cast<unsigned long> (out->f_bsize) : 0);
     return capCardFree (r, path, out, r == 0 ? static_cast<unsigned long> (out->f_bsize) : 0);
 }
 
@@ -607,6 +666,7 @@ int statfs64 (const char* path, struct statfs64* out)
     const int r = fn (path, out);
     if (r == 0)
         fakeFatCard (path, out);
+    capComputerFree (r, path, out, r == 0 ? static_cast<unsigned long> (out->f_bsize) : 0);
     return capCardFree (r, path, out, r == 0 ? static_cast<unsigned long> (out->f_bsize) : 0);
 }
 

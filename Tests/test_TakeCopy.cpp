@@ -2486,3 +2486,43 @@ TEST_CASE (TakeCopy_ReadingBackCountsAsMoving)
     REQUIRE (fs.count ("createNew") == 0);
     REQUIRE (ticks >= 3);
 }
+
+// The bug: the card's 200 MB speed test started while the copy to the card
+// was writing and flushing to it, kept its slowest second, and could call a
+// card fast enough alone "too slow" -- a verdict kept, refusing Record just
+// as this computer was too full to hold the next take. Mutation: the test let
+// start with a copy under way, or the copies not held while it waits or runs.
+TEST_CASE (SpeedTestTurn_TheTestAndTheCopyNeverShareTheCard)
+{
+    SpeedTestTurn turn;
+
+    // Nothing copying: the test starts, and holds the copies while it runs.
+    REQUIRE (turn.mayStart (false, 1000.0));
+    REQUIRE_FALSE (turn.waiting (1000.0));
+    REQUIRE (turn.holdsCopies (true, 1000.0));
+    REQUIRE_FALSE (turn.holdsCopies (false, 1000.0));
+
+    // A copy under way: the test waits, and the copies are held so the one
+    // in flight steps aside.
+    REQUIRE_FALSE (turn.mayStart (true, 2000.0));
+    REQUIRE (turn.waiting (2500.0));
+    REQUIRE (turn.holdsCopies (false, 2500.0));
+
+    // It stepped aside: the test starts, and holds them while it runs.
+    REQUIRE (turn.mayStart (false, 3000.0));
+    REQUIRE (turn.holdsCopies (true, 3000.0));
+    REQUIRE_FALSE (turn.holdsCopies (false, 3000.0));
+
+    // Wanted, and then no longer asked for -- the Record gate stopped asking:
+    // nothing is held for a test nobody waits for.
+    REQUIRE_FALSE (turn.mayStart (true, 4000.0));
+    REQUIRE (turn.holdsCopies (false, 4000.0 + SpeedTestTurn::kWantedForMs));
+    REQUIRE_FALSE (turn.holdsCopies (false, 4000.0 + SpeedTestTurn::kWantedForMs + 1.0));
+
+    turn.mayStart (true, 9000.0);
+    turn.clear();
+    REQUIRE_FALSE (turn.holdsCopies (false, 9000.0));
+
+    REQUIRE (SpeedTestTurn::waitingReason (false).find ("Pausing the copy to the card") == 0);
+    REQUIRE (SpeedTestTurn::waitingReason (true).find ("stopped answering") != std::string::npos);
+}

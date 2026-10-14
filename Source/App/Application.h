@@ -1099,6 +1099,11 @@ private:
     // worker, but neither Application destruction nor shutdown ever joins it.
     mutable DetachedResultTask<PreflightBackgroundResult> preflightTask;
     mutable std::string preflightTaskDestination;
+    /// The speed test and the copy to the card take turns (SpeedTestTurn).
+    mutable SpeedTestTurn speedTestTurn;
+    /// Copies are held for the speed test: one wanted and waiting for the copy
+    /// in flight, or one running for the save location.
+    bool speedTestHoldsCopies() const;
     mutable std::map<std::string, PreflightResult> preflightResults;
     /// When each verdict above landed, so a "couldn't write" one can be re-run
     /// after PreflightThroughputTest::kWriteFailureRetrySeconds.

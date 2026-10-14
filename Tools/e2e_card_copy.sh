@@ -38,6 +38,11 @@
 #   herestall this computer's drive stops answering as a take recorded here
 #            is stopped: what is said names this computer's drive, never the
 #            card the take never touched
+#   speedtest this computer fills up while a take is being copied to the card,
+#            so the next take must go straight to the card and the card's
+#            200 MB speed test is due: it does not start while the copy is
+#            writing to the card, the copy is not lost, and once it is done
+#            the card is checked and the next take records straight to it
 #   copyhere as othercard, with the saved-take card closed: "Copy to this
 #            card" under the record button -- the button the take's line
 #            names -- copies it to the card that is in
@@ -926,6 +931,75 @@ else
     pass "herestall: nothing blames the card"
   fi
   rm -f "$DEAD"
+fi
+[ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
+stop_app
+fi
+
+if want speedtest; then
+# -------------------------------------------------------------------------
+echo
+echo "=== The card's speed test waits for the copy to the card ==="
+# The copy's last step -- session.json's rename on the card -- is held, so the
+# copy stays under way for as long as the gate needs. Then this computer is
+# made "nearly full" (fs_stall_shim's computer free-space file), which sends
+# the next take straight to the card and makes its speed test due.
+BEFORE_FAIL=$FAILED
+FULL="$WORK/speedtest.computerfree"
+: > "$FULL"
+launch speedtest fresh MMA_STALL_RENAME_ONTO=session.json \
+  MMA_STALL_COMPUTER_PREFIX="$WORK/speedtest" MMA_STALL_COMPUTER_FREE_MB_FILE="$FULL"
+dismiss_cards
+press_record
+
+if ! TAKE=$(wait_for_new_take "$STAGING"); then
+  fail "speedtest: no take started on this computer"
+else
+  sleep 4
+  touch "$DEAD"
+  press_stop
+  wait_for_log "Saved on this computer" 20 || fail "speedtest: the take was not saved"
+  dismiss_saved
+
+  if wait_for_file "$DEAD.caught" 30; then
+    pass "speedtest: the copy to the card is under way"
+  else
+    fail "speedtest: the copy never reached its last step"
+  fi
+
+  echo 100 > "$FULL"
+  SCRATCH="$CARD/.sobstage-preflight.tmp"
+  SEEN=""
+  for _ in $(seq 1 120); do
+    [ -e "$SCRATCH" ] && { SEEN=yes; break; }
+    sleep 0.1
+  done
+  if [ -z "$SEEN" ]; then
+    pass "speedtest: the card's speed test does not start while the copy is writing to it"
+  else
+    fail "speedtest: the card's speed test started while the copy was writing to the card"
+  fi
+
+  rm -f "$DEAD"
+  if wait_for_log "Copied .* to the card" 30; then
+    pass "speedtest: the copy finishes"
+    check_copy_matches speedtest "$TAKE"
+  else
+    fail "speedtest: the copy did not finish within 30 s of the card answering"
+  fi
+
+  # Then the card is checked, and passes: the next take goes straight to it.
+  sleep 6
+  press_record
+  if TAKE2=$(wait_for_new_take "$CARD" "$CARD/$(basename "$TAKE")"); then
+    pass "speedtest: the card passed its speed test, and the next take records straight to it"
+    sleep 3
+    press_stop
+    wait_for_log "Saved to $(basename "$TAKE2")" 20 || fail "speedtest: the take on the card was not saved"
+  else
+    fail "speedtest: no take started on the card once the copy was done"
+    grep -i "fast enough\|too slow\|Pausing" "$LOG" | tail -3 | sed 's/^/        /'
+  fi
 fi
 [ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
 stop_app

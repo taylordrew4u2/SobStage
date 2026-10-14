@@ -1509,7 +1509,26 @@ void Application::syncAfterTakeHolds()
     // The copy to the card waits for the same things, and for the launch's
     // interrupted-take checks too: one of them may be repairing a take on
     // the card, or still deciding whether a take on this computer is finished.
+    // And for the card's speed test, which must have the card to itself.
     cardCopier.setHeld (held || destinationRecoveryTask.isRunning() || mirrorRecoveryTask.isRunning());
+
+    // And copies to the card at the save location wait for that card's speed
+    // test, which must have it to itself; copies to other cards go on.
+    if (speedTestHoldsCopies())
+        cardCopier.setCardReserved (destinationFolder, cardIdentityAtDestination());
+    else
+        cardCopier.setCardReserved ({}, {});
+}
+
+bool Application::speedTestHoldsCopies() const
+{
+    // Only a test of the save location now: an abandoned one for an earlier
+    // location -- perhaps stuck inside a call to a card that went away --
+    // holds no copy.
+    const bool running = ! destinationFolder.empty() && preflightTaskDestination == destinationFolder
+                      && publishCompletedPreflight();
+
+    return speedTestTurn.holdsCopies (running, juce::Time::getMillisecondCounterHiRes());
 }
 
 bool Application::refreshMicrophonePermission()
@@ -4684,6 +4703,11 @@ juce::String Application::directRecordingBlockedReason() const
         && (it == preflightResults.end() || ! it->second.couldNotWrite))
         return "Checking this drive is fast enough...";
 
+    // Waiting for the copy to the card to step aside before the check.
+    if (it == preflightResults.end() && speedTestTurn.waiting (juce::Time::getMillisecondCounterHiRes()))
+        return juce::String (SpeedTestTurn::waitingReason (cardCopier.msSinceProgress()
+                                                           > CardCopier::kStalledAfterMs));
+
     // There is no safe third state between "benchmark is running" and "a
     // verdict exists". In particular, a completion which lands between two
     // separate result/running reads must not open a one-frame window where a
@@ -4778,7 +4802,10 @@ void Application::startPreflightIfNeeded() const
     // fills up, the next take goes straight to the card, and the Record gate
     // comes back through here to check it then.
     if (wouldRecordOnComputer())
+    {
+        speedTestTurn.clear();
         return;
+    }
 
     if (const auto cached = preflightResults.find (destinationFolder); cached != preflightResults.end())
     {
@@ -4801,7 +4828,10 @@ void Application::startPreflightIfNeeded() const
                 cached->second, secondsSince,
                 recordingEngine.getState() == RecordingState::Idle,
                 workerRunning))
+        {
+            speedTestTurn.clear();
             return;
+        }
 
         // The previous worker finished; nothing of it is left to abandon.
         preflightTaskDestination.clear();
@@ -4828,6 +4858,16 @@ void Application::startPreflightIfNeeded() const
         noteActivity (ActivityLevel::Failed, "Save location", juce::String (failed.reason));
         return;
     }
+
+    // Never while a copy to the card is writing to it: a test that shares the
+    // card with a copy's writes and flushes keeps its slowest second, can call
+    // a card fast enough alone "too slow", and that verdict stays. The card is
+    // reserved meanwhile (syncAfterTakeHolds), so the copy in flight to it
+    // steps aside at its next chunk and none to it starts until the test is
+    // done; copies to other cards go on.
+    if (! speedTestTurn.mayStart (cardCopier.hasCopyToCardUnderWayOrDue (target, cardIdentityAtDestination()),
+                                  juce::Time::getMillisecondCounterHiRes()))
+        return;
 
     // A syscall against the previous destination may never return. Abandoning
     // replaces only the shared result state; the old worker keeps ownership of

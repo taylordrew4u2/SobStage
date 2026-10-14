@@ -114,6 +114,18 @@ public:
     /// A copy actually under way: in flight, and not held.
     bool isCopying() const;
 
+    /// The card at `destinationRoot` -- and every save location on the card
+    /// `cardIdentity`, when that is known -- is reserved for something that
+    /// must have it alone: the card's speed test (§6.4). Copies to it wait,
+    /// one under way stopping at its next chunk as for a take, while copies
+    /// to other cards go on. An empty `destinationRoot` reserves nothing.
+    void setCardReserved (const std::string& destinationRoot, const std::string& cardIdentity);
+
+    /// A copy to that card in flight -- reserved or held, it is still writing
+    /// to the card until it reaches its next chunk -- or one queued for it
+    /// that nothing holds back, which starts any moment.
+    bool hasCopyToCardUnderWayOrDue (const std::string& destinationRoot, const std::string& cardIdentity) const;
+
     /// Copying still to do that quitting would cut off: a copy in flight, held
     /// or not, or a take queued that is not merely waiting to retry a failure
     /// (a card that is out, full or locked) -- unless it was queued again
@@ -296,6 +308,8 @@ private:
         bool running = false;
         std::atomic<bool> cancelling { false };
         std::atomic<bool> held { false };
+        /// setCardReserved(): the save location, and the card, copies wait for.
+        std::string reservedRoot, reservedIdentity;
         std::chrono::steady_clock::time_point heldSince;
         std::chrono::steady_clock::time_point lastProgress;
         /// Worker only.
@@ -304,6 +318,9 @@ private:
     };
 
     std::shared_ptr<State> state;
+
+    /// Under the lock: the take is for the card reserved (setCardReserved).
+    static bool forReservedCardLocked (const State& s, const Record& record);
 
     /// Under the lock. True when the caller must start the worker.
     static bool enqueueLocked (State& s, TakeId id, bool atFront = false);
