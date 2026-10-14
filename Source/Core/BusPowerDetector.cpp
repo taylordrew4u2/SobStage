@@ -1,6 +1,7 @@
 #include "BusPowerDetector.h"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 
 namespace mma {
@@ -8,6 +9,10 @@ namespace mma {
 bool BusPowerDetector::recordEvent (double nowSeconds, const std::string& deviceId,
                                     const std::string& name, int devicesAttached)
 {
+    // Waking from sleep: every device drops and comes back, which is not power.
+    if (wokeAt.has_value() && std::abs (nowSeconds - *wokeAt) <= kWakeGraceSeconds)
+        return false;
+
     // Still failing from before: a rebuild that reopens the rig, another mic
     // plugged in, or Stop reopening a mic that died mid-take all ask again,
     // and the answer is the same failure, not a second one.
@@ -27,6 +32,26 @@ void BusPowerDetector::noteHealthy (const std::string& deviceId)
 void BusPowerDetector::noteLeft (const std::string& deviceId)
 {
     failingNow.erase (deviceId);
+}
+
+void BusPowerDetector::noteSystemWoke (double nowSeconds)
+{
+    wokeAt = nowSeconds;
+
+    // Drops of the wake noticed before the wake itself was: forgotten, and
+    // their devices free to count a real failure later.
+    for (auto it = events.begin(); it != events.end();)
+    {
+        if (it->timestamp >= nowSeconds - kWakeGraceSeconds)
+        {
+            failingNow.erase (it->deviceId);
+            it = events.erase (it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
 }
 
 int devicesAttachedAtDrop (int listedNow, const std::vector<std::string>& takeDeviceIds)

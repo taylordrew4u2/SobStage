@@ -469,6 +469,12 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     {
         monitorProblem = firstFailure;
         backend.closeAllStreams();
+
+        // Each device's own refusal is still the caller's to read: every mic
+        // behind a starved hub refusing at once is §14.2's own example, and
+        // the power check was handed none of them. Not devicesThatFailedToOpen:
+        // nothing is monitoring, so no channel is silent beside live ones.
+        openFailures = std::move (failures);
         return false;
     }
 

@@ -20,6 +20,11 @@ void SetupAdvisor::noteDeviceLeft (const std::string& deviceId)
     busPower.noteLeft (deviceId);
 }
 
+void SetupAdvisor::noteSystemWoke (double nowSeconds)
+{
+    busPower.noteSystemWoke (nowSeconds);
+}
+
 namespace {
 
 /// "Kitchen and Hall", "Kitchen, Hall and Door".

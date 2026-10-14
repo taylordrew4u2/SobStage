@@ -315,6 +315,46 @@ TEST_CASE (CaptureCoordinator_EachRefusedMicKeepsItsOwnReasonAndKind)
     REQUIRE (c.getOpenFailures().empty());
 }
 
+// §14.2's own example: three mics behind one bus-powered hub, every one of
+// them refusing as it is opened. Nothing opened, so the start returned
+// before the refusals were kept, and the power check was handed none of them:
+// the user heard "Kitchen couldn't be opened" and never "use a powered hub".
+// Mutation: the refusals kept only when something opened.
+TEST_CASE (CaptureCoordinator_EveryMicRefusingStillSaysWhyEachDid)
+{
+    FakeBackend backend;
+    backend.failInputDevices = { "dev-a", "dev-b", "dev-c" };
+    backend.inputOpenRefusals["dev-a"] = OpenRefusal::gone;
+    backend.inputOpenRefusals["dev-b"] = OpenRefusal::timedOut;
+    backend.inputOpenRefusals["dev-c"] = OpenRefusal::gone;
+
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    std::vector<CaptureChannel> mics {
+        { "dev-a", "Kitchen", "01_Kitchen", 0.0f },
+        { "dev-b", "Couch", "02_Couch", 0.0f },
+        { "dev-c", "Door", "03_Door", 0.0f },
+    };
+
+    REQUIRE_FALSE (c.startMonitoring (mics, {}));
+
+    const auto& failures = c.getOpenFailures();
+    REQUIRE (failures.size() == 3u);
+    REQUIRE (failures[0].deviceId == "dev-a");
+    REQUIRE (failures[0].refusal == OpenRefusal::gone);
+    REQUIRE (failures[1].refusal == OpenRefusal::timedOut);
+    REQUIRE (failures[2].displayName == "Door");
+
+    // Nothing is monitoring, so no channel is silent beside live ones.
+    REQUIRE (c.getDevicesThatFailedToOpen().empty());
+
+    // A rebuild where they all open leaves nothing behind.
+    backend.failInputDevices.clear();
+    REQUIRE (c.startMonitoring (mics, {}));
+    REQUIRE (c.getOpenFailures().empty());
+}
+
 TEST_CASE (CaptureCoordinator_ADeadMicIsStillNamedWhenTheOutputIsRefusedToo)
 {
     // A shared output and a dead microphone at once. The output's sentence

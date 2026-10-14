@@ -125,3 +125,29 @@ TEST_CASE (SleepInhibitor_PowerSourceProbeIsSafeEverywhere)
     REQUIRE (source == PowerSource::Unknown || source == PowerSource::AC || source == PowerSource::Battery);
 #endif
 }
+
+// Windows and Linux say nothing when the computer has slept: each audio
+// stream simply dies on waking. Time on the clock that counts sleep and not
+// on the one that does not is how it is noticed. Mutation: any difference
+// between the clocks read as a sleep, or none ever.
+TEST_CASE (WakeDetector_TimeAsleepIsWhatOneClockCountsAndTheOtherDoesNot)
+{
+    WakeDetector w;
+    REQUIRE_FALSE (w.justWoke ({ 1000.0, 5000.0 })); // takes its bearings
+    REQUIRE_FALSE (w.justWoke ({ 2000.0, 6000.0 })); // both moved alike
+    REQUIRE_FALSE (w.justWoke ({ 3000.0, 7016.0 })); // a clock's own 16 ms step
+
+    REQUIRE (w.justWoke ({ 3500.0, 7516.0 + 45.0 * 60.0 * 1000.0 })); // 45 minutes asleep
+    REQUIRE_FALSE (w.justWoke ({ 4500.0, 8516.0 + 45.0 * 60.0 * 1000.0 }));
+
+    // Just over the threshold.
+    REQUIRE (w.justWoke ({ 5500.0, 9516.0 + 45.0 * 60.0 * 1000.0 + WakeDetector::kMinSleepMs }));
+
+    // This computer's clocks can be read, and say nothing about a sleep
+    // between two reads a moment apart.
+    const auto first = WakeDetector::read();
+    REQUIRE (first.has_value());
+    WakeDetector live;
+    REQUIRE_FALSE (live.justWoke (*first));
+    REQUIRE_FALSE (live.justWoke (*WakeDetector::read()));
+}

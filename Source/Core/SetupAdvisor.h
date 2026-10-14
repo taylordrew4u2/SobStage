@@ -62,6 +62,10 @@ public:
     /// back, counts again (BusPowerDetector::noteLeft).
     void noteDeviceLeft (const std::string& deviceId);
 
+    /// The computer has just woken from sleep (BusPowerDetector::
+    /// noteSystemWoke): the drops of its waking are not a power problem.
+    void noteSystemWoke (double nowSeconds);
+
     /// §14.3: called when the device list changes, with whatever controller
     /// topology the OS exposed. An empty list clears the warning.
     void updateControllerTopology (const std::vector<ControllerContentionDetector::DeviceControllerInfo>& devices);

@@ -2,6 +2,15 @@
 
 #include <utility>
 
+#if defined(_WIN32)
+ #ifndef NOMINMAX
+  #define NOMINMAX
+ #endif
+ #include <windows.h>
+#else
+ #include <time.h>
+#endif
+
 #if defined(__APPLE__)
  // Plain C API: no Objective-C needed, so this stays a .cpp file.
  #include <IOKit/pwr_mgt/IOPMLib.h>
@@ -218,6 +227,44 @@ void SleepInhibitor::setHeld (bool shouldHold)
         backend->release();
         held = false;
     }
+}
+
+std::optional<WakeDetector::Clocks> WakeDetector::read() noexcept
+{
+   #if defined(_WIN32)
+    ULONGLONG unbiased = 0; // 100 ns units, not counting sleep or hibernation
+    if (QueryUnbiasedInterruptTime (&unbiased) == 0)
+        return std::nullopt;
+
+    return Clocks { static_cast<double> (unbiased) / 10000.0, static_cast<double> (GetTickCount64()) };
+   #else
+    #if defined(__APPLE__)
+    constexpr clockid_t awakeClock = CLOCK_UPTIME_RAW;
+    constexpr clockid_t withSleepClock = CLOCK_MONOTONIC_RAW;
+    #else
+    constexpr clockid_t awakeClock = CLOCK_MONOTONIC;
+    constexpr clockid_t withSleepClock = CLOCK_BOOTTIME;
+    #endif
+
+    timespec awake {}, withSleep {};
+    if (clock_gettime (awakeClock, &awake) != 0 || clock_gettime (withSleepClock, &withSleep) != 0)
+        return std::nullopt;
+
+    const auto ms = [] (const timespec& t)
+    {
+        return static_cast<double> (t.tv_sec) * 1000.0 + static_cast<double> (t.tv_nsec) / 1.0e6;
+    };
+
+    return Clocks { ms (awake), ms (withSleep) };
+   #endif
+}
+
+bool WakeDetector::justWoke (const Clocks& now) noexcept
+{
+    const double asleepMs = now.withSleepMs - now.awakeMs;
+    const bool woke = lastAsleepMs.has_value() && asleepMs - *lastAsleepMs >= kMinSleepMs;
+    lastAsleepMs = asleepMs;
+    return woke;
 }
 
 } // namespace mma

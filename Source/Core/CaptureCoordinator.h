@@ -264,7 +264,10 @@ public:
     /// The same devices as getDevicesThatFailedToOpen(), each with its own
     /// reason and refusal kind. Only the first device's reason used to reach
     /// the activity log, and §14.2's power check counted every refusal alike,
-    /// whatever the cause.
+    /// whatever the cause. After a start where nothing opened at all, every
+    /// device's refusal is here too (getDevicesThatFailedToOpen() is then
+    /// empty: nothing is monitoring) -- every mic behind a starved hub
+    /// refusing at once is exactly what the power check is for.
     const std::vector<DeviceOpenFailure>& getOpenFailures() const noexcept
     {
         return openFailures;

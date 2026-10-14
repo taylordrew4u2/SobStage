@@ -1164,6 +1164,10 @@ private:
     SleepInhibitor sleepInhibitor;
     void syncSleepInhibitor();
 
+    /// A wake from sleep, noticed on the status tick: the drops it causes are
+    /// not counted toward "needs more power" (SetupAdvisor::noteSystemWoke).
+    WakeDetector wakeDetector;
+
     /// §6.6: on battery a closed lid still sleeps the Mac and ends the take,
     /// so a take recording on battery says so once.
     BatteryRecordingNotice batteryRecordingNotice;

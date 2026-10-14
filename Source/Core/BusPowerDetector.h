@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <deque>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -43,6 +44,18 @@ public:
     /// its connection" could ever be given for it.
     void noteLeft (const std::string& deviceId);
 
+    /// The computer has just woken from sleep, noticed at `nowSeconds`. Every
+    /// device it had open drops as it sleeps and comes back as it wakes -- on
+    /// Windows each stream simply dies, unexplained -- which says nothing about
+    /// power: three mics on one laptop were "all lost their connection ... may
+    /// need more power" after an ordinary lid close. Drops within
+    /// kWakeGraceSeconds either side of it are not counted: those recorded
+    /// before it (the device list can notice them before the wake is) are
+    /// forgotten, those after it ignored.
+    void noteSystemWoke (double nowSeconds);
+
+    static constexpr double kWakeGraceSeconds = 60.0;
+
     /// True if the sustained-power-exhaustion condition currently holds.
     bool isBusPowerExhausted (double nowSeconds) const;
 
@@ -62,6 +75,7 @@ public:
     {
         events.clear();
         failingNow.clear();
+        wokeAt.reset();
     }
 
 private:
@@ -75,6 +89,7 @@ private:
 
     std::deque<Event> events;
     std::set<std::string> failingNow;
+    std::optional<double> wokeAt;
 
     bool inWindow (const Event& e, double nowSeconds) const noexcept
     {

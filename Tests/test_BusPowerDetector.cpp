@@ -167,3 +167,38 @@ TEST_CASE (BusPowerDetector_AHubDroppingItsMicsTogetherCountsTheMicsItHad)
 
     REQUIRE (d.isBusPowerExhausted (101.0));
 }
+
+// The bug: a laptop closed mid-take sleeps whatever the app holds; on waking,
+// Windows' exclusive streams of every USB mic die unexplained, and three mics
+// dropping together read as "Kitchen, Hall and Door all lost their
+// connection. They may need more power". Mutation: noteSystemWoke ignored.
+TEST_CASE (BusPowerDetector_WakingFromSleepIsNotAPowerProblem)
+{
+    // The device list noticed the drops a moment before the wake was.
+    BusPowerDetector d;
+    for (const auto* id : { "kitchen", "hall", "door" })
+        d.recordEvent (1000.0, id, id, 3);
+    REQUIRE (d.isBusPowerExhausted (1000.5));
+
+    d.noteSystemWoke (1001.0);
+    REQUIRE_FALSE (d.isBusPowerExhausted (1001.0));
+    REQUIRE (d.namesInWindow (1001.0).empty());
+
+    // And the streams dying a few seconds after it, as a WASAPI timeout does.
+    REQUIRE_FALSE (d.recordEvent (1007.0, "kitchen", "Kitchen", 3));
+    REQUIRE_FALSE (d.recordEvent (1008.0, "hall", "Hall", 3));
+    REQUIRE_FALSE (d.isBusPowerExhausted (1010.0));
+
+    // Long after the wake, real drops count again -- the wake did not leave
+    // the mics "still failing" either.
+    REQUIRE (d.recordEvent (1200.0, "kitchen", "Kitchen", 3));
+    REQUIRE (d.recordEvent (1210.0, "hall", "Hall", 3));
+    REQUIRE (d.isBusPowerExhausted (1211.0));
+
+    // A drop well before the sleep is not the wake's.
+    BusPowerDetector earlier;
+    earlier.recordEvent (100.0, "kitchen", "Kitchen", 3);
+    earlier.recordEvent (110.0, "hall", "Hall", 3);
+    earlier.noteSystemWoke (250.0);
+    REQUIRE (earlier.isBusPowerExhausted (250.0));
+}

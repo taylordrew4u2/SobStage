@@ -1173,37 +1173,18 @@ void Application::restartCapture()
             noteActivity (ActivityLevel::Warning, "Microphones",
                           juce::String (capture->getMonitorProblem()));
 
-            // §14.2 names this exact event first: "bus power exhaustion doesn't
-            // produce a clean error; it shows up as ENUMERATION FAILURES and
-            // device drops". BusPowerDetector has always been able to count
-            // them and nothing ever handed it one -- Application::
-            // noteDeviceDropout() was written, wired to the advisor, and called
-            // from nowhere in the app, so "use a powered hub" could not be
-            // reached however many microphones dropped off a shared port.
-            //
-            // Only refusals that could be a device losing power. A mic another
-            // app holds, a refused rate, a denied permission or the app's own
-            // earlier open still finishing all counted, and all read as "needs
-            // more power". The detector also counts each device once until it
-            // opens again, so a rebuild that changes nothing cannot stack one
-            // bad cable into a power problem.
             const auto& openFailures = capture->getOpenFailures();
 
-            for (size_t i = 0; i < openFailures.size(); ++i)
+            // The first device's reason is in the line above. Every other
+            // one's was dropped, so the log named one cause for several mics
+            // that may each have had a different one.
+            for (size_t i = 1; i < openFailures.size(); ++i)
             {
                 const auto& failure = openFailures[i];
-
-                // The first device's reason is in the line above. Every other
-                // one's was dropped, so the log named one cause for several
-                // mics that may each have had a different one.
-                if (i > 0)
-                    noteActivity (ActivityLevel::Warning, juce::String (failure.displayName),
-                                  juce::String (failure.displayName) + " couldn't be opened for recording."
-                                      + (failure.reason.empty() ? juce::String()
-                                                                : " " + juce::String (failure.reason)));
-
-                if (countsAsPossiblePowerLoss (failure.refusal))
-                    noteDeviceDropout (failure.deviceId, juce::String (failure.displayName));
+                noteActivity (ActivityLevel::Warning, juce::String (failure.displayName),
+                              juce::String (failure.displayName) + " couldn't be opened for recording."
+                                  + (failure.reason.empty() ? juce::String()
+                                                            : " " + juce::String (failure.reason)));
             }
         }
 
@@ -1225,6 +1206,23 @@ void Application::restartCapture()
                       why.isNotEmpty() ? why
                                        : juce::String ("Couldn't start listening to your microphones."));
     }
+
+    // §14.2 names this exact event first: "bus power exhaustion doesn't
+    // produce a clean error; it shows up as ENUMERATION FAILURES and device
+    // drops". Only refusals that could be a device losing power: a mic another
+    // app holds, a refused rate, a denied permission or the app's own earlier
+    // open still finishing all read as "needs more power" once.
+    //
+    // On every rebuild, not only one worth a line in the log: another mic
+    // browning out where the last one has opened again leaves the live and
+    // failed counts as they were, and was never counted. And whether or not
+    // anything opened: every mic behind a starved hub refusing at once is the
+    // case the advice is for. The detector counts each device once until it
+    // opens again, so a rebuild that changes nothing cannot stack one bad
+    // cable into a power problem.
+    for (const auto& failure : capture->getOpenFailures())
+        if (countsAsPossiblePowerLoss (failure.refusal))
+            noteDeviceDropout (failure.deviceId, juce::String (failure.displayName));
 
     // Fired on success AND failure: either way the old meters are gone, and a
     // UI still holding pointers into them would read freed memory on its very
@@ -6244,6 +6242,13 @@ juce::StringArray Application::getRecentActivityLines (int limit) const
 
 juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 {
+    // First, before any stream failure this tick reads: a wake from sleep.
+    // Every device drops as the computer sleeps and comes back as it wakes,
+    // which is no sign of power (§14.2). A Mac says so itself; on Windows each
+    // stream simply dies, and the drops read as "may need more power".
+    if (const auto clocks = WakeDetector::read(); clocks.has_value() && wakeDetector.justWoke (*clocks))
+        setupAdvisor.noteSystemWoke (juce::Time::getMillisecondCounterHiRes() / 1000.0);
+
     // A fresh two-channel device is monitored as two exact physical inputs
     // until its analyzer reaches a verdict. Applying that answer here keeps
     // persistence and stream rebuilding off the audio thread; the helper also

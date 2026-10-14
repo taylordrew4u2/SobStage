@@ -7,6 +7,8 @@
 #  - A device that leaves the list ends its failure, so one that is plugged
 #    back in and fails again counts again: rescanDevices() tells the advisor
 #    which devices left, before the list forgets them.
+#  - Every refusal that could be power is counted on every rebuild, and a
+#    wake from sleep is told to the advisor before the drops it causes.
 #
 #   -DAPPLICATION_CPP=<Source/App/Application.cpp>
 if (NOT DEFINED APPLICATION_CPP OR "${APPLICATION_CPP}" STREQUAL "")
@@ -44,6 +46,41 @@ if (left EQUAL -1)
 endif()
 if (sync EQUAL -1 OR NOT left LESS sync)
     message(FATAL_ERROR "the devices that left must be told before syncToEnumeration() forgets them")
+endif()
+
+# Every refusal that could be power is counted on every rebuild: not only one
+# whose live and failed counts changed (another mic browning out where the
+# last one opened again changes neither), and not only one where something
+# opened (every mic behind a starved hub refusing is the case the advice is
+# for). So the call comes after both the started and the not-started report,
+# outside either.
+body_of ("void Application::restartCapture()" restart)
+
+string(FIND "${restart}" "noteDeviceDropout (failure.deviceId" counted)
+string(FIND "${restart}" "else if (worthSaying)" notStarted)
+string(FIND "${restart}" "if (failedCount > 0 && worthSaying)" worthALine)
+if (counted EQUAL -1)
+    message(FATAL_ERROR "restartCapture() no longer counts a refusal toward the power check")
+endif()
+if (notStarted EQUAL -1 OR worthALine EQUAL -1)
+    message(FATAL_ERROR "restartCapture()'s reports are not where this check expects them")
+endif()
+if (NOT counted GREATER notStarted)
+    message(FATAL_ERROR "a refusal is counted toward the power check only when the rebuild is worth a line in the log, or only when something opened")
+endif()
+
+# A wake from sleep is noticed on the status tick before any stream failure
+# that tick reads, and the advisor told: the drops of waking are not power.
+body_of ("juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)" poll)
+
+string(FIND "${poll}" "wakeDetector.justWoke" woke)
+string(FIND "${poll}" "setupAdvisor.noteSystemWoke (" told)
+string(FIND "${poll}" "noteDeviceDropout (" dropped)
+if (woke EQUAL -1 OR told EQUAL -1)
+    message(FATAL_ERROR "pollStatusAdvice() no longer tells the advisor the computer woke from sleep")
+endif()
+if (NOT dropped EQUAL -1 AND NOT told LESS dropped)
+    message(FATAL_ERROR "the wake must be told before this tick's stream failures are counted")
 endif()
 
 message(STATUS "Drops are counted against the devices before them, and a device that left fails afresh")
