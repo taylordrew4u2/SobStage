@@ -13,8 +13,10 @@
   how the copy is going, says where the take is safe if the card is out,
   full or locked, and has a **Copy again** button. A card that was out is
   copied when it comes back, and a copy cut off by quitting finishes at the
-  next launch. If this computer is nearly full, the take goes straight to the
-  card as before, and you are told.
+  next launch. The combined video and podcast-ready copy follow once they are
+  made. On a FAT32 card, a movie too big for it stays on this computer and
+  everything else is copied. If this computer couldn't hold as much as the
+  card could, the take goes straight to the card as before, and you are told.
 
 ### Fixed
 
@@ -23,7 +25,8 @@
   now names the mics ("Kitchen and Hall both lost their connection. They may
   need more power: use a USB hub with its own power adapter."), and one mic
   that keeps dropping gets "Try another cable or USB port." The activity list
-  now gives every mic that would not open its own reason.
+  now gives every mic that would not open its own reason. A mic that drops
+  off while it is being opened, as one short of power does, still counts.
 
 ## v1.13.27 -- 2026-10-14 (release candidate)
 
