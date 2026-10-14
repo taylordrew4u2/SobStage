@@ -1682,27 +1682,27 @@ TEST_CASE (TakeCopy_ATakeStoppedInThisRunIsCopiedWithoutItsStopTime)
     REQUIRE (run (found).outcome == Outcome::NotFinishedYet);
 }
 
-// The bug: a take recorded on this computer for a card counted as "on the
-// card" for its own folder (no backup folder is kept for it), so a stall on
-// this computer's disk skipped its stop-time record, and Stop told the user
-// to check the card it never touched. Mutation: the route ignored.
-TEST_CASE (TakeCopy_ATakeRecordedHereIsNotOnTheCard)
+// A drive that stopped answering at one step of a Stop is not waited on again
+// for the next, whichever drive the take is on. For a take recorded on this
+// computer for a card that is this computer's drive: treated as "not the
+// take's drive", each later step waited its full deadline, and the window
+// froze for half a minute at Stop (e2e_card_copy herestall). Only the backup
+// copy is elsewhere. Mutation: a take recorded here never on its own drive.
+TEST_CASE (TakeCopy_ATakeRecordedHereIsOnItsOwnDrive)
 {
     const std::string take = "/Users/me/RECORDINGS-MIRROR/2026-10-14_2000_Show";
     const std::string onCard = "/Volumes/SD/RECORDINGS/2026-10-14_2000_Show";
     const std::string backup = "/Users/me/RECORDINGS-MIRROR/2026-10-14_2000_Show";
 
-    REQUIRE_FALSE (isOnTheSaveLocationWhileRecording (take + "/session.json", TakeRoute::ComputerThenCard, {}));
-    REQUIRE_FALSE (isOnTheSaveLocationWhileRecording (take, TakeRoute::ComputerThenCard, {}));
+    REQUIRE (isOnTheTakesDrive (take + "/session.json", {}));
+    REQUIRE (isOnTheTakesDrive (take, {}));
 
-    REQUIRE (isOnTheSaveLocationWhileRecording (onCard + "/session.json", TakeRoute::StraightToDestination, {}));
-    REQUIRE (isOnTheSaveLocationWhileRecording (onCard + "/session.json", TakeRoute::StraightToCardComputerFull,
-                                                backup));
-    REQUIRE_FALSE (isOnTheSaveLocationWhileRecording (backup + "/session.json", TakeRoute::StraightToDestination,
-                                                      backup));
-    REQUIRE_FALSE (isOnTheSaveLocationWhileRecording (backup, TakeRoute::StraightToDestination, backup + "/"));
+    REQUIRE (isOnTheTakesDrive (onCard + "/session.json", {}));
+    REQUIRE (isOnTheTakesDrive (onCard + "/session.json", backup));
+    REQUIRE_FALSE (isOnTheTakesDrive (backup + "/session.json", backup));
+    REQUIRE_FALSE (isOnTheTakesDrive (backup, backup + "/"));
     // A sibling whose name only starts the same is not inside it.
-    REQUIRE (isOnTheSaveLocationWhileRecording (backup + "_2/MIX.wav", TakeRoute::StraightToDestination, backup));
+    REQUIRE (isOnTheTakesDrive (backup + "_2/MIX.wav", backup));
 
     const auto here = stoppedAnsweringAtStop (true, take, {});
     REQUIRE (here.find ("This computer's drive stopped answering") == 0);

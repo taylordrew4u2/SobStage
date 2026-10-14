@@ -506,13 +506,14 @@ std::string tallyLine (const Tally& tally);
 std::string cardForTake (const std::string& seenNow, const std::map<std::string, std::string>& lastSeen,
                          const std::string& saveLocation);
 
-/// Whether `path` is on the save location for the take recording now, by
-/// path arithmetic only: asking the disk is the very call that hangs on a
-/// dead card. A take recorded on this computer for a card (`route`
-/// ComputerThenCard) has nothing on the card until it is copied; one recorded
-/// straight to the save location has everything there but its backup copy in
-/// `backupFolder` (empty when none is kept).
-bool isOnTheSaveLocationWhileRecording (const std::string& path, TakeRoute route, const std::string& backupFolder);
+/// Whether `path` is on the drive the take recording now is written to --
+/// this computer's for a take recorded here for a card, the save location's
+/// for one recorded straight to it -- rather than in its backup copy in
+/// `backupFolder` (empty when none is kept). Path arithmetic only: asking the
+/// disk is the very call that hangs on a drive that has stopped answering,
+/// and once one step of a Stop has timed out on that drive, no later step
+/// waits on it again.
+bool isOnTheTakesDrive (const std::string& path, const std::string& backupFolder);
 
 /// Said at Stop when the drive the take was being finished on stopped
 /// answering. `recordedHere`: the take was recorded on this computer for a

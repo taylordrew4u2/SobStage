@@ -911,6 +911,7 @@ else
   pass "herestall: take started on this computer in $(basename "$TAKE")"
   sleep 5
 
+  STALLS_BEFORE=$(meter_lines)
   touch "$DEAD"
   press_stop
 
@@ -929,6 +930,15 @@ else
     grep "card stopped" "$LOG" | tail -3 | sed 's/^/        /'
   else
     pass "herestall: nothing blames the card"
+  fi
+
+  # The window keeps answering while this computer's own drive is stuck, as
+  # it does for a stuck card: the stop and its finishing wait off the window.
+  WORST=$(worst_stall_since "$STALLS_BEFORE")
+  if [ "$WORST" -le "$MAX_STALL_MS" ]; then
+    pass "herestall: longest the window stopped answering: ${WORST} ms (limit ${MAX_STALL_MS})"
+  else
+    fail "herestall: the window stopped answering for ${WORST} ms (limit ${MAX_STALL_MS})"
   fi
   rm -f "$DEAD"
 fi

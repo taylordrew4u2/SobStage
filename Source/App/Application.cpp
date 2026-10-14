@@ -6055,35 +6055,36 @@ void Application::followTakeFolderMovedAfterAudioStopped()
                   "are in " + now + ".");
 }
 
-bool Application::isOnCard (const juce::File& file) const
+bool Application::isOnTheTakesDrive (const juce::File& file) const
 {
     // Path arithmetic only: asking the filesystem would be the very call that
-    // hangs on a dead card. A take recorded on this computer for a card has
-    // nothing on the card: a "card" that stopped answering is no reason to
-    // skip its stop-time record, which its copy to the card waits for.
-    return cardcopy::isOnTheSaveLocationWhileRecording (file.getFullPathName().toStdString(), currentTakeRoute,
-                                                        currentMirrorFolder.isEmpty() ? std::string()
-                                                            : juce::File (currentMirrorFolder).getFullPathName().toStdString());
+    // hangs on a drive that has stopped answering. That drive is the take's
+    // own, wherever its route put it: this computer's for a take recorded
+    // here for a card, whose stalled finishing otherwise waited the full
+    // deadline once per step, half a minute of frozen window at Stop.
+    return cardcopy::isOnTheTakesDrive (file.getFullPathName().toStdString(),
+                                        currentMirrorFolder.isEmpty() ? std::string()
+                                            : juce::File (currentMirrorFolder).getFullPathName().toStdString());
 }
 
 bool Application::writeTakeText (const juce::File& file, const juce::String& text) const
 {
     // The backup copy lives on this computer, not the card, so a card that has
     // stopped answering is no reason to skip it.
-    const bool onCard = isOnCard (file);
+    const bool onTakesDrive = isOnTheTakesDrive (file);
 
-    // Each card step is bounded, but they run one after another. Once one has
+    // Each step is bounded, but they run one after another. Once one has
     // timed out, waiting the full deadline again on every later step turned a
-    // dead card at Stop into half a minute of frozen window. The card has
+    // dead drive at Stop into half a minute of frozen window. The drive has
     // already said it is gone; believe it for the rest of the take.
-    if (onCard && takeCardUnresponsive)
+    if (onTakesDrive && takeCardUnresponsive)
         return false;
 
     const auto written = replaceWithTextWithin (file, text);
 
     if (! written.has_value())
     {
-        if (onCard)
+        if (onTakesDrive)
             takeCardUnresponsive = true;
 
         return false;
@@ -6117,7 +6118,7 @@ void Application::writeActivityLog (const juce::File& folder) const
     // Checked like everything else here. A log that failed to write is exactly
     // the sort of thing this file exists to stop happening quietly.
     if (! writeTakeText (folder.getChildFile ("activity.log"), text)
-        && ! (takeCardUnresponsive && isOnCard (folder)))
+        && ! (takeCardUnresponsive && isOnTheTakesDrive (folder)))
         noteActivity (ActivityLevel::Warning, "Recording",
                       "Couldn't write the activity log into " + folder.getFileName()
                       + ". The audio itself is saved.");

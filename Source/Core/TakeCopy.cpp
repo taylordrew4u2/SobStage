@@ -1036,11 +1036,8 @@ std::string cardForTake (const std::string& seenNow, const std::map<std::string,
     return found != lastSeen.end() ? found->second : std::string();
 }
 
-bool isOnTheSaveLocationWhileRecording (const std::string& path, TakeRoute route, const std::string& backupFolder)
+bool isOnTheTakesDrive (const std::string& path, const std::string& backupFolder)
 {
-    if (route == TakeRoute::ComputerThenCard)
-        return false;
-
     return backupFolder.empty() || ! isSameOrInside (path, backupFolder);
 }
 

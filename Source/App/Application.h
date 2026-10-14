@@ -1512,8 +1512,9 @@ private:
     /// Writes a take's text file with a deadline, skipping the card once it
     /// has stopped answering this take. The local backup is always written.
     bool writeTakeText (const juce::File& file, const juce::String& text) const;
-    /// True unless `file` is inside the current take's local backup folder.
-    bool isOnCard (const juce::File& file) const;
+    /// True unless `file` is inside the current take's local backup folder:
+    /// on the drive the take is written to, whichever its route.
+    bool isOnTheTakesDrive (const juce::File& file) const;
     /// §11: the newest session.json files under `root`, newest first. Static
     /// because it runs on the diagnostics export's detached worker.
     static juce::Array<juce::File> findRecentSessionMetadata (const juce::String& root, int maximum);
