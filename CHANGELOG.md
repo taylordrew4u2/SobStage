@@ -17,6 +17,12 @@
   made. On a FAT32 card, a movie too big for it stays on this computer and
   everything else is copied. If this computer couldn't hold as much as the
   card could, the take goes straight to the card as before, and you are told.
+  A take goes to its own card: if another card is in its place (cards often
+  share a name, and Windows can give a card reader's letter to a USB stick),
+  nothing is written to it and the take waits for its card; **Copy again**
+  copies it to the card that is in. If you choose **Quit When Done** and the
+  copy then fails, SobStage says so and where the take is safe instead of
+  closing as though it were on the card.
 
 ### Fixed
 
@@ -26,7 +32,9 @@
   need more power: use a USB hub with its own power adapter."), and one mic
   that keeps dropping gets "Try another cable or USB port." The activity list
   now gives every mic that would not open its own reason. A mic that drops
-  off while it is being opened, as one short of power does, still counts.
+  off while it is being opened, as one short of power does, still counts, and
+  so does a hub losing all its mics at once mid-take, and a mic that fails
+  again after being plugged back in.
 
 ## v1.13.27 -- 2026-10-14 (release candidate)
 
