@@ -51,6 +51,16 @@ PermissionState fromWindowsConsentValue (const std::string& value) noexcept
                          : PermissionState::NotApplicable;
 }
 
+PermissionState fromWindowsMicrophoneConsent (const std::string& master, const std::string& desktopApps) noexcept
+{
+    const auto overall = fromWindowsConsentValue (master);
+
+    if (overall == PermissionState::Denied || fromWindowsConsentValue (desktopApps) != PermissionState::Denied)
+        return overall;
+
+    return PermissionState::Denied;
+}
+
 PermissionState fromWriteProbeErrno (int probeErrno) noexcept
 {
     if (probeErrno == 0)
@@ -200,23 +210,45 @@ PermissionState queryMicrophonePermission() noexcept
     // The CapabilityAccessManager consent store. WinRT's AppCapability API is
     // the documented route, but it is packaged-app only; a plain desktop build
     // reads the same state the Settings app writes.
-    HKEY key {};
-    const auto* path = "Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone";
+    // Both switches: the main one, and "Let desktop apps access your
+    // microphone" under it (the NonPackaged subkey), which is the one a plain
+    // desktop app like this needs too.
+    const auto readConsent = [] (const char* path, bool& found)
+    {
+        found = false;
+        HKEY key {};
 
-    if (RegOpenKeyExA (HKEY_CURRENT_USER, path, 0, KEY_READ, &key) != ERROR_SUCCESS)
-        return PermissionState::NotApplicable;
+        if (RegOpenKeyExA (HKEY_CURRENT_USER, path, 0, KEY_READ, &key) != ERROR_SUCCESS)
+            return std::string();
 
-    char value[32] {};
-    DWORD size = sizeof (value);
-    DWORD type = 0;
-    const auto result = RegQueryValueExA (key, "Value", nullptr, &type,
-                                          reinterpret_cast<LPBYTE> (value), &size);
-    RegCloseKey (key);
+        char value[32] {};
+        DWORD size = sizeof (value);
+        DWORD type = 0;
+        const auto result = RegQueryValueExA (key, "Value", nullptr, &type,
+                                              reinterpret_cast<LPBYTE> (value), &size);
+        RegCloseKey (key);
 
-    if (result != ERROR_SUCCESS || type != REG_SZ)
-        return PermissionState::NotApplicable;
+        if (result != ERROR_SUCCESS || type != REG_SZ)
+            return std::string();
 
-    return permissions::fromWindowsConsentValue (std::string (value, strnlen (value, sizeof (value))));
+        found = true;
+        return std::string (value, strnlen (value, sizeof (value)));
+    };
+
+    bool masterFound = false, desktopFound = false;
+    const auto master = readConsent (
+        "Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone",
+        masterFound);
+    const auto desktopApps = readConsent (
+        "Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone\\NonPackaged",
+        desktopFound);
+
+    if (! masterFound)
+        return desktopFound && permissions::fromWindowsConsentValue (desktopApps) == PermissionState::Denied
+            ? PermissionState::Denied
+            : PermissionState::NotApplicable;
+
+    return permissions::fromWindowsMicrophoneConsent (master, desktopFound ? desktopApps : std::string());
 
 #else
     // Linux has no per-application microphone consent to read. NotApplicable,

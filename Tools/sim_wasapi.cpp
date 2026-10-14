@@ -408,6 +408,80 @@ void aMicrophoneThatDropsOffWhileOpeningCountsTowardThePowerWarning()
     }
 }
 
+/// §14.2: Windows' microphone privacy settings refuse a desktop app where
+/// Windows chooses -- most often at IAudioClient::Initialize, Activate having
+/// succeeded ("Failed to initialize audio client: 80070005"), and sometimes
+/// in answer to the format questions or a second Activate. Each is the
+/// privacy setting, never a microphone that lost power: called "unknown", it
+/// counted toward the power warning, and three refused microphones read as a
+/// hub that needed its own power adapter.
+void aMicrophoneThePrivacySettingsRefuseIsNeverCountedAsPower()
+{
+    std::printf ("\nA microphone Windows' privacy settings refuse\n");
+
+    const auto refusedAs = [] (const char* where, const fakewasapi::EndpointSpec& spec)
+    {
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream (spec.id, 48000.0, 256, capture.callback()),
+               std::string ("refused at ") + where + ": it does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::permission,
+               std::string ("refused at ") + where + ": it is called permission");
+        check (! mma::countsAsPossiblePowerLoss (backend.getLastOpenRefusal()),
+               std::string ("refused at ") + where + ": it does not count toward the power warning");
+        check (backend.getLastOpenError().find ("Let desktop apps access your microphone") != std::string::npos,
+               std::string ("refused at ") + where + ": the user is sent to the privacy switch for desktop apps");
+        check (backend.getLastOpenError().find ("plug it back in") == std::string::npos
+                   && backend.getLastOpenError().find ("sample rate") == std::string::npos,
+               std::string ("refused at ") + where + ": not to unplug it, nor to change the sample rate");
+    };
+
+    // Three microphones on one hub, each refused at Initialize: none of them
+    // is a power loss.
+    {
+        fakewasapi::reset();
+        const char* names[][2] = { { "mic-kitchen", "Kitchen" }, { "mic-hall", "Hall" }, { "mic-door", "Door" } };
+        for (const auto& n : names)
+        {
+            auto spec = microphone (n[0], n[1], { fakewasapi::Format::pcm (1, 24, 48000.0) });
+            spec.initializeError = static_cast<long> (E_ACCESSDENIED);
+            fakewasapi::addEndpoint (spec);
+        }
+
+        int countedAsPower = 0;
+        for (const auto& n : names)
+        {
+            mma::WasapiAsioBackend backend;
+            Capture capture;
+            (void) backend.openInputStream (n[0], 48000.0, 256, capture.callback());
+            countedAsPower += mma::countsAsPossiblePowerLoss (backend.getLastOpenRefusal()) ? 1 : 0;
+        }
+        check (countedAsPower == 0, "three microphones refused at Initialize: none counts toward the power warning");
+
+        auto spec = microphone ("mic-kitchen", "Kitchen", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.initializeError = static_cast<long> (E_ACCESSDENIED);
+        refusedAs ("Initialize", spec);
+    }
+
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-asked", "Stage", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.formatQuestionError = static_cast<long> (E_ACCESSDENIED);
+        fakewasapi::addEndpoint (spec);
+        refusedAs ("the format questions", spec);
+    }
+
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-again", "Stage", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.alignedFrames = 480;
+        spec.failActivateAfterAlignment = true;
+        spec.reactivateError = static_cast<long> (E_ACCESSDENIED);
+        fakewasapi::addEndpoint (spec);
+        refusedAs ("the second Activate", spec);
+    }
+}
+
 /// A buffer below the device's minimum period. Windows rejects it with
 /// AUDCLNT_E_INVALID_DEVICE_PERIOD; the backend must ask GetDevicePeriod and
 /// open at the minimum instead, not blame another app for holding the device.
@@ -1485,6 +1559,7 @@ int main()
     aBufferAlignmentRejectionIsRetried();
     aFailedReactivationSaysWhy();
     aMicrophoneThatDropsOffWhileOpeningCountsTowardThePowerWarning();
+    aMicrophoneThePrivacySettingsRefuseIsNeverCountedAsPower();
     aBufferBelowTheDeviceMinimumOpensAtTheMinimum();
     microphonesOpenWhenTheMessageThreadIsSingleThreaded();
     aSilentFlaggedPacketIsTreatedAsSilence();

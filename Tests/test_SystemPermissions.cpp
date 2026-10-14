@@ -80,6 +80,20 @@ TEST_CASE (SystemPermissions_WindowsConsentStrings)
     REQUIRE (permissions::fromWindowsConsentValue ("Prompt") == PermissionState::NotApplicable);
 }
 
+TEST_CASE (SystemPermissions_WindowsDesktopAppsSwitchOffIsADenial)
+{
+    // "Let desktop apps access your microphone" off, the main switch on: a
+    // desktop app is refused (Initialize answers 0x80070005), and must be told
+    // so rather than read as allowed.
+    REQUIRE (permissions::fromWindowsMicrophoneConsent ("Allow", "Deny") == PermissionState::Denied);
+    REQUIRE (permissions::fromWindowsMicrophoneConsent ("Deny", "Allow") == PermissionState::Denied);
+    REQUIRE (permissions::fromWindowsMicrophoneConsent ("Allow", "Allow") == PermissionState::Granted);
+    // No desktop-apps value written: the main switch decides, as before.
+    REQUIRE (permissions::fromWindowsMicrophoneConsent ("Allow", "") == PermissionState::Granted);
+    REQUIRE (permissions::fromWindowsMicrophoneConsent ("", "") == PermissionState::NotYetRequested);
+    REQUIRE (permissions::fromWindowsMicrophoneConsent ("", "Deny") == PermissionState::Denied);
+}
+
 TEST_CASE (SystemPermissions_OnlyAccessErrnosMeanDenied)
 {
     REQUIRE (permissions::fromWriteProbeErrno (0) == PermissionState::Granted);

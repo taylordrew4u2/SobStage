@@ -37,6 +37,15 @@ bool isRestrictedAVAuthorizationStatus (long status) noexcept;
 /// consent store as the string "Allow" or "Deny".
 PermissionState fromWindowsConsentValue (const std::string& value) noexcept;
 
+/// The microphone consent a plain desktop app like this one has on Windows:
+/// the main switch ("Microphone access", the store's own Value) and, under it,
+/// "Let desktop apps access your microphone" (its NonPackaged subkey's Value,
+/// `desktopApps`, empty when it has none). Either one off is a refusal --
+/// Initialize answers "access denied" -- and the master switch on with only
+/// the desktop-apps switch off used to read as allowed, so the user was given
+/// no permission guidance at all.
+PermissionState fromWindowsMicrophoneConsent (const std::string& master, const std::string& desktopApps) noexcept;
+
 /// The errno left by a failed attempt to write to the destination.
 ///
 /// This is how a removable-volume denial actually presents: there is no query

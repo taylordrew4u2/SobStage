@@ -351,12 +351,13 @@ WAVEFORMATEXTENSIBLE makePcmFormat (double sampleRate, int channels, int contain
 
 // Use the same layouts for capability discovery and stream opening.
 //
-// `invalidated`, when given, is set once the device answers that it has gone
-// (AUDCLNT_E_DEVICE_INVALIDATED): a microphone that dropped off the bus while
-// its formats were being asked about refused every one of them, and was taken
-// for one that only refuses the sample rate. Nothing more is asked of it.
+// `stoppedBy`, when given, is set to the answer that ended the questions
+// early: AUDCLNT_E_DEVICE_INVALIDATED, a microphone that dropped off the bus
+// while its formats were being asked about, or E_ACCESSDENIED, Windows'
+// microphone privacy setting. Either refused every format, and was taken for
+// a device that only refuses the sample rate. Nothing more is asked of it.
 bool findExclusiveFormat (IAudioClient* client, double rate, int channels,
-                          WAVEFORMATEXTENSIBLE& format, bool* invalidated = nullptr)
+                          WAVEFORMATEXTENSIBLE& format, HRESULT* stoppedBy = nullptr)
 {
     const int layouts[][2] = { { 32, 0 }, { 32, 32 }, { 32, 24 }, { 24, 24 }, { 16, 16 } };
     for (const auto& layout : layouts)
@@ -371,10 +372,10 @@ bool findExclusiveFormat (IAudioClient* client, double rate, int channels,
             return true;
         }
 
-        if (answer == AUDCLNT_E_DEVICE_INVALIDATED)
+        if (answer == AUDCLNT_E_DEVICE_INVALIDATED || answer == E_ACCESSDENIED)
         {
-            if (invalidated != nullptr)
-                *invalidated = true;
+            if (stoppedBy != nullptr)
+                *stoppedBy = answer;
 
             return false;
         }
@@ -395,7 +396,7 @@ bool findExclusiveFormat (IAudioClient* client, double rate, int channels,
 /// incapable, and the user blamed a Windows setting, for hardware the open
 /// would have taken on its next candidate.
 bool findExclusiveFormatForAnyChannelCount (IAudioClient* client, double rate, bool isInput,
-                                            WAVEFORMATEXTENSIBLE& format, bool* invalidated = nullptr)
+                                            WAVEFORMATEXTENSIBLE& format, HRESULT* stoppedBy = nullptr)
 {
     int channelCandidates[3] = { isInput ? 1 : 2, isInput ? 2 : 1, 0 };
     int numChannelCandidates = 2;
@@ -414,14 +415,14 @@ bool findExclusiveFormatForAnyChannelCount (IAudioClient* client, double rate, b
         CoTaskMemFree (mixFormat);
     }
 
-    bool gone = false;
+    HRESULT stopped = S_OK;
 
-    for (int c = 0; c < numChannelCandidates && ! gone; ++c)
-        if (findExclusiveFormat (client, rate, channelCandidates[c], format, &gone))
+    for (int c = 0; c < numChannelCandidates && stopped == S_OK; ++c)
+        if (findExclusiveFormat (client, rate, channelCandidates[c], format, &stopped))
             return true;
 
-    if (invalidated != nullptr)
-        *invalidated = gone;
+    if (stoppedBy != nullptr)
+        *stoppedBy = stopped;
 
     return false;
 }
@@ -1034,6 +1035,18 @@ static OpenRefusal refusalForFailedActivate (HRESULT result) noexcept
     return OpenRefusal::unknown;
 }
 
+/// What a microphone refused by Windows' privacy settings is told. The
+/// refusal comes from whichever call Windows chooses -- Activate, a format
+/// question, or most often Initialize ("80070005") -- and "Let desktop apps
+/// access your microphone" is the switch a plain desktop app like this one
+/// needs, beside the main one.
+static std::string microphonePrivacyRefusal()
+{
+    return "Windows isn't letting SobStage use this microphone. Open Settings > Privacy & security > "
+           "Microphone, turn on \"Microphone access\" and \"Let desktop apps access your microphone\", "
+           "then try again.";
+}
+
 std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std::string& deviceId,
                                                                       double sampleRate,
                                                                       int bufferSizeSamples,
@@ -1114,8 +1127,7 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
                 : "This sound output isn't there any more. Pick a different one in Advanced.";
         else if (refusal == OpenRefusal::permission)
             openError = isInput
-                ? "Windows wouldn't let this app attach to this microphone. Check Settings > Privacy > "
-                  "Microphone, then try again."
+                ? microphonePrivacyRefusal()
                 : "Windows wouldn't let this app attach to this output. Close anything else using it, "
                   "then try again.";
         else
@@ -1135,20 +1147,30 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
     // Try the engine's own format first, then descend through the fixed-point
     // layouts, and try the device's native channel count before giving up.
     WAVEFORMATEXTENSIBLE format {};
-    bool invalidatedWhileAsked = false;
+    HRESULT refusedWhileAsked = S_OK;
     const bool formatFound =
         findExclusiveFormatForAnyChannelCount (stream->client.Get(), sampleRate, isInput, format,
-                                               &invalidatedWhileAsked);
+                                               &refusedWhileAsked);
 
     if (! formatFound)
     {
+        // The privacy setting, answering the format questions: not the
+        // sample rate, and not power (§14.2).
+        if (isInput && refusedWhileAsked == E_ACCESSDENIED)
+        {
+            openError = microphonePrivacyRefusal();
+            refusal = OpenRefusal::permission;
+            return nullptr;
+        }
+
         // §14.2: a microphone that dropped off the bus after Activate refuses
         // every format too. Asked again before blaming the sample rate --
         // which the power warning never counts, and which sent the user to a
         // setting that had nothing to do with it -- as CoreAudio's open asks
         // whether the device is alive after a refused rate.
         DWORD stateNow = 0;
-        if (invalidatedWhileAsked || FAILED (device->GetState (&stateNow)) || stateNow != DEVICE_STATE_ACTIVE)
+        if (refusedWhileAsked == AUDCLNT_E_DEVICE_INVALIDATED || FAILED (device->GetState (&stateNow))
+            || stateNow != DEVICE_STATE_ACTIVE)
         {
             openError = isInput
                 ? "This microphone disconnected while SobStage was opening it. Plug it back in, "
@@ -1198,10 +1220,16 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
 
             stream->client.Reset();
 
-            if (FAILED (device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr,
-                                          reinterpret_cast<void**> (stream->client.GetAddressOf()))))
+            if (const auto again = device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr,
+                                                     reinterpret_cast<void**> (stream->client.GetAddressOf()));
+                FAILED (again))
             {
-                openError = isInput
+                // Tagged as the first Activate is: a refusal of access is the
+                // privacy setting, not a microphone that lost power.
+                refusal = refusalForFailedActivate (again);
+                openError = isInput && refusal == OpenRefusal::permission
+                    ? microphonePrivacyRefusal()
+                    : isInput
                     ? "This microphone stopped responding while it was being set up. Check its cable, "
                       "then choose it again in Advanced."
                     : "These headphones stopped responding while they were being set up. Check the "
@@ -1215,6 +1243,18 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
                                              reinterpret_cast<const WAVEFORMATEX*> (&format),
                                              nullptr);
         }
+    }
+
+    // Where Windows usually refuses a microphone its privacy settings keep
+    // from this app: Activate succeeds, and Initialize answers "access
+    // denied" (0x80070005). Not a microphone that lost power -- counted as
+    // one, three refused microphones read as a hub that needs its own power
+    // adapter (§14.2) -- and not one to unplug and plug back in.
+    if (hr == E_ACCESSDENIED && isInput)
+    {
+        openError = microphonePrivacyRefusal();
+        refusal = OpenRefusal::permission;
+        return nullptr;
     }
 
     if (hr == AUDCLNT_E_INVALID_DEVICE_PERIOD)

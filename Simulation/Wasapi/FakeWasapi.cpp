@@ -480,6 +480,9 @@ struct FakeAudioClient : RefCounted<IAudioClient>
         if (IsFormatSupported (mode, format, nullptr) != S_OK)
             return AUDCLNT_E_UNSUPPORTED_FORMAT;
 
+        if (endpoint->spec.initializeError != 0)
+            return static_cast<HRESULT> (endpoint->spec.initializeError);
+
         // Some devices accept only one period size and reject anything else,
         // reporting the size they want through GetBufferSize. The rejection is
         // a property of the size, not of the client object: a backend that
@@ -679,7 +682,10 @@ struct FakeDevice : RefCounted<IMMDevice>
             || (endpoint->spec.failActivateAfterAlignment && endpoint->alignmentRejected.load()))
         {
             *out = nullptr;
-            return E_FAIL;
+            return riid == __uuidof (IAudioClient) && endpoint->spec.failActivateAfterAlignment
+                       && endpoint->alignmentRejected.load() && endpoint->spec.reactivateError != 0
+                ? static_cast<HRESULT> (endpoint->spec.reactivateError)
+                : E_FAIL;
         }
 
         auto* client = new FakeAudioClient();
