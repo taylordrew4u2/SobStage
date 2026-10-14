@@ -615,6 +615,19 @@ if (MMA_BUILD_APP)
     add_test(NAME sim_card_copy COMMAND sim_card_copy)
     set_tests_properties(sim_card_copy PROPERTIES TIMEOUT 30)
 
+    # Its Windows branches, compiled here for syntax: the Windows runner is
+    # otherwise the first place a name scoped inside `#if ! defined(_WIN32)`
+    # is found to be missing. GCC only -- its errors in the system's own
+    # headers are told apart from the project's by path.
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT WIN32)
+        add_test(NAME windows_branches_compile
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=${CMAKE_CXX_COMPILER}
+                -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DFILES=Tools/sim_card_copy.cpp
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckWindowsBranches.cmake)
+    endif()
+
     if (WIN32)
         # AvSetMmThreadCharacteristics: Pro Audio scheduling for the WASAPI
         # worker. Without it the OS will not wake a small exclusive-mode buffer

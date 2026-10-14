@@ -595,7 +595,10 @@ int main()
 
     std::printf ("\n7. A file-size refusal from the system itself\n");
     {
+        // Outside the POSIX-only part: the listing check below uses it too,
+        // and on Windows it was declared nowhere.
         Fixture f;
+
        #if ! defined(_WIN32)
         const auto local = f.take ("2026-10-14_2330_Big");
 
