@@ -381,6 +381,29 @@ FsResult NativeCopyFileSystem::list (const std::string& folder, std::vector<Entr
         e.name = name;
         e.isFolder = (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
         e.size = (static_cast<uint64_t> (found.nFileSizeHigh) << 32) | found.nFileSizeLow;
+
+        // A link is listed as itself. Looked through, as stat does elsewhere:
+        // one that leads nowhere is left out, as there, and one that leads
+        // somewhere has its target's size, which is what a copy would read.
+        if ((found.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        {
+            const HANDLE target = CreateFileW (wide (cardcopy::joinPath (folder, name)).c_str(),
+                                               FILE_READ_ATTRIBUTES,
+                                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                               nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+            if (target == INVALID_HANDLE_VALUE)
+                continue;
+
+            BY_HANDLE_FILE_INFORMATION info {};
+            const bool known = GetFileInformationByHandle (target, &info) != 0;
+            CloseHandle (target);
+            if (! known)
+                continue;
+
+            e.isFolder = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            e.size = (static_cast<uint64_t> (info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+        }
+
         entries.push_back (std::move (e));
     }
     while (FindNextFileW (search, &found) != 0);
