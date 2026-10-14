@@ -529,3 +529,45 @@ TEST_CASE (AppSettings_AKnownSettingIsNeverMistakenForAnUnknownOne)
     REQUIRE (read.unknownPortFields.empty());
     REQUIRE (read.unknownCameraFields.empty());
 }
+
+// Recording on this computer and copying to the card is on unless someone
+// turns it off, and a file from before it existed reads as on.
+TEST_CASE (AppSettings_RecordOnComputerThenCopyDefaultsOnAndRoundTrips)
+{
+    REQUIRE (AppSettings().recordOnComputerThenCopy);
+
+    AppSettings off;
+    off.recordOnComputerThenCopy = false;
+    REQUIRE_FALSE (AppSettings::fromJsonString (off.toJsonString()).recordOnComputerThenCopy);
+
+    AppSettings on;
+    REQUIRE (AppSettings::fromJsonString (on.toJsonString()).recordOnComputerThenCopy);
+
+    REQUIRE (AppSettings::fromJsonString ("{ \"mirrorEnabled\": false }").recordOnComputerThenCopy);
+
+    // Written as a member of its own, not folded into something an older
+    // version would drop: an older copy keeps it through its unknown members.
+    REQUIRE (off.toJsonString().find ("\"recordOnComputerThenCopy\": false") != std::string::npos);
+}
+
+// The card last seen at each save location is kept across launches: a take
+// armed with the card out after a restart is still for that card.
+TEST_CASE (AppSettings_TheCardLastSeenAtEachSaveLocationRoundTrips)
+{
+    REQUIRE (AppSettings().cardAtSaveLocation.empty());
+
+    AppSettings seen;
+    seen.cardAtSaveLocation["/Volumes/NO NAME/Shows"] = "uuid:1234-ABCD";
+    seen.cardAtSaveLocation["E:\\Shows"] = "serial:1A2B3C4D";
+
+    const auto back = AppSettings::fromJsonString (seen.toJsonString());
+    REQUIRE (back.cardAtSaveLocation.size() == 2u);
+    REQUIRE (back.cardAtSaveLocation.at ("/Volumes/NO NAME/Shows") == "uuid:1234-ABCD");
+    REQUIRE (back.cardAtSaveLocation.at ("E:\\Shows") == "serial:1A2B3C4D");
+    REQUIRE (back.unknownFields.empty());
+
+    // A file from before it existed, or one with nonsense in it, reads as none.
+    REQUIRE (AppSettings::fromJsonString ("{ \"mirrorEnabled\": false }").cardAtSaveLocation.empty());
+    REQUIRE (AppSettings::fromJsonString ("{ \"cardAtSaveLocation\": [1, 2] }").cardAtSaveLocation.empty());
+    REQUIRE (AppSettings::fromJsonString ("{ \"cardAtSaveLocation\": { \"/x\": 3 } }").cardAtSaveLocation.empty());
+}

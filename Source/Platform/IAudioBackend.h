@@ -149,6 +149,31 @@ constexpr bool inputStreamHasResumed (double deadReportedAt, double lastCallback
     return deadReportedAt > 0.0 && lastCallback > deadReportedAt && ! deviceUnavailable;
 }
 
+/// Why the most recent stream open was refused, as far as the backend can
+/// tell. Beside getLastOpenError()'s sentence because §14.2's power check must
+/// not read prose: it counted every refusal, so a mic another app was holding,
+/// a refused rate or a denied permission all read as "needs more power".
+enum class OpenRefusal
+{
+    unknown,         ///< The backend cannot say. Still counted, so a real brownout is not hidden.
+    gone,            ///< Not there, or disconnected while it was being opened.
+    timedOut,        ///< The OS never finished opening it.
+    inUse,           ///< Another app holds it.
+    settingsRefused, ///< It refused the rate, format or buffer size.
+    permission,      ///< The OS refused this app access.
+    appBusy,         ///< This app's own earlier open or close had not finished yet.
+    notExternal      ///< Not a directly connected external device.
+};
+
+/// §14.2: whether a refusal could be a device losing power. Only the three
+/// that look like a device dropping off the bus: everything else has a known
+/// cause that more power would not fix.
+inline bool countsAsPossiblePowerLoss (OpenRefusal refusal) noexcept
+{
+    return refusal == OpenRefusal::unknown || refusal == OpenRefusal::gone
+        || refusal == OpenRefusal::timedOut;
+}
+
 /// A stream that died or became unsafe after it had been opened. See
 /// takeStreamFailures().
 struct StreamFailure
@@ -333,6 +358,10 @@ public:
     /// existing backends need not implement it, and so the message can name a
     /// next step rather than leaving the user at a dead end.
     virtual std::string getLastOpenError() const { return {}; }
+
+    /// The kind of refusal behind getLastOpenError(), for the same most
+    /// recent open. Unknown for a backend that does not say.
+    virtual OpenRefusal getLastOpenRefusal() const { return OpenRefusal::unknown; }
 
     /// Opens one input device's capture stream.
     virtual bool openInputStream (const std::string& inputDeviceId, double sampleRate,

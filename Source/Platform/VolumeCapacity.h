@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 
@@ -22,6 +23,17 @@ namespace volumecapacity {
 /// system gave one (present and non-zero), and the basic figure otherwise.
 uint64_t choose (uint64_t basicAvailable, std::optional<int64_t> importantUsage) noexcept;
 
+/// True when `path` (UTF-8) is on a removable volume that is not mounted: a
+/// Mac's /Volumes/<X>/..., or Linux's /media/<user>/<X>/... or
+/// /run/media/<user>/<X>/..., where that <X> folder is not there.
+///
+/// With the card out, its path climbs to /Volumes, which is on the startup
+/// disk -- so the card read as "on this computer". `exists` is asked about
+/// the mount point alone. Windows paths never match: a missing E:\ is
+/// already a different drive from C:\.
+bool isUnderMissingMountPoint (const std::string& path,
+                               const std::function<bool (const std::string&)>& exists);
+
 } // namespace volumecapacity
 
 /// Bytes a recording can still use on the volume holding `path` (an existing
@@ -37,6 +49,8 @@ std::optional<uint64_t> availableBytesForRecording (const std::string& path) noe
 /// Which disk `path` (UTF-8) is on, for mirrorplacement::sharesDisk(). A path
 /// that does not exist yet -- the backup folder before its first take -- is
 /// answered for its nearest existing parent, which is where it will be made.
+/// A path on a removable volume that is not mounted (isUnderMissingMountPoint)
+/// is unknown: its mount point's parent is the startup disk, not the card.
 ///
 /// POSIX: st_dev, and on a Mac also the APFS container from statfs, so two
 /// volumes of one container count as one disk. Windows: the drive root.
@@ -54,5 +68,14 @@ VolumeIdentity volumeIdentityOf (const std::string& path) noexcept;
 /// and the size. Windows: unknown. Can block on a disappearing volume like
 /// the queries above, so it is asked on a worker or under a deadline.
 VolumeFingerprint volumeFingerprintOf (const std::string& path) noexcept;
+
+/// Which card or drive is at `path` (UTF-8), as cardIdentity() puts it:
+/// the same text when the same card is put back, different for another card
+/// at the same place -- a Windows drive letter handed to a USB stick, or two
+/// cards both called "NO NAME". Empty when it cannot be told, or nothing is
+/// mounted there. Mac and Linux: from volumeFingerprintOf(), and empty for a
+/// path under a mount point that is not there. Windows: the volume's serial
+/// number. Can block on a disappearing volume, like the queries above.
+std::string cardIdentityOf (const std::string& path) noexcept;
 
 } // namespace mma

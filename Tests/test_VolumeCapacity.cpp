@@ -2,6 +2,8 @@
 #include "Platform/VolumeCapacity.h"
 
 #include <filesystem>
+#include <set>
+#include <string>
 
 using namespace mma;
 
@@ -242,5 +244,83 @@ TEST_CASE (VolumeFingerprint_AnotherFilesystemIsAnotherVolume)
     // The type is f_type in decimal (PROC_SUPER_MAGIC, 0x9fa0) -- the form
     // sizeIdentifiesVolume knows Linux's FAT and ExFAT by.
     REQUIRE (proc.fsType == "40864");
+}
+#endif
+
+// With the card out, its path climbed to /Volumes -- on the startup disk -- so
+// a missing card read as "on this computer" and the take went "straight" into
+// a folder that could not be made.
+TEST_CASE (VolumeCapacity_APathOnAMissingCardIsUnderAMissingMountPoint)
+{
+    const std::set<std::string> present { "/Volumes", "/Volumes/Macintosh HD", "/media", "/media/sam",
+                                          "/media/sam/CARD", "/run", "/run/media", "/run/media/sam" };
+    const auto exists = [&present] (const std::string& p) { return present.count (p) > 0; };
+
+    REQUIRE (volumecapacity::isUnderMissingMountPoint ("/Volumes/SD/RECORDINGS", exists));
+    REQUIRE (volumecapacity::isUnderMissingMountPoint ("/Volumes/SD", exists));
+    REQUIRE (volumecapacity::isUnderMissingMountPoint ("/Volumes/SD/", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("/Volumes/Macintosh HD/Users/sam", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("/Volumes", exists));
+
+    REQUIRE (volumecapacity::isUnderMissingMountPoint ("/media/sam/OTHER/RECORDINGS", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("/media/sam/CARD/RECORDINGS", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("/media/sam", exists));
+
+    REQUIRE (volumecapacity::isUnderMissingMountPoint ("/run/media/sam/CARD/RECORDINGS", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("/run/media/sam", exists));
+
+    // Anywhere else is not a removable mount point, and Windows paths never are.
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("/Users/sam/RECORDINGS", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("/home/sam/Volumes/x", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("E:\\RECORDINGS", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("", exists));
+}
+
+#if ! defined (_WIN32)
+// The card at /Volumes/<name> is out: its path used to climb to /Volumes, on
+// the startup disk, and so read as "on this computer". Unknown is the true
+// answer -- it is not this computer, as far as anyone can say.
+TEST_CASE (VolumeCapacity_AMissingCardIsAnUnknownDiskNotTheStartupDisk)
+{
+    for (const char* missing : { "/Volumes/SOBSTAGE-NO-SUCH-CARD/RECORDINGS",
+                                 "/media/sobstage-no-such-user/CARD/RECORDINGS",
+                                 "/run/media/sobstage-no-such-user/CARD/RECORDINGS" })
+    {
+        const auto identity = volumeIdentityOf (missing);
+        REQUIRE (identity.device.empty());
+        REQUIRE (identity.physicalDisk.empty());
+        REQUIRE_FALSE (mirrorplacement::sharesDisk (identity, volumeIdentityOf ("/")));
+    }
+}
+#endif
+
+// What a take still to be copied keeps of its card. The same card put back --
+// in another reader, under another device node -- must read as itself, or its
+// take would never be copied to it; another card at the same place must not.
+TEST_CASE (VolumeFingerprint_ACardIsKnownByItselfNotWhereItIsMounted)
+{
+    REQUIRE (cardIdentity (card ("6A1F-0C22")) == "uuid:6A1F-0C22");
+    REQUIRE (cardIdentity (card ("6A1F-0C22", "/dev/disk9s1")) == cardIdentity (card ("6A1F-0C22")));
+    REQUIRE (cardIdentity (card ("6A1F-0C22")) != cardIdentity (card ("1B2C-3D4E")));
+
+    // No UUID: a FAT or ExFAT card's format and size, never its device.
+    auto noUuid = card ("");
+    REQUIRE (cardIdentity (noUuid) == "size:exfat:64000000000");
+    auto moved = card ("", "/dev/disk9s1");
+    REQUIRE (cardIdentity (moved) == cardIdentity (noUuid));
+
+    // Nothing that tells one volume from another: not known.
+    auto network = card ("");
+    network.fsType = "nfs";
+    REQUIRE (cardIdentity (network).empty());
+    REQUIRE (cardIdentity (VolumeFingerprint {}).empty());
+}
+
+#if ! defined (_WIN32)
+TEST_CASE (VolumeCapacity_ACardThatIsOutHasNoIdentity)
+{
+    REQUIRE (cardIdentityOf ("/Volumes/SOBSTAGE-NO-SUCH-CARD/RECORDINGS").empty());
+    REQUIRE (cardIdentityOf ("/media/sobstage-no-such-user/CARD/RECORDINGS").empty());
+    REQUIRE (cardIdentityOf ("").empty());
 }
 #endif

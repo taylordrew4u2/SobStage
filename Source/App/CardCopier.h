@@ -1,0 +1,342 @@
+#pragma once
+
+#include "../Core/TakeCopy.h"
+#include "../Core/TakeFolderTracker.h"
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace mma {
+
+/// Copies finished takes from this computer to the card, one at a time, on a
+/// worker of its own (see cardcopy::copyTake for what one copy does).
+///
+/// Built like PodcastExporter: one detached worker holding a share of the
+/// state, so a card that stops answering can hold it inside one call for as
+/// long as it likes without the window, Stop or quitting waiting on it. It
+/// runs at the lowest disk priority the system offers, and never while a take
+/// is recording (setHeld): the take's own writes come first.
+///
+/// Every method is for the message thread.
+class CardCopier
+{
+public:
+    struct Job
+    {
+        /// The take's folder on this computer (UTF-8).
+        std::string localFolder;
+        cardcopy::Marker marker;
+        /// The take's folder itself, so a copy follows it through a rename
+        /// in Finder. Null for a take found at launch.
+        std::shared_ptr<TakeFolderTracker> followedFolder;
+        /// A combined video or podcast copy is still being made in the folder.
+        /// The copy keeps the marker on this computer until followUpsFinished()
+        /// has had the take copied again with it.
+        bool moreFilesComing = false;
+        /// Stopped in this run, every file closed: finished, whatever its
+        /// session.json says (cardcopy::Control::takeIsFinished). False for a
+        /// take found at launch, which may be one a crash cut off.
+        bool stoppedHere = false;
+    };
+
+    enum class Phase { None, Waiting, Copying, Copied, StillOnComputer };
+
+    struct View
+    {
+        Phase phase = Phase::None;
+        uint64_t done = 0, total = 0;
+        /// The last finished attempt, when there has been one.
+        cardcopy::Result result;
+        /// Where the take is on this computer now, followed through a rename.
+        std::string folderNow;
+    };
+
+    struct Finished
+    {
+        /// The folder the job was started with: what the app calls the take.
+        std::string localFolder;
+        /// Where it was when the copy finished.
+        std::string folderNow;
+        cardcopy::Result result;
+        /// The same outcome as this take's last attempt -- a retry that found
+        /// the card still missing -- which is not news.
+        bool repeat = false;
+    };
+
+    using FileSystemFactory = std::function<std::unique_ptr<cardcopy::CopyFileSystem>()>;
+
+    /// `makeFileSystem` makes the disk access each copy uses; by default the
+    /// real one (NativeCopyFileSystem). sim_card_copy hands in one it can hold.
+    explicit CardCopier (FileSystemFactory makeFileSystem = {});
+
+    /// Cancels, and waits a short bounded while for the worker to clear away
+    /// a half-written file. Never joins.
+    ~CardCopier();
+
+    CardCopier (const CardCopier&) = delete;
+    CardCopier& operator= (const CardCopier&) = delete;
+
+    /// A take of this run is recording into `localFolder` (marked to be copied
+    /// already), and start() queues it at its Stop. Until then the launch's
+    /// look for marked takes leaves that folder alone: it is not an earlier
+    /// take, and found by both it would be copied twice.
+    void expect (const std::string& localFolder);
+
+    /// Queues one take, at its Stop. Every call is a take of its own, even at
+    /// a folder an earlier take of this run had: take folders are named by
+    /// the minute, so an earlier one renamed or deleted in Finder leaves its
+    /// path to a take armed in the same minute. Neither inherits the other's
+    /// copy. False when quitting.
+    bool start (Job job);
+
+    /// While held no copy starts, and one under way stops at its next chunk,
+    /// removes its half-written file and waits at the front of the queue --
+    /// not a failure. Held for the whole of every take.
+    void setHeld (bool held);
+
+    /// Finished attempts since the last call, oldest first. Yielded and
+    /// cancelled attempts are not among them.
+    std::vector<Finished> collectFinished();
+
+    /// Anything queued or being copied, held or not.
+    bool isRunning() const;
+
+    /// A copy actually under way: in flight, and not held.
+    bool isCopying() const;
+
+    /// The card at `destinationRoot` -- and every save location on the card
+    /// `cardIdentity`, when that is known -- is reserved for something that
+    /// must have it alone: the card's speed test (§6.4). Copies to it wait,
+    /// one under way stopping at its next chunk as for a take, while copies
+    /// to other cards go on. An empty `destinationRoot` reserves nothing.
+    void setCardReserved (const std::string& destinationRoot, const std::string& cardIdentity);
+
+    /// A copy to that card in flight -- reserved or held, it is still writing
+    /// to the card until it reaches its next chunk -- or one queued for it
+    /// that nothing holds back, which starts any moment.
+    bool hasCopyToCardUnderWayOrDue (const std::string& destinationRoot, const std::string& cardIdentity) const;
+
+    /// Copying still to do that quitting would cut off: a copy in flight, held
+    /// or not, or a take queued that is not merely waiting to retry a failure
+    /// (a card that is out, full or locked) -- unless it was queued again
+    /// because its card was seen back in (retryWithCardIn). A take queued a
+    /// moment ago at Stop counts, before the worker has picked it up.
+    bool hasWorkToFinish() const;
+
+    /// How many takes hasWorkToFinish() is for that are not on the card yet.
+    /// 0 with work to finish while the takes left at the last quit are still
+    /// being looked for. Not a take already copied and checked whose combined
+    /// video or podcast copy is all that is going now (takesAddingFilesToFinish).
+    int takesToFinish() const;
+
+    /// Takes hasWorkToFinish() is for that are on the card already, and are
+    /// only being given a file added to them since: a combined video or
+    /// podcast copy. "It isn't on the card yet" is untrue of them.
+    int takesAddingFilesToFinish() const;
+
+    /// Takes not on the card at all, and not being copied now: their last
+    /// attempt failed, and not only for a file too big for the card or one
+    /// added since.
+    int takesNotOnCard() const;
+
+    /// How long copying has been held, or 0 when it is not.
+    double msHeld() const;
+
+    /// How long the copy under way has gone without moving, or 0 when none is.
+    double msSinceProgress() const;
+
+    /// The newest take started at `localFolder`: the one the app means by it.
+    View view (const std::string& localFolder) const;
+
+    /// Queues again every take whose last attempt failed and matches.
+    int retry (const std::function<bool (const cardcopy::Result&)>& shouldRetry);
+
+    /// A card has been seen in place at `destinationRoot`, and is the card
+    /// `identitySeen` (empty when that cannot be told). Every take for that
+    /// save location whose last attempt failed goes again now, as at a Stop
+    /// -- not at the next timed retry -- and counts as work a quit would cut
+    /// off (hasWorkToFinish) until that attempt ends: with the card in, the
+    /// copy is expected to go. A take waiting for its own card only when this
+    /// could be it. `onlyWaitingForCard`: only takes whose card was out or
+    /// another card (CardMissing, DifferentCard). How many go.
+    int retryWithCardIn (const std::string& destinationRoot, const std::string& identitySeen,
+                         bool onlyWaitingForCard);
+
+    /// The user's "Copy again", for the newest take at `localFolder`. False
+    /// when the take is not one this copier knows, or it is already queued or
+    /// under way. The card in the reader is taken as the one wanted, even if
+    /// the take was for another (cardcopy::Control::anyCard).
+    bool copyAgain (const std::string& localFolder);
+
+    /// Takes for `destinationRoot` waiting for their own card while another
+    /// card is in its place (their last attempt DifferentCard), and not being
+    /// copied now: what "Copy to this card" under Record would copy. Not a
+    /// take whose own card is `identitySeen`, the card in now, when that can
+    /// be told: the next retry copies that one by itself.
+    int takesForAnotherCard (const std::string& destinationRoot, const std::string& identitySeen) const;
+
+    /// "Copy to this card", under Record: every such take goes to the card in
+    /// the reader now, which becomes its card, as "Copy again" makes it for
+    /// the take on the saved-take card. Every take, not only the last one
+    /// stopped: earlier ones, ones found at launch, and the last one once its
+    /// saved-take card is closed have no other way to it. How many go.
+    int copyToCardInNow (const std::string& destinationRoot);
+
+    /// The combined videos and podcast copies being made are all finished:
+    /// every take started with moreFilesComing goes again, to copy what was
+    /// added to its folder and let go of its marker. Only those takes; files
+    /// already checked on the card in this run are not read again. A take
+    /// still being copied goes again once it finishes.
+    int followUpsFinished();
+
+    /// At launch: looks in `stagingRoot` (on the worker) for take folders
+    /// still marked to be copied, and queues them, oldest first.
+    void resumePendingIn (const std::string& stagingRoot);
+
+    /// How many takes resumePendingIn() found, once, after it has looked.
+    std::optional<int> takeResumedCount();
+
+    /// How many takes were queued again, since the last call, because the
+    /// card they had gone to was replaced at their save location: a take
+    /// whose file was too big for it took the next card, as the user was
+    /// told (use another card, or reformat this one -- which erases every
+    /// take on it). Nothing when none were.
+    std::optional<int> takeRecopiedCount();
+
+    /// The takes whose last attempt failed, counted as cardcopy::Tally says:
+    /// only on this computer, on the card but for a file too big for it, or
+    /// on the card but for a file added since.
+    struct Summary : cardcopy::Tally
+    {
+        /// The take being copied, and how far along.
+        std::string copyingFolder;
+        uint64_t done = 0, total = 0;
+        int waiting = 0;
+        /// Where on this computer each take still to go to the card is now --
+        /// being copied, waiting, or kept here after a failed attempt, a file
+        /// too big or added since included -- oldest first. Its folder there
+        /// may hold the only copy of what is not on the card.
+        std::vector<std::string> foldersStillToCopy;
+    };
+    Summary summary() const;
+
+    void cancel() noexcept;
+    bool waitUntilIdle (int timeoutMs);
+
+    static constexpr int kShutdownWaitMs = 2000;
+
+    /// After this long without a byte moving, the card is said to have stopped
+    /// answering. Generous: a slow card flushing a big file can pause.
+    static constexpr double kStalledAfterMs = 15000.0;
+
+private:
+    /// One take, for the life of this copier. Never reused.
+    using TakeId = uint64_t;
+
+    struct Record
+    {
+        Job job;
+        Phase phase = Phase::None;
+        uint64_t done = 0, total = 0;
+        std::optional<cardcopy::Result> last;
+        std::string folderNow;
+        /// Asked to go again while it was queued or under way.
+        bool againWhenDone = false;
+        /// A run made only to pick up something added after a finished copy.
+        bool resync = false;
+        /// Its combined video or podcast copy is still being made.
+        bool awaitingFollowUps = false;
+        /// What the last attempt that copied it left on the card, by size.
+        /// A later attempt that fails says "only a file added since" only
+        /// while the card it finds still holds these.
+        std::map<std::string, uint64_t> copiedFiles;
+        /// "Copy again": the next attempt takes the card that is in.
+        bool anyCard = false;
+        /// Gone again after following the folder through a rename: a bound,
+        /// so a folder renamed over and over cannot keep the worker busy.
+        int movedFolderRetries = 0;
+        /// Queued again because its card was seen back in: work a quit would
+        /// cut off, though its last attempt failed. Until that attempt ends.
+        bool countsAsWork = false;
+        /// An attempt took the card it reached as the take's, the take not
+        /// knowing its card (cardcopy::Result::cardFirstSeen): said when the
+        /// take is copied, even by a later attempt.
+        bool cardFirstSeen = false;
+    };
+
+    /// Under the lock: whether a queued take is work a quit would cut off.
+    static bool isWorkLocked (const Record& record);
+
+    /// Under the lock: the take itself is on its card, and only a file added
+    /// since is to go -- a run after the combined video, or a retry of one
+    /// that failed for that file alone.
+    static bool isAddingFilesOnlyLocked (const Record& record);
+
+    /// Under the lock: the takes counted as work, as {whole takes, takes only
+    /// being given a file added since}.
+    std::pair<int, int> countWorkLocked() const;
+
+    struct State
+    {
+        mutable std::mutex lock;
+        std::condition_variable changed;
+        std::deque<TakeId> queued;
+        std::map<TakeId, Record> records;
+        /// The newest take started at each folder on this computer.
+        std::map<std::string, TakeId> newestAt;
+        TakeId nextId = 1;
+        std::vector<Finished> finished;
+        TakeId inFlight = 0;                // 0: none
+        std::string scanRoot;               // a resumePendingIn() still to do
+        std::set<std::string> expected;     // expect(): takes of this run not yet started
+        std::optional<int> resumedCount;
+        std::optional<int> recopiedCount;
+        /// Notes to put back on this computer, by take folder, for takes
+        /// queued again for another card. Written by the worker, outside
+        /// the lock, before its next copy.
+        std::vector<std::pair<std::string, cardcopy::Marker>> notesToWrite;
+        bool running = false;
+        std::atomic<bool> cancelling { false };
+        std::atomic<bool> held { false };
+        /// setCardReserved(): the save location, and the card, copies wait for.
+        std::string reservedRoot, reservedIdentity;
+        std::chrono::steady_clock::time_point heldSince;
+        std::chrono::steady_clock::time_point lastProgress;
+        /// Worker only.
+        std::set<std::string> verified;
+        FileSystemFactory makeFileSystem;
+    };
+
+    std::shared_ptr<State> state;
+
+    /// Under the lock: the take is for the card reserved (setCardReserved).
+    static bool forReservedCardLocked (const State& s, const Record& record);
+
+    /// Under the lock. True when the caller must start the worker.
+    static bool enqueueLocked (State& s, TakeId id, bool atFront = false);
+    /// Under the lock: a new record for `job`, now the newest at its folder.
+    static TakeId addTakeLocked (State& s, Job job);
+    /// Under the lock: the newest take at `localFolder`, or nothing.
+    static Record* newestLocked (State& s, const std::string& localFolder, TakeId* id = nullptr);
+    void startWorkerIfNeeded (bool needed);
+
+    /// Under the lock, on the worker: `taker` took the next card at its save
+    /// location in place of `cardBefore`. Every other take for that card
+    /// there goes to this one.
+    static void recopyForCardTakenLocked (State& s, TakeId taker, const std::string& cardBefore);
+
+    static void run (std::shared_ptr<State> state);
+    static void scan (State& s, cardcopy::CopyFileSystem& fs, const std::string& root);
+};
+
+} // namespace mma

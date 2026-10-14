@@ -78,6 +78,11 @@ public:
     /// of several. failInputOpen fails them all, which is a different question.
     std::set<std::string> failInputDevices;
     std::string inputOpenError;
+    /// Per device, for a rig whose mics refuse for different reasons; a
+    /// device not listed gives inputOpenError and an unknown refusal.
+    std::map<std::string, std::string> inputOpenErrors;
+    std::map<std::string, OpenRefusal> inputOpenRefusals;
+    std::string lastRefusedDevice;
 
     int inputStreamsOpened = 0;
     int outputStreamsOpened = 0;
@@ -123,14 +128,27 @@ public:
     bool openInputStream (const std::string& deviceId, double, int, AudioCallback cb) override
     {
         if (failInputOpen || failInputDevices.count (deviceId) > 0)
+        {
+            lastRefusedDevice = deviceId;
             return false;
+        }
         ++inputStreamsOpened;
         inputCallbacks.push_back (cb);
         captured = std::move (cb);
         return true;
     }
 
-    std::string getLastOpenError() const override { return inputOpenError; }
+    std::string getLastOpenError() const override
+    {
+        const auto own = inputOpenErrors.find (lastRefusedDevice);
+        return own != inputOpenErrors.end() ? own->second : inputOpenError;
+    }
+
+    OpenRefusal getLastOpenRefusal() const override
+    {
+        const auto own = inputOpenRefusals.find (lastRefusedDevice);
+        return own != inputOpenRefusals.end() ? own->second : OpenRefusal::unknown;
+    }
 
     void closeAllStreams() override { ++closeAllCalls; }
 
@@ -252,6 +270,89 @@ TEST_CASE (CaptureCoordinator_OneMicThatWillNotOpenDoesNotSilenceTheRest)
     const auto problem = c.getMonitorProblem();
     REQUIRE (problem.find ("Couch") != std::string::npos);
     REQUIRE (problem.find ("took too long") != std::string::npos);
+}
+
+// §14.2 must not read prose to tell a mic another app holds from one that
+// dropped off the bus, and the activity log must not name only the first
+// mic's cause for a rig where several refused for different reasons.
+TEST_CASE (CaptureCoordinator_EachRefusedMicKeepsItsOwnReasonAndKind)
+{
+    FakeBackend backend;
+    backend.failInputDevices = { "dev-b", "dev-c" };
+    backend.inputOpenErrors["dev-b"] = "Another app is using this microphone.";
+    backend.inputOpenRefusals["dev-b"] = OpenRefusal::inUse;
+    backend.inputOpenErrors["dev-c"] = "This microphone took too long to connect.";
+    backend.inputOpenRefusals["dev-c"] = OpenRefusal::timedOut;
+
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    std::vector<CaptureChannel> mics {
+        { "dev-a", "Kitchen", "01_Kitchen", 0.0f },
+        { "dev-b", "Couch", "02_Couch", 0.0f },
+        { "dev-c", "Door", "03_Door", 0.0f },
+    };
+
+    REQUIRE (c.startMonitoring (mics, "out-device"));
+
+    const auto& failures = c.getOpenFailures();
+    REQUIRE (failures.size() == 2u);
+    REQUIRE (failures[0].deviceId == "dev-b");
+    REQUIRE (failures[0].displayName == "Couch");
+    REQUIRE (failures[0].refusal == OpenRefusal::inUse);
+    REQUIRE (failures[0].reason == "Another app is using this microphone.");
+    REQUIRE (failures[1].deviceId == "dev-c");
+    REQUIRE (failures[1].displayName == "Door");
+    REQUIRE (failures[1].refusal == OpenRefusal::timedOut);
+    REQUIRE (failures[1].reason == "This microphone took too long to connect.");
+
+    // The plain list is unchanged beside it.
+    REQUIRE (c.getDevicesThatFailedToOpen().size() == 2u);
+
+    // A rebuild where everything opens leaves nothing behind.
+    backend.failInputDevices.clear();
+    REQUIRE (c.startMonitoring (mics, "out-device"));
+    REQUIRE (c.getOpenFailures().empty());
+}
+
+// §14.2's own example: three mics behind one bus-powered hub, every one of
+// them refusing as it is opened. Nothing opened, so the start returned
+// before the refusals were kept, and the power check was handed none of them:
+// the user heard "Kitchen couldn't be opened" and never "use a powered hub".
+// Mutation: the refusals kept only when something opened.
+TEST_CASE (CaptureCoordinator_EveryMicRefusingStillSaysWhyEachDid)
+{
+    FakeBackend backend;
+    backend.failInputDevices = { "dev-a", "dev-b", "dev-c" };
+    backend.inputOpenRefusals["dev-a"] = OpenRefusal::gone;
+    backend.inputOpenRefusals["dev-b"] = OpenRefusal::timedOut;
+    backend.inputOpenRefusals["dev-c"] = OpenRefusal::gone;
+
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    std::vector<CaptureChannel> mics {
+        { "dev-a", "Kitchen", "01_Kitchen", 0.0f },
+        { "dev-b", "Couch", "02_Couch", 0.0f },
+        { "dev-c", "Door", "03_Door", 0.0f },
+    };
+
+    REQUIRE_FALSE (c.startMonitoring (mics, {}));
+
+    const auto& failures = c.getOpenFailures();
+    REQUIRE (failures.size() == 3u);
+    REQUIRE (failures[0].deviceId == "dev-a");
+    REQUIRE (failures[0].refusal == OpenRefusal::gone);
+    REQUIRE (failures[1].refusal == OpenRefusal::timedOut);
+    REQUIRE (failures[2].displayName == "Door");
+
+    // Nothing is monitoring, so no channel is silent beside live ones.
+    REQUIRE (c.getDevicesThatFailedToOpen().empty());
+
+    // A rebuild where they all open leaves nothing behind.
+    backend.failInputDevices.clear();
+    REQUIRE (c.startMonitoring (mics, {}));
+    REQUIRE (c.getOpenFailures().empty());
 }
 
 TEST_CASE (CaptureCoordinator_ADeadMicIsStillNamedWhenTheOutputIsRefusedToo)

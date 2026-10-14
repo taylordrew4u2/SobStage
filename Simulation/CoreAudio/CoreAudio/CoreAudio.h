@@ -37,6 +37,8 @@ using Boolean  = unsigned char;
 constexpr OSStatus noErr = 0;
 constexpr OSStatus kAudioHardwareUnspecifiedError = mmaFourCC ('w', 'h', 'a', 't');
 constexpr OSStatus kAudioHardwareBadObjectError   = mmaFourCC ('!', 'o', 'b', 'j');
+constexpr OSStatus kAudioHardwareBadDeviceError   = mmaFourCC ('!', 'd', 'e', 'v');
+constexpr OSStatus kAudioDevicePermissionsError   = mmaFourCC ('!', 'h', 'o', 'g');
 constexpr OSStatus kAudioHardwareUnknownPropertyError = mmaFourCC ('w', 'h', 'o', '?');
 
 // --- CoreFoundation ---------------------------------------------------------

@@ -402,6 +402,14 @@ struct FakeAudioClient : RefCounted<IAudioClient>
 
         const auto& extensible = *reinterpret_cast<const WAVEFORMATEXTENSIBLE*> (format);
 
+        if (endpoint->spec.formatQuestionError != 0)
+        {
+            if (endpoint->spec.goneAfterFormatQuestion)
+                endpoint->spec.deviceState = DEVICE_STATE_NOTPRESENT;
+
+            return static_cast<HRESULT> (endpoint->spec.formatQuestionError);
+        }
+
         for (const auto& f : endpoint->spec.exclusiveFormats)
             if (formatMatches (f, extensible))
                 return S_OK;
@@ -471,6 +479,9 @@ struct FakeAudioClient : RefCounted<IAudioClient>
 
         if (IsFormatSupported (mode, format, nullptr) != S_OK)
             return AUDCLNT_E_UNSUPPORTED_FORMAT;
+
+        if (endpoint->spec.initializeError != 0)
+            return static_cast<HRESULT> (endpoint->spec.initializeError);
 
         // Some devices accept only one period size and reject anything else,
         // reporting the size they want through GetBufferSize. The rejection is
@@ -661,11 +672,20 @@ struct FakeDevice : RefCounted<IMMDevice>
             return S_OK;
         }
 
+        if (riid == __uuidof (IAudioClient) && endpoint->spec.activateError != 0)
+        {
+            *out = nullptr;
+            return static_cast<HRESULT> (endpoint->spec.activateError);
+        }
+
         if (! endpoint->spec.allowActivate || riid != __uuidof (IAudioClient)
             || (endpoint->spec.failActivateAfterAlignment && endpoint->alignmentRejected.load()))
         {
             *out = nullptr;
-            return E_FAIL;
+            return riid == __uuidof (IAudioClient) && endpoint->spec.failActivateAfterAlignment
+                       && endpoint->alignmentRejected.load() && endpoint->spec.reactivateError != 0
+                ? static_cast<HRESULT> (endpoint->spec.reactivateError)
+                : E_FAIL;
         }
 
         auto* client = new FakeAudioClient();

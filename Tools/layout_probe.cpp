@@ -11,6 +11,7 @@
 #include "UI/TakeAlertCard.h"
 #include "UI/CameraPreviewCover.h"
 #include "Core/QuitQuestions.h"
+#include "Core/TakeCopy.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -933,6 +934,198 @@ int main()
         }
     }
 
+
+    // A take recorded on this computer for a card: the saved-take card carries
+    // the copy's sentence -- the longest one names the folder on this computer
+    // -- in place of the backup line, with Copy again beside Open the folder,
+    // and the save prompt says where the take is recorded first. Each line
+    // must be drawn whole, inside its card, with nothing on top of it.
+    {
+        std::printf ("\nThe copy to the card is readable on the saved-take card and the save prompt\n");
+
+        const juce::String copyLine ("The card isn't plugged in. This take is safe on this computer in "
+                                     "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/2026-10-12_2100_Late-Show, "
+                                     "and will be copied when the card is back.");
+        const juce::String routeLine ("This computer is nearly full, so this take is going straight to the "
+                                      "card. Delete old takes in /Users/me/RECORDINGS-MIRROR to make room.");
+
+        const auto drawnWhole = [] (juce::Label& label, const juce::String& text)
+        {
+            const auto font = label.getFont();
+            const auto area = label.getBorderSize().subtractedFrom (label.getLocalBounds());
+            const int allowed = juce::jmax (1, (int) ((float) area.getHeight() / font.getHeight()));
+            const float needed = font.getStringWidthFloat (text);
+            return needed < (float) area.getWidth()
+                || (float) allowed > (needed + 80.0f) / (float) area.getWidth();
+        };
+
+        for (const int width : { 1180, 707, 560, 420 })
+        {
+            mma::SavedTakePanel saved;
+            saved.setVisible (true);
+            saved.setTake ("/Users/me/RECORDINGS-MIRROR/2026-10-12_2100_Late-Show", {},
+                           { { "MIX.wav", 412000000 }, { "Mic 1 - Host.wav", 206000000 },
+                             { "Mic 2 - Guest.wav", 206000000 }, { "session.json", 4000 } },
+                           mma::TakeAudioVerdict::Recorded);
+            saved.setRouteNote (routeLine);
+            saved.setCardCopy (copyLine, true);
+            saved.setSize (width, saved.getRequiredHeight() + 32);
+
+            const int cardWidth = juce::jmin (480, juce::jmax (280, width - 32));
+            const auto cardBounds = juce::Rectangle<int> (cardWidth, saved.getRequiredHeight())
+                                        .withCentre (saved.getLocalBounds().getCentre());
+
+            bool ok = true;
+            juce::String detail;
+
+            for (const auto& text : { copyLine, routeLine })
+            {
+                auto* label = findLabel (saved, text);
+                const bool shown = label != nullptr && label->isVisible();
+                const bool whole = shown && drawnWhole (*label, text);
+                const bool inside = shown && cardBounds.contains (label->getBounds());
+                const bool front = shown && saved.getComponentAt (label->getBounds().getCentre()) == label;
+                ok = ok && whole && inside && front;
+                detail << (shown ? juce::String (label->getHeight()) + "px" : juce::String ("missing"))
+                       << (whole ? "" : " CUT OFF") << (inside ? "" : " OUTSIDE") << (front ? "" : " COVERED") << "; ";
+            }
+
+            std::vector<juce::Button*> buttons;
+            for (int i = 0; i < saved.getNumChildComponents(); ++i)
+                if (auto* b = dynamic_cast<juce::Button*> (saved.getChildComponent (i)); b != nullptr && b->isVisible())
+                    buttons.push_back (b);
+
+            bool copyAgainShown = false, overlap = false;
+            for (auto* b : buttons)
+            {
+                copyAgainShown = copyAgainShown || b->getButtonText() == "Copy again";
+                for (auto* other : buttons)
+                    overlap = overlap || (b != other && b->getBounds().intersects (other->getBounds()));
+                ok = ok && cardBounds.contains (b->getBounds()) && b->getWidth() > 40;
+            }
+
+            ok = ok && copyAgainShown && ! overlap;
+            detail << buttons.size() << " buttons" << (copyAgainShown ? "" : ", NO COPY AGAIN")
+                   << (overlap ? ", OVERLAPPING" : "");
+
+            std::printf ("  %s  %4dpx saved-take card: %s\n", ok ? "PASS" : "FAIL", width, detail.toRawUTF8());
+            failures += ok ? 0 : 1;
+
+            mma::SaveLocationPrompt prompt;
+            prompt.setVisible (true);
+            prompt.setPlan ("/Volumes/CARD/RECORDINGS", "2026-10-12_2200_Encore", {},
+                            { "MIX.wav", "Mic 1 - Host.wav", "Mic 2 - Guest.wav", "session.json" }, 0, 0, {},
+                            "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/2026-10-12_2200_Encore");
+            prompt.setSize (width, prompt.getRequiredHeight() + 32);
+
+            const juce::String promptLine ("Recorded on this computer first, then copied to the card when you "
+                                           "stop. This computer keeps its copy in "
+                                           "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/2026-10-12_2200_Encore.");
+            auto* line = findLabel (prompt, promptLine);
+            const bool promptOk = line != nullptr && line->isVisible() && drawnWhole (*line, promptLine)
+                               && prompt.getComponentAt (line->getBounds().getCentre()) == line;
+
+            std::printf ("  %s  %4dpx save prompt: %s\n", promptOk ? "PASS" : "FAIL", width,
+                         line == nullptr ? "line missing"
+                                         : (juce::String (line->getHeight()) + "px tall"
+                                            + (drawnWhole (*line, promptLine) ? "" : ", CUT OFF")).toRawUTF8());
+            failures += promptOk ? 0 : 1;
+        }
+    }
+
+    // Every sentence the copy can put on the saved-take card, as describe()
+    // words it -- each outcome, for the whole take and for a file added
+    // since, in a Mac's words and in Windows' -- and the "nearly full" note
+    // with its "Keep them" clause. The part a long sentence ends with is where
+    // the take is safe; cut off, it was the part lost. Only CardMissing was
+    // checked here, and the longer ones were cut at every width.
+    {
+        std::printf ("\nEvery card-copy sentence is drawn whole on the saved-take card\n");
+
+        const std::string where = "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/2026-10-12_2100_Late-Show";
+        std::vector<juce::String> lines;
+
+        for (const auto wording : { mma::cardcopy::Wording::Mac, mma::cardcopy::Wording::Windows })
+            for (const bool added : { false, true })
+                for (int o = 0; o <= static_cast<int> (mma::cardcopy::Outcome::Cancelled); ++o)
+                {
+                    mma::cardcopy::Result r;
+                    r.outcome = static_cast<mma::cardcopy::Outcome> (o);
+                    r.addedFilesOnly = added;
+                    r.fileName = "V01_Camera-with-a-long-name_with-sound.mov";
+                    r.filesystemType = o % 2 == 0 ? "ntfs" : "msdos";
+                    r.cardFolder = "/Volumes/NO NAME/RECORDINGS/2026-10-12_2100_Late-Show";
+                    const auto line = mma::cardcopy::describe (r, where, wording);
+                    if (! line.empty())
+                        lines.push_back (juce::String (line));
+                }
+
+        const juce::String routeLine (mma::cardcopy::computerFullNote (
+            "/Users/someone-with-a-long-name/RECORDINGS-MIRROR",
+            { "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/2026-10-12_2100_Late-Show",
+              "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/2026-10-12_2215_Late-Show-Encore",
+              "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/Night 1 - early" }));
+
+        // Laid out exactly as the label draws it (LookAndFeel::drawLabel): every
+        // character there, none replaced by "...", none below the label.
+        const auto drawnWhole = [] (juce::Label& label, const juce::String& text)
+        {
+            const auto font = label.getFont();
+            const auto area = label.getBorderSize().subtractedFrom (label.getLocalBounds()).toFloat();
+            const int maxLines = juce::jmax (1, (int) (area.getHeight() / font.getHeight()));
+
+            juce::GlyphArrangement drawn;
+            drawn.addFittedText (font, text, area.getX(), area.getY(), area.getWidth(), area.getHeight(),
+                                 label.getJustificationType(), maxLines, label.getMinimumHorizontalScale());
+
+            juce::String shown;
+            for (int i = 0; i < drawn.getNumGlyphs(); ++i)
+                shown += drawn.getGlyph (i).getCharacter();
+
+            return shown.removeCharacters (" \t") == text.removeCharacters (" \t")
+                && drawn.getBoundingBox (0, -1, true).getBottom() <= area.getBottom() + 1.0f;
+        };
+
+        for (const int width : { 1180, 707, 560, 420 })
+        {
+            int cut = 0, shownWhole = 0;
+            juce::String firstCut;
+
+            for (const auto& copyLine : lines)
+            {
+                mma::SavedTakePanel saved;
+                saved.setVisible (true);
+                saved.setTake (juce::String (where), {}, { { "MIX.wav", 412000000 }, { "session.json", 4000 } },
+                               mma::TakeAudioVerdict::Recorded);
+                saved.setRouteNote (routeLine);
+                saved.setCardCopy (copyLine, true);
+                saved.setSize (width, saved.getRequiredHeight() + 32);
+
+                const int cardWidth = juce::jmin (480, juce::jmax (280, width - 32));
+                const auto cardBounds = juce::Rectangle<int> (cardWidth, saved.getRequiredHeight())
+                                            .withCentre (saved.getLocalBounds().getCentre());
+
+                bool ok = true;
+                for (const auto& text : { copyLine, routeLine })
+                {
+                    auto* label = findLabel (saved, text);
+                    ok = ok && label != nullptr && label->isVisible() && drawnWhole (*label, text)
+                      && cardBounds.contains (label->getBounds())
+                      && saved.getComponentAt (label->getBounds().getCentre()) == label;
+                }
+
+                if (ok)
+                    ++shownWhole;
+                else if (cut++ == 0)
+                    firstCut = copyLine;
+            }
+
+            std::printf ("  %s  %4dpx %d of %d sentences drawn whole%s%s\n", cut == 0 ? "PASS" : "FAIL", width,
+                         shownWhole, (int) lines.size(), cut == 0 ? "" : "; first cut: ",
+                         firstCut.substring (0, 70).toRawUTF8());
+            failures += cut == 0 ? 0 : 1;
+        }
+    }
 
     // macOS camera previews are native NSViews stacked above everything JUCE
     // paints in the window, so a card or the take banner cannot be drawn over

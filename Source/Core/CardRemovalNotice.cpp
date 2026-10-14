@@ -27,4 +27,17 @@ CardRemovalNotice CardRemovalNotice::build (const std::string& mirrorFolder, boo
     return notice;
 }
 
+CardRemovalNotice CardRemovalNotice::buildForTakeRecordedHere (const std::string& takeFolder)
+{
+    // Not the card -- the take never touched it -- and no backup copy: a take
+    // recorded here has none. "Check that it is plugged in, keep the backup
+    // switched on" sent the user to the one thing that was fine.
+    CardRemovalNotice notice;
+    notice.message = "This computer's drive stopped accepting writes, so the recording has been stopped and "
+                     "every file closed."
+                   + (takeFolder.empty() ? std::string() : " What was recorded is in " + takeFolder + ".")
+                   + " Check this computer has room before recording again.";
+    return notice;
+}
+
 } // namespace mma

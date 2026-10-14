@@ -1,5 +1,7 @@
 #include "App/TakeCombiner.h"
 #include "Core/SessionWriter.h"
+#include "Core/TakeCopy.h"
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <cstdio>
@@ -185,6 +187,23 @@ int main (int argc, char** argv)
                 return 8;
             }
 
+            // A combine that is seen half-written: the file ffmpeg was told
+            // to write has something in it well before it is finished.
+            if (std::strstr (argv[index], "watched-input") != nullptr)
+            {
+                if (auto* growing = std::fopen (argv[argc - 1], "wb"))
+                {
+                    std::fputs ("half", growing);
+                    std::fflush (growing);
+                    std::this_thread::sleep_for (std::chrono::milliseconds (600));
+                    std::fputs (" and the rest", growing);
+                    std::fclose (growing);
+                    return 0;
+                }
+
+                return 8;
+            }
+
             if (std::strstr (argv[index], "fail-input") != nullptr)
             {
                 if (auto* partial = std::fopen (argv[argc - 1], "wb"))
@@ -251,7 +270,8 @@ int main (int argc, char** argv)
     // kill the child and discard any incomplete output.
     std::this_thread::sleep_for (std::chrono::milliseconds (350));
 
-    if (root.getChildFile ("V01_Camera_with-sound.mov").exists())
+    if (root.getChildFile ("V01_Camera_with-sound.mov").exists()
+        || root.getChildFile (".V01_Camera_with-sound.mov").exists())
         return fail ("a cancelled combine left an output file behind");
 
     const auto failingVideo = root.getChildFile ("fail-input.mov");
@@ -282,8 +302,50 @@ int main (int argc, char** argv)
     if (! failedStatus.written.isEmpty())
         return fail ("a non-zero ffmpeg exit was added to written outputs");
 
-    if (root.getChildFile ("failed-output.mov").exists())
+    if (root.getChildFile ("failed-output.mov").exists() || root.getChildFile (".failed-output.mov").exists())
         return fail ("a non-zero ffmpeg exit left its partial output behind");
+
+    // A copy to the card lists the take's folder while the combine runs. The
+    // half-made movie must not be among what it would carry: Windows refuses
+    // to open a file ffmpeg is still writing, and the copy called the whole
+    // take's folder gone. It appears under its real name only when finished.
+    {
+        const auto watched = root.getChildFile ("watched-input.mov");
+        if (! watched.replaceWithText ("video"))
+            return fail ("could not make the watched fake input");
+
+        mma::CombinedTakePlan watchedPlan;
+        watchedPlan.jobs.push_back ({ "watched-input.mov", "MIX.wav",
+                                      "watched_with-sound.mov", 24, 0.0 });
+
+        mma::TakeCombiner watchedCombiner;
+        watchedCombiner.setFfmpegOverride (executable);
+
+        if (! watchedCombiner.start (root, watchedPlan))
+            return fail ("the watched simulated combine did not start");
+
+        std::this_thread::sleep_for (std::chrono::milliseconds (300));
+
+        bool sawHalfMadeMovie = false;
+        for (const auto& file : root.findChildFiles (juce::File::findFiles, false))
+            if (file.getFileName().contains ("watched_with-sound")
+                && mma::cardcopy::shouldCopy (file.getFileName().toStdString()))
+                sawHalfMadeMovie = true;
+
+        if (! watchedCombiner.isRunning())
+            return fail ("the watched combine finished before it could be looked at");
+
+        if (sawHalfMadeMovie)
+            return fail ("a combined movie still being made was in the take's folder under a name the card copy carries");
+
+        const auto watchDeadline = std::chrono::steady_clock::now() + std::chrono::seconds (3);
+        while (watchedCombiner.isRunning() && std::chrono::steady_clock::now() < watchDeadline)
+            std::this_thread::sleep_for (std::chrono::milliseconds (10));
+
+        if (root.getChildFile ("watched_with-sound.mov").loadFileAsString() != "half and the rest"
+            || root.getChildFile (".watched_with-sound.mov").exists())
+            return fail ("the finished combined movie was not given its real name");
+    }
 
     // The next take failing the same way is a second failure, not the first
     // one again. The app used to remember the problem's wording and announce
@@ -335,6 +397,44 @@ int main (int argc, char** argv)
 
     if (! root.getChildFile ("successful-output.mov").existsAsFile())
         return fail ("a zero ffmpeg exit lost its completed output");
+
+    // Windows refuses a rename while an antivirus or indexing service has the
+    // just-closed file open -- straight after ffmpeg exits. One refusal threw
+    // the finished movie away and reported the camera as not combined.
+    {
+        mma::CombinedTakePlan busyPlan;
+        busyPlan.jobs.push_back ({ "success-input.mov", "MIX.wav", "busy-output.mov", 24, 0.0 });
+
+        auto refusals = std::make_shared<std::atomic<int>> (0);
+        mma::TakeCombiner busyCombiner;
+        busyCombiner.setFfmpegOverride (executable);
+        busyCombiner.setRenameForTesting ([refusals] (const juce::File& from, const juce::File& to)
+        {
+            // A scanner holding the file for the first two looks.
+            if (refusals->fetch_add (1) < 2)
+                return false;
+            return from.moveFileTo (to);
+        });
+
+        if (! busyCombiner.start (root, busyPlan))
+            return fail ("the combine whose file is briefly held did not start");
+
+        const auto busyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds (5);
+        while (busyCombiner.isRunning() && std::chrono::steady_clock::now() < busyDeadline)
+            std::this_thread::sleep_for (std::chrono::milliseconds (10));
+
+        const auto busyStatus = busyCombiner.getStatus();
+        if (busyCombiner.isRunning() || busyStatus.problem.isNotEmpty()
+            || ! busyStatus.written.contains ("busy-output.mov"))
+            return fail ("a finished combine whose rename was refused for a moment was reported as failed");
+
+        if (! root.getChildFile ("busy-output.mov").existsAsFile()
+            || root.getChildFile (".busy-output.mov").exists())
+            return fail ("a finished combine whose rename was refused for a moment was thrown away");
+
+        if (refusals->load() != 3)
+            return fail ("the rename was not tried again until it went");
+    }
 
     // A take stopped while the previous take is still being combined must get
     // its combined file too. start() used to refuse it while a run was in
@@ -552,6 +652,6 @@ int main (int argc, char** argv)
     if (checkSplitMixReachesTheCombinedFile (root) != 0)
         return 1;
 
-    std::printf ("ALL CHECKS PASSED (34 checks, 0 failing)\n");
+    std::printf ("ALL CHECKS PASSED (36 checks, 0 failing)\n");
     return 0;
 }

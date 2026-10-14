@@ -350,19 +350,34 @@ WAVEFORMATEXTENSIBLE makePcmFormat (double sampleRate, int channels, int contain
 }
 
 // Use the same layouts for capability discovery and stream opening.
+//
+// `stoppedBy`, when given, is set to the answer that ended the questions
+// early: AUDCLNT_E_DEVICE_INVALIDATED, a microphone that dropped off the bus
+// while its formats were being asked about, or E_ACCESSDENIED, Windows'
+// microphone privacy setting. Either refused every format, and was taken for
+// a device that only refuses the sample rate. Nothing more is asked of it.
 bool findExclusiveFormat (IAudioClient* client, double rate, int channels,
-                          WAVEFORMATEXTENSIBLE& format)
+                          WAVEFORMATEXTENSIBLE& format, HRESULT* stoppedBy = nullptr)
 {
     const int layouts[][2] = { { 32, 0 }, { 32, 32 }, { 32, 24 }, { 24, 24 }, { 16, 16 } };
     for (const auto& layout : layouts)
     {
         const auto candidate = layout[1] == 0 ? makeFloat32Format (rate, channels)
                                              : makePcmFormat (rate, channels, layout[0], layout[1]);
-        if (client->IsFormatSupported (AUDCLNT_SHAREMODE_EXCLUSIVE,
-                                      &candidate.Format, nullptr) == S_OK)
+        const auto answer = client->IsFormatSupported (AUDCLNT_SHAREMODE_EXCLUSIVE, &candidate.Format, nullptr);
+
+        if (answer == S_OK)
         {
             format = candidate;
             return true;
+        }
+
+        if (answer == AUDCLNT_E_DEVICE_INVALIDATED || answer == E_ACCESSDENIED)
+        {
+            if (stoppedBy != nullptr)
+                *stoppedBy = answer;
+
+            return false;
         }
     }
     return false;
@@ -381,7 +396,7 @@ bool findExclusiveFormat (IAudioClient* client, double rate, int channels,
 /// incapable, and the user blamed a Windows setting, for hardware the open
 /// would have taken on its next candidate.
 bool findExclusiveFormatForAnyChannelCount (IAudioClient* client, double rate, bool isInput,
-                                            WAVEFORMATEXTENSIBLE& format)
+                                            WAVEFORMATEXTENSIBLE& format, HRESULT* stoppedBy = nullptr)
 {
     int channelCandidates[3] = { isInput ? 1 : 2, isInput ? 2 : 1, 0 };
     int numChannelCandidates = 2;
@@ -400,9 +415,14 @@ bool findExclusiveFormatForAnyChannelCount (IAudioClient* client, double rate, b
         CoTaskMemFree (mixFormat);
     }
 
-    for (int c = 0; c < numChannelCandidates; ++c)
-        if (findExclusiveFormat (client, rate, channelCandidates[c], format))
+    HRESULT stopped = S_OK;
+
+    for (int c = 0; c < numChannelCandidates && stopped == S_OK; ++c)
+        if (findExclusiveFormat (client, rate, channelCandidates[c], format, &stopped))
             return true;
+
+    if (stoppedBy != nullptr)
+        *stoppedBy = stopped;
 
     return false;
 }
@@ -994,20 +1014,62 @@ ExclusiveModeCapability WasapiAsioBackend::checkExclusiveModeCapability (const s
     return cap;
 }
 
+/// §14.2: why IAudioClient could not be had for an endpoint. A microphone
+/// that dropped off the bus as it was opened -- a starved hub browning out as
+/// it starts drawing current -- is invalidated or no longer found, and counts
+/// toward the power warning. Only an outright access refusal is about
+/// permission. Anything else is unknown, and counted, so a real brownout is
+/// never hidden behind a cause that more power would not fix.
+static OpenRefusal refusalForFailedActivate (HRESULT result) noexcept
+{
+    // HRESULT_FROM_WIN32 (ERROR_NOT_FOUND), which GetDevice and Activate give
+    // for an endpoint that is no longer in the system.
+    constexpr HRESULT kNotFound = static_cast<HRESULT> (0x80070490);
+
+    if (result == E_ACCESSDENIED)
+        return OpenRefusal::permission;
+
+    if (result == AUDCLNT_E_DEVICE_INVALIDATED || result == kNotFound)
+        return OpenRefusal::gone;
+
+    return OpenRefusal::unknown;
+}
+
+/// What a microphone refused by Windows' privacy settings is told. The
+/// refusal comes from whichever call Windows chooses -- Activate, a format
+/// question, or most often Initialize ("80070005") -- and "Let desktop apps
+/// access your microphone" is the switch a plain desktop app like this one
+/// needs, beside the main one.
+static std::string microphonePrivacyRefusal()
+{
+    return "Windows isn't letting SobStage use this microphone. Open Settings > Privacy & security > "
+           "Microphone, turn on \"Microphone access\" and \"Let desktop apps access your microphone\", "
+           "then try again.";
+}
+
 std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std::string& deviceId,
                                                                       double sampleRate,
                                                                       int bufferSizeSamples,
                                                                       bool isInput,
                                                                       AudioCallback callback,
-                                                                      std::string& openError)
+                                                                      std::string& openError,
+                                                                      OpenRefusal& refusal)
 {
+    refusal = OpenRefusal::unknown;
+
     if (! callback)
         return nullptr;
 
     openError.clear();
 
+    // GetDevice hands back an endpoint that is no longer present as readily
+    // as one that is, so its state is asked straight away: a microphone that
+    // dropped off the bus after the list was made is "gone" here, before any
+    // later check could call it something else.
     ComPtr<IMMDevice> device;
-    if (! resolveDevice (deviceId, device) || device == nullptr)
+    DWORD endpointState = 0;
+    if (! resolveDevice (deviceId, device) || device == nullptr
+        || FAILED (device->GetState (&endpointState)) || endpointState != DEVICE_STATE_ACTIVE)
     {
         // §5.4 asks for the cause to be named. Only the format-refused case
         // below ever filled this in, so every other refusal in here reached the
@@ -1016,6 +1078,7 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
             ? "This microphone is no longer connected. Unplug it and plug it back in, then try "
               "again."
             : "This sound output isn't there any more. Pick a different one in Advanced.";
+        refusal = OpenRefusal::gone;
         return nullptr;
     }
 
@@ -1036,6 +1099,7 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
             || ! isDirectlyAttachedExternalInput (device.Get(), eligibilityEnumerator.Get()))
         {
             openError = "SobStage only records from directly connected external audio hardware.";
+            refusal = OpenRefusal::notExternal;
             return nullptr;
         }
     }
@@ -1050,14 +1114,28 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
     stream->deviceId = isInput ? deviceId : std::string();
     stream->failures = &streamFailures;
 
-    if (FAILED (device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr,
-                                  reinterpret_cast<void**> (stream->client.GetAddressOf()))))
+    if (const auto activated = device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr,
+                                                 reinterpret_cast<void**> (stream->client.GetAddressOf()));
+        FAILED (activated))
     {
-        openError = isInput
-            ? "Windows wouldn't let this app attach to this microphone. Check Settings > Privacy > "
-              "Microphone, then try again."
-            : "Windows wouldn't let this app attach to this output. Close anything else using it, "
-              "then try again.";
+        refusal = refusalForFailedActivate (activated);
+
+        if (refusal == OpenRefusal::gone)
+            openError = isInput
+                ? "This microphone disconnected while SobStage was opening it. Plug it back in, "
+                  "then try again."
+                : "This sound output isn't there any more. Pick a different one in Advanced.";
+        else if (refusal == OpenRefusal::permission)
+            openError = isInput
+                ? microphonePrivacyRefusal()
+                : "Windows wouldn't let this app attach to this output. Close anything else using it, "
+                  "then try again.";
+        else
+            openError = isInput
+                ? "Windows couldn't open this microphone. Unplug it and plug it back in, then try again."
+                : "Windows wouldn't let this app attach to this output. Close anything else using it, "
+                  "then try again.";
+
         return nullptr;
     }
 
@@ -1069,13 +1147,42 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
     // Try the engine's own format first, then descend through the fixed-point
     // layouts, and try the device's native channel count before giving up.
     WAVEFORMATEXTENSIBLE format {};
+    HRESULT refusedWhileAsked = S_OK;
     const bool formatFound =
-        findExclusiveFormatForAnyChannelCount (stream->client.Get(), sampleRate, isInput, format);
+        findExclusiveFormatForAnyChannelCount (stream->client.Get(), sampleRate, isInput, format,
+                                               &refusedWhileAsked);
 
     if (! formatFound)
     {
+        // The privacy setting, answering the format questions: not the
+        // sample rate, and not power (§14.2).
+        if (isInput && refusedWhileAsked == E_ACCESSDENIED)
+        {
+            openError = microphonePrivacyRefusal();
+            refusal = OpenRefusal::permission;
+            return nullptr;
+        }
+
+        // §14.2: a microphone that dropped off the bus after Activate refuses
+        // every format too. Asked again before blaming the sample rate --
+        // which the power warning never counts, and which sent the user to a
+        // setting that had nothing to do with it -- as CoreAudio's open asks
+        // whether the device is alive after a refused rate.
+        DWORD stateNow = 0;
+        if (refusedWhileAsked == AUDCLNT_E_DEVICE_INVALIDATED || FAILED (device->GetState (&stateNow))
+            || stateNow != DEVICE_STATE_ACTIVE)
+        {
+            openError = isInput
+                ? "This microphone disconnected while SobStage was opening it. Plug it back in, "
+                  "then try again."
+                : "This sound output isn't there any more. Pick a different one in Advanced.";
+            refusal = OpenRefusal::gone;
+            return nullptr;
+        }
+
         openError = "This device won't accept a low-latency connection at " + std::to_string ((int) sampleRate)
                       + " Hz. Try a different sample rate, or a different device, in Advanced.";
+        refusal = OpenRefusal::settingsRefused;
         return nullptr;
     }
 
@@ -1113,10 +1220,16 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
 
             stream->client.Reset();
 
-            if (FAILED (device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr,
-                                          reinterpret_cast<void**> (stream->client.GetAddressOf()))))
+            if (const auto again = device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr,
+                                                     reinterpret_cast<void**> (stream->client.GetAddressOf()));
+                FAILED (again))
             {
-                openError = isInput
+                // Tagged as the first Activate is: a refusal of access is the
+                // privacy setting, not a microphone that lost power.
+                refusal = refusalForFailedActivate (again);
+                openError = isInput && refusal == OpenRefusal::permission
+                    ? microphonePrivacyRefusal()
+                    : isInput
                     ? "This microphone stopped responding while it was being set up. Check its cable, "
                       "then choose it again in Advanced."
                     : "These headphones stopped responding while they were being set up. Check the "
@@ -1132,11 +1245,24 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
         }
     }
 
+    // Where Windows usually refuses a microphone its privacy settings keep
+    // from this app: Activate succeeds, and Initialize answers "access
+    // denied" (0x80070005). Not a microphone that lost power -- counted as
+    // one, three refused microphones read as a hub that needs its own power
+    // adapter (§14.2) -- and not one to unplug and plug back in.
+    if (hr == E_ACCESSDENIED && isInput)
+    {
+        openError = microphonePrivacyRefusal();
+        refusal = OpenRefusal::permission;
+        return nullptr;
+    }
+
     if (hr == AUDCLNT_E_INVALID_DEVICE_PERIOD)
     {
         openError = std::string (isInput ? "This microphone" : "These headphones")
                   + " can't run with a buffer of " + std::to_string (bufferSizeSamples)
                   + " samples. Pick a larger buffer size in Advanced.";
+        refusal = OpenRefusal::settingsRefused;
         return nullptr;
     }
 
@@ -1161,6 +1287,7 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
               "exclusive control\" is ticked for it in Sound settings."
             : "These headphones wouldn't give this app exclusive use, which live monitoring needs. "
               "Close anything else playing sound, or pick a different output in Advanced.";
+        refusal = OpenRefusal::inUse;
         return nullptr;
     }
 
@@ -1225,6 +1352,7 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
                                                   AudioCallback callback)
 {
     lastOpenError.clear();
+    lastOpenRefusal = OpenRefusal::unknown;
 
     // Every COM call below -- Activate, IsFormatSupported, Initialize -- runs
     // on an owned worker behind a deadline, for the reason CoreAudioBackend
@@ -1246,6 +1374,7 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
         bool finished = false;
         bool abandoned = false;
         std::string error;
+        OpenRefusal refusal = OpenRefusal::unknown;
         std::unique_ptr<WasapiStream> stream;
     };
 
@@ -1265,8 +1394,9 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
         {
             const ScopedMtaMembership com;
             std::string error;
+            OpenRefusal refusal = OpenRefusal::unknown;
             auto built = buildExclusiveStream (deviceId, sampleRate, bufferSizeSamples, isInput,
-                                               std::move (callback), error);
+                                               std::move (callback), error, refusal);
 
             // Announced before the result is published and on every exit, so a
             // caller that stopped waiting still learns when the driver let go.
@@ -1293,6 +1423,7 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
 
             attempt->stream = std::move (built);
             attempt->error = std::move (error);
+            attempt->refusal = refusal;
             attempt->finished = true;
             attempt->changed.notify_one();
         });
@@ -1307,6 +1438,7 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
 
         lastOpenError = "Windows couldn't create the worker needed to open this audio device "
                         "safely. Restart SobStage, then try again.";
+        lastOpenRefusal = OpenRefusal::appBusy;
         return false;
     }
 
@@ -1325,11 +1457,13 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
               "again."
             : "Windows took too long to connect this sound output, so SobStage stopped waiting. "
               "Choose another output or reconnect it.";
+        lastOpenRefusal = OpenRefusal::timedOut;
         return false;
     }
 
     auto stream = std::move (attempt->stream);
     lastOpenError = std::move (attempt->error);
+    lastOpenRefusal = attempt->refusal;
     lock.unlock();
     worker.join();
 

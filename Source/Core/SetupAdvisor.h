@@ -12,6 +12,12 @@ namespace mma {
 enum class SetupIssue
 {
     BusPowerExhausted,    // §14.2
+
+    /// §14.2's other half: one device failing again and again while nothing
+    /// else does. That is its cable or port, not the hub's power, and saying
+    /// "needs more power" about it sent people shopping for the wrong thing.
+    DeviceKeepsDropping,
+
     ControllerContention, // §14.3
     NonCardioidPattern,   // §14.4
     SilentChannel,        // §8.1 / §10.5 -- usually the hardware mute switch
@@ -43,8 +49,22 @@ struct SetupAdvice
 class SetupAdvisor
 {
 public:
-    /// §14.2: an enumeration failure or a device dropping off the bus.
-    void noteDeviceDropout (double nowSeconds, int micsAttached);
+    /// §14.2: `deviceId` (shown as `name`) failed to open or dropped off the
+    /// bus, with `devicesAttached` devices plugged in. Counted once per
+    /// failure episode: see noteDeviceHealthy().
+    void noteDeviceDropout (double nowSeconds, const std::string& deviceId, const std::string& name,
+                            int devicesAttached);
+
+    /// The device opened or came back, so its next failure counts again.
+    void noteDeviceHealthy (const std::string& deviceId);
+
+    /// The device left the device list, so its next failure, once it is
+    /// back, counts again (BusPowerDetector::noteLeft).
+    void noteDeviceLeft (const std::string& deviceId);
+
+    /// The computer has just woken from sleep (BusPowerDetector::
+    /// noteSystemWoke): the drops of its waking are not a power problem.
+    void noteSystemWoke (double nowSeconds);
 
     /// §14.3: called when the device list changes, with whatever controller
     /// topology the OS exposed. An empty list clears the warning.

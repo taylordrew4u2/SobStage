@@ -15,7 +15,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STR
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING
     "Minimum macOS version supported by SobStage")
 
-project(SobStage VERSION 1.13.27 LANGUAGES CXX)
+project(SobStage VERSION 1.13.28 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -101,6 +101,7 @@ add_library(mma_core STATIC
     Source/Core/FfmpegCommand.cpp
     Source/Core/FfmpegLocator.cpp
     Source/Core/FilesystemStatusProbe.cpp
+    Source/Core/TakeCopy.cpp
     Source/Core/LoudnessMeter.cpp
     Source/Core/StreamingTargets.cpp
     Source/Core/UpdateCheck.cpp
@@ -108,6 +109,7 @@ add_library(mma_core STATIC
     Source/Platform/SystemPermissions.cpp
     Source/Platform/SleepInhibitor.cpp
     Source/Platform/VolumeCapacity.cpp
+    Source/Platform/NativeCopyFileSystem.cpp
     Source/Platform/AlsaInputPolicy.cpp
     Source/Platform/AlsaBackend.cpp
 )
@@ -265,6 +267,7 @@ if (MMA_BUILD_APP)
         Source/App/CameraController.cpp
         Source/App/TakeCombiner.cpp
         Source/App/PodcastExport.cpp
+        Source/App/CardCopier.cpp
         Source/App/AlarmSpeaker.cpp
     )
 
@@ -516,6 +519,20 @@ if (MMA_BUILD_APP)
             -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckFailedOpenRetry.cmake)
 
+    # §14.2's inputs from the device list: drops counted against the devices
+    # before them, and a device that left the list failing afresh.
+    add_test(NAME bus_power_wiring
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckBusPowerWiring.cmake)
+
+    # A take for a card goes to that card, not another at the same place; the
+    # decision is TakeCopy's, this pins that Application hands it the card.
+    add_test(NAME card_identity_wiring
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckCardIdentityWiring.cmake)
+
     # MAC-PKG-2: the macOS Info.plist must carry LSMinimumSystemVersion and
     # still keep JUCE's microphone/camera usage strings. juceaide writes the
     # plist only on Apple builds, so run it here on SobStage's Info.txt.
@@ -595,6 +612,51 @@ if (MMA_BUILD_APP)
         mma_core juce::juce_core juce::juce_audio_formats)
     add_test(NAME sim_podcast_export COMMAND sim_podcast_export)
     set_tests_properties(sim_podcast_export PROPERTIES TIMEOUT 60)
+
+    # Record on this computer, then copy to the card: CardCopier against the
+    # real disk in a temporary folder, every call countable and holdable. A
+    # copy held for a take makes no card call, one held mid-file stops at a
+    # chunk and leaves nothing half-written, quitting while the card is stuck
+    # in a write does not wait for it, a second pass after a combined video
+    # reads back only what is new, and the system's own EFBIG reaches the
+    # right words.
+    add_executable(sim_card_copy
+        Tools/sim_card_copy.cpp
+        Source/App/CardCopier.cpp)
+    target_include_directories(sim_card_copy PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(sim_card_copy PRIVATE mma_core mma_warnings)
+    add_test(NAME sim_card_copy COMMAND sim_card_copy)
+    # Its waits are up to 20 s each: a scenario that never finishes on one
+    # platform fails its own check with what it saw, inside this limit.
+    set_tests_properties(sim_card_copy PROPERTIES TIMEOUT 120)
+
+    # Its Windows branches, compiled here for syntax: the Windows runner is
+    # otherwise the first place a name scoped inside `#if ! defined(_WIN32)`
+    # is found to be missing. GCC only -- its errors in the system's own
+    # headers are told apart from the project's by path.
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT WIN32)
+        add_test(NAME windows_branches_compile
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=${CMAKE_CXX_COMPILER}
+                -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DFILES=Tools/sim_card_copy.cpp
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckWindowsBranches.cmake)
+
+        # Where a MinGW cross compiler is installed, the card copy's Windows
+        # code itself -- the Win32 calls behind NativeCopyFileSystem -- is
+        # read against the real Windows headers too. Not on the CI runners,
+        # whose Windows job builds it for real.
+        find_program(MMA_MINGW_CXX x86_64-w64-mingw32-g++)
+        if (MMA_MINGW_CXX)
+            add_test(NAME windows_sources_compile_mingw
+                COMMAND ${CMAKE_COMMAND}
+                    -DCOMPILER=${MMA_MINGW_CXX}
+                    -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                    "-DFILES=Source/Platform/NativeCopyFileSystem.cpp;Source/Platform/VolumeCapacity.cpp;Source/App/CardCopier.cpp;Source/Core/TakeCopy.cpp;Tools/sim_card_copy.cpp;Tests/test_TakeCopy.cpp"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckWindowsBranches.cmake)
+        endif()
+    endif()
 
     if (WIN32)
         # AvSetMmThreadCharacteristics: Pro Audio scheduling for the WASAPI
@@ -689,6 +751,15 @@ if (MMA_BUILD_TOOLS)
         # A recording card that stops answering on demand; see the file.
         add_library(fs_stall_shim SHARED Tools/fs_stall_shim.cpp)
         target_link_libraries(fs_stall_shim PRIVATE ${CMAKE_DL_LIBS})
+
+        # The close button, for gates under Xvfb with no window manager; see
+        # the file. Only where X11's own headers are installed.
+        find_package(X11 QUIET)
+        if (X11_FOUND)
+            add_executable(x11_window_message Tools/x11_window_message.cpp)
+            target_include_directories(x11_window_message PRIVATE ${X11_INCLUDE_DIR})
+            target_link_libraries(x11_window_message PRIVATE ${X11_LIBRARIES})
+        endif()
 
         add_library(alsa_readi_shim SHARED Tools/alsa_readi_shim.cpp)
         target_link_libraries(alsa_readi_shim PRIVATE ${CMAKE_DL_LIBS})

@@ -33,8 +33,8 @@ TEST_CASE (SetupAdvisor_ReportsBusPowerExhaustion)
 {
     SetupAdvisor advisor;
     // §14.2: two or more drops inside five minutes with three or more mics.
-    advisor.noteDeviceDropout (10.0, 4);
-    advisor.noteDeviceDropout (20.0, 4);
+    advisor.noteDeviceDropout (10.0, "dev-kitchen", "Kitchen", 4);
+    advisor.noteDeviceDropout (20.0, "dev-hall", "Hall", 4);
 
     REQUIRE (hasIssue (advisor.getActiveAdvice (30.0), SetupIssue::BusPowerExhausted));
 }
@@ -42,8 +42,8 @@ TEST_CASE (SetupAdvisor_ReportsBusPowerExhaustion)
 TEST_CASE (SetupAdvisor_BusPowerMessageNamesThePoweredHub)
 {
     SetupAdvisor advisor;
-    advisor.noteDeviceDropout (10.0, 4);
-    advisor.noteDeviceDropout (20.0, 4);
+    advisor.noteDeviceDropout (10.0, "dev-kitchen", "Kitchen", 4);
+    advisor.noteDeviceDropout (20.0, "dev-hall", "Hall", 4);
 
     const auto advice = advisor.getActiveAdvice (30.0);
     const auto* a = find (advice, SetupIssue::BusPowerExhausted);
@@ -56,7 +56,7 @@ TEST_CASE (SetupAdvisor_BusPowerMessageNamesThePoweredHub)
 TEST_CASE (SetupAdvisor_SingleDropoutIsNotEnough)
 {
     SetupAdvisor advisor;
-    advisor.noteDeviceDropout (10.0, 4);
+    advisor.noteDeviceDropout (10.0, "dev-kitchen", "Kitchen", 4);
     REQUIRE_FALSE (hasIssue (advisor.getActiveAdvice (20.0), SetupIssue::BusPowerExhausted));
 }
 
@@ -179,8 +179,8 @@ TEST_CASE (SetupAdvisor_PowerIsReportedBeforeOtherIssues)
 {
     SetupAdvisor advisor;
 
-    advisor.noteDeviceDropout (10.0, 4);
-    advisor.noteDeviceDropout (20.0, 4);
+    advisor.noteDeviceDropout (10.0, "dev-kitchen", "Kitchen", 4);
+    advisor.noteDeviceDropout (20.0, "dev-hall", "Hall", 4);
     for (int i = 0; i < 25; ++i)
         advisor.updateChannelLevels ({ -80.0f, -20.0f }, 1.0);
 
@@ -359,8 +359,8 @@ TEST_CASE (SetupAdvisor_ResetForgetsBusPowerEventsToo)
     // does not need one.
     SetupAdvisor a;
 
-    a.noteDeviceDropout (1.0, 4);
-    a.noteDeviceDropout (2.0, 4);
+    a.noteDeviceDropout (1.0, "dev-kitchen", "Kitchen", 4);
+    a.noteDeviceDropout (2.0, "dev-hall", "Hall", 4);
 
     bool sawPowerAdvice = false;
     for (const auto& advice : a.getActiveAdvice (3.0))
@@ -372,4 +372,71 @@ TEST_CASE (SetupAdvisor_ResetForgetsBusPowerEventsToo)
 
     for (const auto& advice : a.getActiveAdvice (4.0))
         REQUIRE (advice.issue != SetupIssue::BusPowerExhausted);
+}
+
+// §14.2 in the past tense, naming the mics: a line read five minutes after it
+// was written is still true, and someone can tell which mics to move. The
+// powered-hub wording is kept exactly: "a hub with its own power adapter" is
+// the distinction §14.2 insists on.
+TEST_CASE (SetupAdvisor_PowerAdviceNamesBothMics)
+{
+    SetupAdvisor advisor;
+    advisor.noteDeviceDropout (10.0, "dev-kitchen", "Kitchen", 4);
+    advisor.noteDeviceDropout (20.0, "dev-hall", "Hall", 4);
+
+    const auto two = advisor.getActiveAdvice (30.0);
+    const auto* a = find (two, SetupIssue::BusPowerExhausted);
+    REQUIRE (a != nullptr);
+    REQUIRE (a->message == "Kitchen and Hall both lost their connection. They may need more power: "
+                           "use a USB hub with its own power adapter.");
+    REQUIRE (a->message.find ("USB hub with its own power adapter") != std::string::npos);
+
+    advisor.noteDeviceDropout (25.0, "dev-door", "Door", 4);
+    const auto three = advisor.getActiveAdvice (30.0);
+    const auto* b = find (three, SetupIssue::BusPowerExhausted);
+    REQUIRE (b != nullptr);
+    REQUIRE (b->message.rfind ("Kitchen, Hall and Door all lost their connection.", 0) == 0);
+    REQUIRE (b->message.find ("USB hub with its own power adapter") != std::string::npos);
+
+    // Not both at once: power is the cause, so the cable advice is not added.
+    REQUIRE (find (three, SetupIssue::DeviceKeepsDropping) == nullptr);
+}
+
+// One mic dropping again and again is its cable or port. More power would not
+// help, and "need more power" sent people to buy a hub they did not need.
+TEST_CASE (SetupAdvisor_KeepsDroppingNamesTheMicAndCable)
+{
+    SetupAdvisor advisor;
+    advisor.noteDeviceDropout (10.0, "dev-kitchen", "Kitchen", 4);
+    advisor.noteDeviceHealthy ("dev-kitchen");
+    advisor.noteDeviceDropout (20.0, "dev-kitchen", "Kitchen", 4);
+
+    const auto advice = advisor.getActiveAdvice (30.0);
+    REQUIRE_FALSE (hasIssue (advice, SetupIssue::BusPowerExhausted));
+
+    const auto* a = find (advice, SetupIssue::DeviceKeepsDropping);
+    REQUIRE (a != nullptr);
+    REQUIRE (a->message == "Kitchen keeps losing its connection. Try another cable or USB port.");
+    REQUIRE (a->message.find ("power") == std::string::npos);
+
+    // Ranked right after power: ahead of guidance about patterns and mutes.
+    for (int i = 0; i < 25; ++i)
+        advisor.updateChannelLevels ({ -80.0f, -20.0f }, 1.0);
+    const auto withSilence = advisor.getActiveAdvice (30.0);
+    REQUIRE (withSilence.size() >= 2);
+    REQUIRE (withSilence.front().issue == SetupIssue::DeviceKeepsDropping);
+}
+
+// A failure that is still the same failure is not news. A rebuild that asks
+// the dead mic again, or Stop reopening a mic that died mid-take, must not
+// turn one bad cable into the second of §14.2's two events.
+TEST_CASE (SetupAdvisor_StillFailingMicIsNotCountedTwice)
+{
+    SetupAdvisor advisor;
+    advisor.noteDeviceDropout (10.0, "dev-kitchen", "Kitchen", 4);
+    advisor.noteDeviceDropout (20.0, "dev-kitchen", "Kitchen", 4);
+
+    const auto advice = advisor.getActiveAdvice (30.0);
+    REQUIRE_FALSE (hasIssue (advice, SetupIssue::BusPowerExhausted));
+    REQUIRE_FALSE (hasIssue (advice, SetupIssue::DeviceKeepsDropping));
 }

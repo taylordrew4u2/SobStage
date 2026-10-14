@@ -43,6 +43,34 @@ TEST_CASE (TakeFolderTracker_AnUnmovedFolderKeepsItsSpelling)
     REQUIRE (tracker.resolve() == take.string());
 }
 
+// The card copier's launch look tells a take it already follows from an
+// earlier one by this, whatever the folder is called now. Mutation: the
+// identity taken from the spelling rather than the folder.
+TEST_CASE (TakeFolderTracker_TheFolderIsKnownByItselfNotItsName)
+{
+    ScratchFolder scratch;
+    const auto take = scratch.root / "2026-10-06_1432_Kitchen";
+    const auto other = scratch.root / "2026-10-06_1500_Hall";
+    std::filesystem::create_directories (take);
+    std::filesystem::create_directories (other);
+
+    TakeFolderTracker held, hall;
+    REQUIRE (held.open (take.string()));
+    REQUIRE (hall.open (other.string()));
+    REQUIRE_FALSE (held.fileIdentity().empty());
+    REQUIRE (held.fileIdentity() != hall.fileIdentity());
+
+    const auto renamed = scratch.root / "Kitchen show (keep)";
+    std::filesystem::rename (take, renamed);
+
+    TakeFolderTracker foundLater;
+    REQUIRE (foundLater.open (renamed.string()));
+    REQUIRE (foundLater.fileIdentity() == held.fileIdentity());
+
+    TakeFolderTracker none;
+    REQUIRE (none.fileIdentity().empty());
+}
+
 // The cameras' movies finish after the audio has closed its files. A take
 // folder renamed in Finder in that gap has to be found by asking the folder.
 TEST_CASE (TakeFolderTracker_FollowsAFolderRenamedAfterItWasOpened)

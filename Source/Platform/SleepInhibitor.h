@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 
 #include "../Core/BatteryRecordingNotice.h"
 
@@ -55,6 +56,38 @@ public:
 private:
     std::unique_ptr<Backend> backend;
     bool held = false;
+};
+
+/// Notices that the computer has slept, from two clocks: one that stops while
+/// it sleeps and one that keeps counting. Time on the second that is not on
+/// the first was spent asleep. On a Mac CoreAudio says so itself; Windows and
+/// Linux say nothing -- each stream simply dies on waking -- so this is how
+/// a wake is told apart from microphones losing power (§14.2).
+class WakeDetector
+{
+public:
+    struct Clocks
+    {
+        double awakeMs = 0.0;      ///< stops while the computer sleeps
+        double withSleepMs = 0.0;  ///< keeps counting through it
+    };
+
+    /// This computer's two clocks now: QueryUnbiasedInterruptTime and
+    /// GetTickCount64 on Windows, CLOCK_UPTIME_RAW and CLOCK_MONOTONIC_RAW on
+    /// a Mac, CLOCK_MONOTONIC and CLOCK_BOOTTIME on Linux. Nothing when they
+    /// cannot be read.
+    static std::optional<Clocks> read() noexcept;
+
+    /// True when at least kMinSleepMs was spent asleep since the last call.
+    /// The first call only takes its bearings.
+    bool justWoke (const Clocks& now) noexcept;
+
+    /// More than the two clocks' own disagreement (GetTickCount64 moves in
+    /// 16 ms steps), less than any sleep that ends a stream.
+    static constexpr double kMinSleepMs = 2000.0;
+
+private:
+    std::optional<double> lastAsleepMs;
 };
 
 } // namespace mma

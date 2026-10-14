@@ -208,7 +208,13 @@ if [ -e "$SUPPORT/.camera-starting_temp77.txt" ]; then fail "stranded camera gua
 else pass "stranded camera guard temp file removed at launch"; fi
 
 # ---- 2/3. the card mounts late ---------------------------------------------
+# Built beside the mount point and moved into place in one rename, as a card
+# appears when it mounts: everything on it at once. Made in place, the app
+# could see the save location appear -- and check it -- before the last of
+# its files had been written.
 rm -f "$CARD"
+FINAL_DEST="$DEST"
+DEST="$HOME/.latecard-staging/RECORDINGS"
 TAKE="$DEST/2026-10-07_2100_Interrupted"
 STUB="$DEST/2026-10-07_2000_Stub"
 mkdir -p "$TAKE" "$STUB"
@@ -228,6 +234,11 @@ echo partial > "$DONE/.V01_Cam_with-sound.mov"
 echo partial > "$DONE/MIX - Apple Podcasts.wav.part"
 echo finished > "$DONE/V02_Desk_with-sound.mov"
 touch -d '2026-10-07 20:00' "$STUB"
+mv "$HOME/.latecard-staging" "$CARD"
+DEST="$FINAL_DEST"
+TAKE="$DEST/2026-10-07_2100_Interrupted"
+STUB="$DEST/2026-10-07_2000_Stub"
+DONE="$DEST/2026-10-07_1900_Finished"
 echo "card mounted with an interrupted take on it"
 
 # The drive check retries a location it could not write every 10 s while idle,

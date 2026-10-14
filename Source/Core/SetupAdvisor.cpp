@@ -4,10 +4,46 @@
 
 namespace mma {
 
-void SetupAdvisor::noteDeviceDropout (double nowSeconds, int micsAttached)
+void SetupAdvisor::noteDeviceDropout (double nowSeconds, const std::string& deviceId,
+                                      const std::string& name, int devicesAttached)
 {
-    busPower.recordEvent (nowSeconds, micsAttached);
+    busPower.recordEvent (nowSeconds, deviceId, name, devicesAttached);
 }
+
+void SetupAdvisor::noteDeviceHealthy (const std::string& deviceId)
+{
+    busPower.noteHealthy (deviceId);
+}
+
+void SetupAdvisor::noteDeviceLeft (const std::string& deviceId)
+{
+    busPower.noteLeft (deviceId);
+}
+
+void SetupAdvisor::noteSystemWoke (double nowSeconds)
+{
+    busPower.noteSystemWoke (nowSeconds);
+}
+
+namespace {
+
+/// "Kitchen and Hall", "Kitchen, Hall and Door".
+std::string joinNames (const std::vector<std::string>& names)
+{
+    std::string joined;
+
+    for (size_t i = 0; i < names.size(); ++i)
+    {
+        if (i > 0)
+            joined += (i + 1 == names.size()) ? " and " : ", ";
+
+        joined += names[i].empty() ? std::string ("A microphone") : names[i];
+    }
+
+    return joined;
+}
+
+} // namespace
 
 void SetupAdvisor::updateControllerTopology (const std::vector<ControllerContentionDetector::DeviceControllerInfo>& devices)
 {
@@ -96,11 +132,26 @@ std::vector<SetupAdvice> SetupAdvisor::getActiveAdvice (double nowSeconds) const
 
     // Power first: it causes the dropouts and disappearing devices that
     // everything else here would otherwise be blamed for (§14.2).
+    //
+    // In the past tense and naming the mics, so a line read five minutes after
+    // it was written is still true -- the old present-tense "need more power"
+    // read as a fact about now, about mics that may have been fine since.
     if (busPower.isBusPowerExhausted (nowSeconds))
+    {
+        const auto names = busPower.namesInWindow (nowSeconds);
+
         advice.push_back ({ SetupIssue::BusPowerExhausted,
-                            "Your microphones need more power than this computer's USB port can supply. "
-                            "Use a USB hub with its own power adapter.",
+                            joinNames (names) + (names.size() > 2 ? " all" : " both")
+                                + " lost their connection. They may need more power: use a USB hub "
+                                  "with its own power adapter.",
                             -1 });
+    }
+    else if (const auto repeating = busPower.repeatingDevice (nowSeconds); ! repeating.empty())
+    {
+        advice.push_back ({ SetupIssue::DeviceKeepsDropping,
+                            repeating + " keeps losing its connection. Try another cable or USB port.",
+                            -1 });
+    }
 
     if (! contentionReason.empty())
         advice.push_back ({ SetupIssue::ControllerContention,

@@ -71,6 +71,11 @@ public:
         /// out, is noticed: the path stays the same and the drive check made
         /// for the old card must not arm the new one.
         VolumeFingerprint destinationVolume;
+        /// Which card is at the destination now (cardIdentityOf), asked
+        /// between takes only; empty when it cannot be told or none is in.
+        /// Kept with a take recorded here for that card, so its copy goes to
+        /// that card and no other at the same place.
+        std::string destinationCardIdentity;
         /// When the sample behind this snapshot began, so a caller can tell
         /// evidence gathered after some event from evidence gathered before.
         std::chrono::steady_clock::time_point sampleStartedAt {};
@@ -94,6 +99,13 @@ public:
     /// no-op; the worker refreshes the active request at its own bounded rate.
     void setRequest (Request request);
     Snapshot getSnapshot() const;
+
+    /// Whether `snapshot` shows `destination` there as a folder, from a look
+    /// begun after `after` -- between takes, by the worker that may touch the
+    /// drive. How a save location missing when it was checked for interrupted
+    /// takes is noticed once it is plugged in, with nothing else writing to it.
+    static bool showsDestinationAfter (const Snapshot& snapshot, const std::string& destination,
+                                       std::chrono::steady_clock::time_point after) noexcept;
 
     /// Deterministic test/support hook. Shipping UI code never waits.
     bool waitForRevisionAfter (uint64_t revision, Snapshot& result,

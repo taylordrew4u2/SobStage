@@ -53,3 +53,20 @@ TEST_CASE (CardRemovalNotice_EveryMessageNamesTheStopAndAvoidsCodes)
         REQUIRE (notice.message.find ("every file closed") != std::string::npos);
     }
 }
+
+// A take recorded on this computer for a card: its drive is this computer's.
+// The card notice told the user to check the card was plugged in and to keep
+// the backup copy switched on -- a card never written, a backup there is none
+// of. Mutation: the card's notice used for it.
+TEST_CASE (CardRemovalNotice_ATakeRecordedHereNamesThisComputersDrive)
+{
+    const auto notice = CardRemovalNotice::buildForTakeRecordedHere ("/Users/sam/RECORDINGS-MIRROR/2026-10-14_2000_Show");
+
+    REQUIRE_FALSE (notice.aCompleteCopySurvives);
+    REQUIRE (notice.survivingFolder.empty());
+    REQUIRE (notice.message.find ("This computer's drive stopped accepting writes") == 0);
+    REQUIRE (notice.message.find ("/Users/sam/RECORDINGS-MIRROR/2026-10-14_2000_Show") != std::string::npos);
+    REQUIRE (notice.message.find ("backup") == std::string::npos);
+    REQUIRE (notice.message.find ("plugged in") == std::string::npos);
+    REQUIRE (notice.message.find ("card") == std::string::npos);
+}

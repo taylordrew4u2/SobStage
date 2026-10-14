@@ -100,17 +100,20 @@ QuitQuestions::Next QuitQuestions::onWorkAnswered (WorkAnswer answer) noexcept
     return Next::Stay;
 }
 
-QuitQuestions::Tick QuitQuestions::onWaitTick (bool recording, bool workRunning) noexcept
+QuitQuestions::Tick QuitQuestions::onWaitTick (bool recording, bool workRunning, bool problemArose) noexcept
 {
     if (! waiting)
         return Tick::StopWaiting;
 
     // A new take started while waiting: the quit is off. Quitting by itself
-    // mid-show would be far worse than not quitting.
+    // mid-show would be far worse than not quitting. Called off as "Don't
+    // Quit" calls it off, not merely stopped: what the wait was watching for
+    // -- a copy to the card that failed -- must not be asked about at some
+    // later quit, long after it was copied.
     if (recording)
     {
         reset();
-        return Tick::StopWaiting;
+        return Tick::CalledOff;
     }
 
     // The question on screen decides, even if the work has just finished:
@@ -119,6 +122,16 @@ QuitQuestions::Tick QuitQuestions::onWaitTick (bool recording, bool workRunning)
         return Tick::KeepWaiting;
 
     waiting = false;
+
+    // The wait is over, and not as promised: a copy it was for failed. The
+    // answer to this question decides, as it does before any wait.
+    if (problemArose)
+    {
+        problemAcknowledged = false;
+        asking = Question::TakeProblem;
+        return Tick::AskAboutProblem;
+    }
+
     return Tick::Quit;
 }
 
@@ -136,6 +149,71 @@ std::string QuitQuestions::pendingQuitLine (const std::string& work)
         return {};
 
     return "SobStage will quit once it has finished " + work + ".";
+}
+
+std::string describeStillSaving (const StillSaving& work)
+{
+    std::string text;
+
+    if (! work.copyingToCard)
+    {
+        text = "SobStage is still making " + work.otherWork + " from the last take. Quitting now cancels it; "
+               "the recording itself is already saved.";
+    }
+    else
+    {
+        const int n = work.takesCopying;
+        const int added = work.takesAddingFiles;
+        const bool one = n == 1;
+        const auto takes = one ? std::string ("1 take") : n > 1 ? std::to_string (n) + " takes" : std::string ("takes");
+
+        // A take already copied and checked whose combined video or podcast
+        // copy is all that is going: the take is on the card, and only that
+        // file stays here. "It isn't on the card yet" contradicted its
+        // saved-take card ("Copied to the card") and read as a copy undone.
+        const auto addedFiles = [&] (bool alone)
+        {
+            const bool oneAdded = added == 1;
+            return std::string (alone ? "SobStage is still copying " : "It is also still copying ")
+                 + (oneAdded ? "a file added to 1 " + std::string (alone ? "" : "other ")
+                                   + "take since it was copied (a combined video or podcast copy)"
+                             : "files added to " + std::to_string (added) + (alone ? "" : " other")
+                                   + " takes since they were copied (combined videos or podcast copies)")
+                 + " to the card. " + (oneAdded ? "That take is" : "Those takes are")
+                 + " on the card already; quitting now leaves only " + (oneAdded ? "that file" : "those files")
+                 + " on this computer, in " + work.computerFolder
+                 + ", to be copied the next time you open SobStage with the card in.";
+        };
+
+        if (n == 0 && added > 0)
+        {
+            text = addedFiles (true);
+        }
+        else
+        {
+            text = "SobStage is still copying " + takes + " to the card. " + (one ? "It isn't" : "They aren't")
+                 + " on the card yet: quitting now leaves " + (one ? "it" : "them") + " only on this computer, in "
+                 + work.computerFolder + ", to be copied the next time you open SobStage with the card in.";
+
+            if (added > 0)
+                text += " " + addedFiles (false);
+        }
+
+        if (! work.otherWork.empty())
+            text += " It is also still making " + work.otherWork + ", which quitting now cancels.";
+    }
+
+    if (work.takesNotOnCard > 0)
+    {
+        const bool one = work.takesNotOnCard == 1;
+        const auto other = work.copyingToCard ? std::string ("other ") : std::string();
+
+        text += " " + (one ? "1 " + other + "take isn't" : std::to_string (work.takesNotOnCard) + " " + other + "takes aren't")
+              + " on the card yet. " + (one ? "It's" : "They're") + " safe on this computer in "
+              + work.computerFolder + ".";
+    }
+
+    return text;
 }
 
 std::string describeUnseenTakeProblem (const StoppedTakeOutcome& outcome)

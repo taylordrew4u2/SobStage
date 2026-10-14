@@ -30,6 +30,10 @@ enum class MirrorState
     /// protects against nothing -- a disk that fails, fills or is pulled
     /// takes both copies with it -- so it is skipped and the user is told.
     SkippedSameDisk,
+    /// Not needed: the take itself is being recorded on this computer and
+    /// copied to the card after Stop (see TakeRoute). The take IS the copy on
+    /// this computer, and writing it twice to one disk protects nothing.
+    NotNeededTakeOnComputer,
 };
 
 /// Which disk a path lives on, as far as the system can say. Compared, never
@@ -139,6 +143,10 @@ public:
     /// True when this take has no backup because it would have shared the
     /// recording's disk.
     bool wasSkippedForSameDisk() const noexcept { return state == MirrorState::SkippedSameDisk; }
+
+    /// Arm time, instead of evaluateAtArm(): this take is recorded on this
+    /// computer and copied to the card afterwards, so it has no live backup.
+    void noteTakeRecordedOnComputer() noexcept { state = MirrorState::NotNeededTakeOnComputer; }
 
     void reset() noexcept;
 

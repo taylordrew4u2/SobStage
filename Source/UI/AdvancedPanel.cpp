@@ -152,6 +152,17 @@ AdvancedPanel::AdvancedPanel()
     trimViewport.setViewedComponent (&trimContainer, false);
     addAndMakeVisible (trimViewport);
 
+    copyToCardToggle.setToggleState (true, juce::dontSendNotification); // default on
+    copyToCardToggle.onClick = [this]
+    { if (onCopyToCardToggled) onCopyToCardToggled (copyToCardToggle.getToggleState()); };
+    addAndMakeVisible (copyToCardToggle);
+
+    copyToCardNote.setText ("Gentler on SD cards and USB sticks. Turn off to record straight to the card.",
+                            juce::dontSendNotification);
+    copyToCardNote.setFont (juce::Font (12.0f, juce::Font::italic));
+    copyToCardNote.setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
+    addAndMakeVisible (copyToCardNote);
+
     mirrorToggle.setToggleState (true, juce::dontSendNotification); // §6.3 default on
     mirrorToggle.onClick = [this] { if (onMirrorToggled) onMirrorToggled (mirrorToggle.getToggleState()); };
     addAndMakeVisible (mirrorToggle);
@@ -730,6 +741,7 @@ int AdvancedPanel::getRequiredHeight() const
     constexpr int kDrift         = 60 + 4;
     constexpr int kTrimViewport  = 100 + 16;
     constexpr int kAggregate     = 20 + 16;
+    constexpr int kCopyToCard    = 28 + 32;  // switch, and its note on up to two lines
     constexpr int kMirror        = 28 + 16;
     constexpr int kDiagnostics   = 36;
     constexpr int kUpdates       = 28 + 20 + 32 + 16; // switch, note, Check now row, gap
@@ -761,7 +773,7 @@ int AdvancedPanel::getRequiredHeight() const
     return kMargins + kCloseButton + (kSection * 7) + kShows + (kRow * kRowCount) + headphoneRows
          + kMicListLabel + static_cast<int> (micToggles.size()) * kMicToggle
          + kSectionGaps + kClockHelp + kDrift + kTrimViewport + kAggregate
-         + kMirror + kMirrorNote + kCombine + kDelivery + kDiagnostics + kUpdates + kActivity;
+         + kCopyToCard + kMirror + kMirrorNote + kCombine + kDelivery + kDiagnostics + kUpdates + kActivity;
 }
 
 void AdvancedPanel::resized()
@@ -831,6 +843,11 @@ void AdvancedPanel::resized()
     section (storageSection);
     row (storageLabel, storageCombo);
     row (destinationFolderLabel, destinationFolderButton);
+
+    // Where a take is written while it records is the first storage decision
+    // after where it ends up.
+    copyToCardToggle.setBounds (area.removeFromTop (28));
+    copyToCardNote.setBounds (area.removeFromTop (32).reduced (20, 0));
 
     // The backup copy is a storage decision, so it belongs with the other two
     // rather than orphaned at the bottom between the aggregate device and the

@@ -2,6 +2,8 @@
 #include "../Core/TakeCompleteness.h"
 #include "AppLookAndFeel.h"
 
+#include <cmath>
+
 namespace mma {
 
 namespace {
@@ -38,6 +40,12 @@ SavedTakePanel::SavedTakePanel()
     // take having been ended by the hardware.
     styleBody (problemLabel, AppLookAndFeel::danger);
     addChildComponent (problemLabel);
+
+    styleBody (routeNote, AppLookAndFeel::warning);
+    addChildComponent (routeNote);
+
+    copyAgainButton.onClick = [this] { if (onCopyAgain) onCopyAgain(); };
+    addChildComponent (copyAgainButton);
 
     // The offer §6.2 asks for, and the reason this panel exists rather than a
     // status line: a path someone has to retype is a path they will not visit.
@@ -123,6 +131,9 @@ void SavedTakePanel::setTake (const juce::String& folder,
     mirrorValue.setVisible (mirrorFolder.isNotEmpty() || mirrorNote.isNotEmpty());
     mirrorValue.setText (mirrorFolder.isNotEmpty() ? "A second copy is in " + mirrorFolder : mirrorNote,
                          juce::dontSendNotification);
+    mirrorIsCardCopy = false;
+    copyAgainButton.setVisible (false);
+    routeNote.setVisible (false);
 
     listHeight = juce::jmin ((int) rows.size(), kMaxVisibleRows) * kRowPitch;
 
@@ -142,6 +153,32 @@ void SavedTakePanel::setProblem (const juce::String& text)
     resized();
 }
 
+void SavedTakePanel::setCardCopy (const juce::String& line, bool canCopyAgain, const juce::String& buttonText)
+{
+    const bool lineChanged = mirrorValue.getText() != line || mirrorValue.isVisible() != line.isNotEmpty();
+    const bool buttonChanged = copyAgainButton.isVisible() != canCopyAgain
+                            || copyAgainButton.getButtonText() != buttonText;
+
+    if (! lineChanged && ! buttonChanged)
+        return;
+
+    mirrorValue.setText (line, juce::dontSendNotification);
+    mirrorValue.setVisible (line.isNotEmpty());
+    mirrorIsCardCopy = true;
+    // Named as the line names it: "Copy to this card" for a take waiting for
+    // its own card while another is in.
+    copyAgainButton.setButtonText (buttonText);
+    copyAgainButton.setVisible (canCopyAgain);
+    resized();
+}
+
+void SavedTakePanel::setRouteNote (const juce::String& note)
+{
+    routeNote.setText (note, juce::dontSendNotification);
+    routeNote.setVisible (note.isNotEmpty());
+    resized();
+}
+
 bool SavedTakePanel::keyPressed (const juce::KeyPress& key)
 {
     if (key == juce::KeyPress::escapeKey || key == juce::KeyPress::returnKey)
@@ -155,16 +192,37 @@ bool SavedTakePanel::keyPressed (const juce::KeyPress& key)
     return false;
 }
 
+int SavedTakePanel::wrappedHeight (const juce::Label& label, int atLeast) const
+{
+    // At the width the card will have; before it has been given one, its full
+    // width, as ModalCard's footnote does.
+    const int cardWidth = getWidth() > 0 ? getCardWidth() : kCardWidth;
+    const auto font = label.getFont();
+    const auto border = label.getBorderSize();
+    const float available = (float) juce::jmax (1, cardWidth - 2 * kCardPadding - border.getLeftAndRight());
+    const float textWidth = font.getStringWidthFloat (label.getText());
+
+    // JUCE's own rule in GlyphArrangement: one line when it fits, otherwise
+    // the fewest lines that beat the text's width plus an 80px allowance for
+    // ragged breaks -- and the label draws as many as its height holds.
+    const int lines = textWidth < available ? 1 : (int) ((textWidth + 80.0f) / available) + 1;
+
+    return juce::jmax (atLeast, (int) std::ceil ((float) lines * font.getHeight()) + border.getTopAndBottom() + 1);
+}
+
 int SavedTakePanel::getContentHeight() const
 {
     int height = kRowHeight + 2 + kRowHeight   // the folder, then the file count
                + 12 + listHeight;
 
     if (problemLabel.isVisible())
-        height += 52 + 12;
+        height += wrappedHeight (problemLabel, 52) + 12;
+
+    if (routeNote.isVisible())
+        height += wrappedHeight (routeNote, 52) + 12;
 
     if (mirrorValue.isVisible())
-        height += 10 + kRowHeight;
+        height += 10 + (mirrorIsCardCopy ? wrappedHeight (mirrorValue, kRowHeight) : kRowHeight);
 
     if (emptyWarning.isVisible())
         height += 10 + 34;
@@ -177,7 +235,13 @@ void SavedTakePanel::layOutContent (juce::Rectangle<int> area)
     // Above the folder and the files: what happened comes before what survived.
     if (problemLabel.isVisible())
     {
-        problemLabel.setBounds (area.removeFromTop (52));
+        problemLabel.setBounds (area.removeFromTop (wrappedHeight (problemLabel, 52)));
+        area.removeFromTop (12);
+    }
+
+    if (routeNote.isVisible())
+    {
+        routeNote.setBounds (area.removeFromTop (wrappedHeight (routeNote, 52)));
         area.removeFromTop (12);
     }
 
@@ -204,7 +268,8 @@ void SavedTakePanel::layOutContent (juce::Rectangle<int> area)
     if (mirrorValue.isVisible())
     {
         area.removeFromTop (10);
-        mirrorValue.setBounds (area.removeFromTop (kRowHeight));
+        mirrorValue.setBounds (area.removeFromTop (mirrorIsCardCopy ? wrappedHeight (mirrorValue, kRowHeight)
+                                                                    : kRowHeight));
     }
 
     if (emptyWarning.isVisible())
@@ -217,6 +282,12 @@ void SavedTakePanel::layOutContent (juce::Rectangle<int> area)
     auto buttons = area.removeFromTop (kButtonHeight);
     doneButton.setBounds (buttons.removeFromLeft (90));
     openButton.setBounds (buttons.removeFromRight (juce::jmin (170, buttons.getWidth())));
+
+    if (copyAgainButton.isVisible())
+    {
+        buttons.removeFromRight (8);
+        copyAgainButton.setBounds (buttons.removeFromRight (juce::jmin (120, juce::jmax (0, buttons.getWidth() - 8))));
+    }
 }
 
 } // namespace mma

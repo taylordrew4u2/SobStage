@@ -190,6 +190,10 @@ private:
     // The folder the panel is currently showing, so "Open the folder" opens the
     // one on screen rather than whatever the app has moved on to since.
     juce::String savedTakeFolder;
+    // The take on screen was recorded on this computer and is being copied to
+    // the card: its line follows the copy while the panel is open.
+    bool savedTakeCopiesToCard = false;
+    void refreshSavedTakeCardCopy();
 
     void toggleAdvanced();
     void toggleCameras();

@@ -9,6 +9,11 @@
 #include "../Source/Core/SampleFormat.h"
 #include "../Source/Platform/WasapiAsioBackend.h"
 
+// The simulated Windows headers, for the endpoint states and error codes.
+#include <windows.h>
+#include <mmdeviceapi.h>
+#include <audioclient.h>
+
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -292,6 +297,189 @@ void aFailedReactivationSaysWhy()
     check (! backend.openInputStream ("mic-gone", 48000.0, 256, capture.callback()),
            "the open fails");
     check (! backend.getLastOpenError().empty(), "and says why, rather than nothing");
+}
+
+/// §14.2: a bus-powered microphone on a starved hub browns out as it starts
+/// drawing current -- that is, while it is being opened. Windows still hands
+/// the backend the endpoint (GetDevice finds ones no longer present), so the
+/// open used to fail later and be called "not external" or "permission",
+/// which the power warning never counts. Either way it is a device gone.
+void aMicrophoneThatDropsOffWhileOpeningCountsTowardThePowerWarning()
+{
+    std::printf ("\nA microphone that drops off the bus while it is being opened\n");
+
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-brownout", "Kitchen", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.deviceState = DEVICE_STATE_NOTPRESENT;
+        spec.devNodeLookupAvailable = false; // its device node went with it
+        fakewasapi::addEndpoint (spec);
+
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream ("mic-brownout", 48000.0, 256, capture.callback()),
+               "an endpoint no longer present does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::gone, "it is called gone");
+        check (mma::countsAsPossiblePowerLoss (backend.getLastOpenRefusal()),
+               "and counts toward the power warning");
+    }
+
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-invalidated", "Hall", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.activateError = static_cast<long> (AUDCLNT_E_DEVICE_INVALIDATED);
+        fakewasapi::addEndpoint (spec);
+
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream ("mic-invalidated", 48000.0, 256, capture.callback()),
+               "a microphone invalidated as it is activated does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::gone, "it is called gone, not permission");
+        check (backend.getLastOpenError().find ("Privacy") == std::string::npos,
+               "and the user is not sent to the privacy settings");
+    }
+
+    // Activated, then gone while its formats are asked about: every
+    // IsFormatSupported answers "invalidated". It was called a refused sample
+    // rate -- settingsRefused, which the power warning never counts -- and the
+    // user was told to change a setting that had nothing to do with it.
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-format-gone", "Porch", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.formatQuestionError = static_cast<long> (AUDCLNT_E_DEVICE_INVALIDATED);
+        fakewasapi::addEndpoint (spec);
+
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream ("mic-format-gone", 48000.0, 256, capture.callback()),
+               "a microphone invalidated while its formats are asked about does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::gone,
+               "it is called gone, not a refused sample rate");
+        check (mma::countsAsPossiblePowerLoss (backend.getLastOpenRefusal()),
+               "and counts toward the power warning");
+        check (backend.getLastOpenError().find ("sample rate") == std::string::npos,
+               "and the user is not told to change the sample rate");
+    }
+
+    // The same, seen only in its state: the format questions are refused
+    // plainly, but the endpoint is no longer present once they are done.
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-format-left", "Porch", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.formatQuestionError = static_cast<long> (AUDCLNT_E_UNSUPPORTED_FORMAT);
+        spec.goneAfterFormatQuestion = true;
+        fakewasapi::addEndpoint (spec);
+
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream ("mic-format-left", 48000.0, 256, capture.callback()),
+               "a microphone gone by the end of the format questions does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::gone, "it is called gone too");
+    }
+
+    // A real refusal of every format, the device still there: still the setting.
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-no-format", "Porch", { fakewasapi::Format::pcm (1, 24, 44100.0) });
+        fakewasapi::addEndpoint (spec);
+
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream ("mic-no-format", 48000.0, 256, capture.callback()),
+               "a microphone that takes no format at this rate does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::settingsRefused,
+               "and that is still the setting, not power");
+    }
+
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-denied", "Stage", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.activateError = static_cast<long> (E_ACCESSDENIED);
+        fakewasapi::addEndpoint (spec);
+
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream ("mic-denied", 48000.0, 256, capture.callback()),
+               "a refused microphone does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::permission,
+               "an access refusal is still permission");
+        check (! mma::countsAsPossiblePowerLoss (backend.getLastOpenRefusal()),
+               "which more power would not fix");
+    }
+}
+
+/// §14.2: Windows' microphone privacy settings refuse a desktop app where
+/// Windows chooses -- most often at IAudioClient::Initialize, Activate having
+/// succeeded ("Failed to initialize audio client: 80070005"), and sometimes
+/// in answer to the format questions or a second Activate. Each is the
+/// privacy setting, never a microphone that lost power: called "unknown", it
+/// counted toward the power warning, and three refused microphones read as a
+/// hub that needed its own power adapter.
+void aMicrophoneThePrivacySettingsRefuseIsNeverCountedAsPower()
+{
+    std::printf ("\nA microphone Windows' privacy settings refuse\n");
+
+    const auto refusedAs = [] (const char* where, const fakewasapi::EndpointSpec& spec)
+    {
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream (spec.id, 48000.0, 256, capture.callback()),
+               std::string ("refused at ") + where + ": it does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::permission,
+               std::string ("refused at ") + where + ": it is called permission");
+        check (! mma::countsAsPossiblePowerLoss (backend.getLastOpenRefusal()),
+               std::string ("refused at ") + where + ": it does not count toward the power warning");
+        check (backend.getLastOpenError().find ("Let desktop apps access your microphone") != std::string::npos,
+               std::string ("refused at ") + where + ": the user is sent to the privacy switch for desktop apps");
+        check (backend.getLastOpenError().find ("plug it back in") == std::string::npos
+                   && backend.getLastOpenError().find ("sample rate") == std::string::npos,
+               std::string ("refused at ") + where + ": not to unplug it, nor to change the sample rate");
+    };
+
+    // Three microphones on one hub, each refused at Initialize: none of them
+    // is a power loss.
+    {
+        fakewasapi::reset();
+        const char* names[][2] = { { "mic-kitchen", "Kitchen" }, { "mic-hall", "Hall" }, { "mic-door", "Door" } };
+        for (const auto& n : names)
+        {
+            auto spec = microphone (n[0], n[1], { fakewasapi::Format::pcm (1, 24, 48000.0) });
+            spec.initializeError = static_cast<long> (E_ACCESSDENIED);
+            fakewasapi::addEndpoint (spec);
+        }
+
+        int countedAsPower = 0;
+        for (const auto& n : names)
+        {
+            mma::WasapiAsioBackend backend;
+            Capture capture;
+            (void) backend.openInputStream (n[0], 48000.0, 256, capture.callback());
+            countedAsPower += mma::countsAsPossiblePowerLoss (backend.getLastOpenRefusal()) ? 1 : 0;
+        }
+        check (countedAsPower == 0, "three microphones refused at Initialize: none counts toward the power warning");
+
+        auto spec = microphone ("mic-kitchen", "Kitchen", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.initializeError = static_cast<long> (E_ACCESSDENIED);
+        refusedAs ("Initialize", spec);
+    }
+
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-asked", "Stage", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.formatQuestionError = static_cast<long> (E_ACCESSDENIED);
+        fakewasapi::addEndpoint (spec);
+        refusedAs ("the format questions", spec);
+    }
+
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-again", "Stage", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.alignedFrames = 480;
+        spec.failActivateAfterAlignment = true;
+        spec.reactivateError = static_cast<long> (E_ACCESSDENIED);
+        fakewasapi::addEndpoint (spec);
+        refusedAs ("the second Activate", spec);
+    }
 }
 
 /// A buffer below the device's minimum period. Windows rejects it with
@@ -1370,6 +1558,8 @@ int main()
     aDeviceThatAcceptsNothingFailsWithAReason();
     aBufferAlignmentRejectionIsRetried();
     aFailedReactivationSaysWhy();
+    aMicrophoneThatDropsOffWhileOpeningCountsTowardThePowerWarning();
+    aMicrophoneThePrivacySettingsRefuseIsNeverCountedAsPower();
     aBufferBelowTheDeviceMinimumOpensAtTheMinimum();
     microphonesOpenWhenTheMessageThreadIsSingleThreaded();
     aSilentFlaggedPacketIsTreatedAsSilence();

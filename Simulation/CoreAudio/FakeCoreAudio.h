@@ -122,6 +122,15 @@ struct DeviceSpec
     int stopDelayMilliseconds = 0;
     int destroyDelayMilliseconds = 0;
 
+    /// Errors to answer AudioDeviceCreateIOProcID or AudioDeviceStart with,
+    /// noErr for none. With `dropsOffWhenOpened`, the device is no longer
+    /// alive by then and answers kAudioHardwareBadDeviceError: a bus-powered
+    /// mic browning out as it starts drawing current.
+    OSStatus createError = noErr;
+    OSStatus startError = noErr;
+    bool dropsOffWhenStarted = false;
+    bool dropsOffWhenAttached = false;
+
     /// Deliver one input block before the delayed Start call returns. Some real
     /// HALs begin IO before unblocking AudioDeviceStart; the backend must still
     /// close callback admission when its caller times out.

@@ -257,7 +257,10 @@ FilesystemStatusProbe::Snapshot FilesystemStatusProbe::sample (const Request& re
     // Between takes only: during one the destination is the take's own folder
     // on the card, and nothing done with the answer would touch a take.
     if (! request.destinationPath.empty() && request.sessionFolder.empty())
+    {
         out.destinationVolume = volumeFingerprintOf (request.destinationPath);
+        out.destinationCardIdentity = cardIdentityOf (request.destinationPath);
+    }
 
     if (! request.destinationPath.empty() && request.bytesPerSecond > 0.0)
     {
@@ -400,6 +403,18 @@ void FilesystemStatusProbe::run (std::shared_ptr<State> shared)
             return shared->stopping || generation != shared->requestGeneration;
         });
     }
+}
+
+bool FilesystemStatusProbe::showsDestinationAfter (const Snapshot& snapshot, const std::string& destination,
+                                                   std::chrono::steady_clock::time_point after) noexcept
+{
+    // A room figure is only worked out for a destination that is a folder
+    // (sample()), so one is the folder being there.
+    return snapshot.ready && ! destination.empty()
+        && snapshot.request.destinationPath == destination
+        && snapshot.request.sessionFolder.empty()
+        && snapshot.remainingSeconds >= 0.0
+        && snapshot.sampleStartedAt > after;
 }
 
 } // namespace mma

@@ -157,6 +157,9 @@ bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePla
     next->availableBytes = availableBytesQuery != nullptr
         ? availableBytesQuery
         : [] (const std::string& path) { return availableBytesForRecording (path); };
+    next->rename = renameForTesting != nullptr
+        ? renameForTesting
+        : [] (const juce::File& from, const juce::File& to) { return from.moveFileTo (to); };
 
     {
         const std::lock_guard<std::mutex> lock (next->statusLock);
@@ -294,7 +297,6 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
                                                  juce::String& problem)
 {
     const auto video = sessionFolder.getChildFile (juce::String (job.videoFile));
-    const auto output = sessionFolder.getChildFile (juce::String (job.outputFile));
 
     // The combined file where the folder is now, for clearing away a file
     // that must not be left: a folder renamed mid-copy has it under its new
@@ -359,6 +361,7 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
    #if defined (MMA_NATIVE_MOVIE_COMBINER)
     if (ffmpeg == kBuiltInCombiner)
     {
+        const auto output = sessionFolder.getChildFile (juce::String (job.outputFile));
         const auto why = combineMovieWithSound (video.getFullPathName().toStdString(),
                                                 audioPaths,
                                                 output.getFullPathName().toStdString(),
@@ -409,11 +412,22 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
         return Attempt::Failed;
     }
 
+    // Written under a hidden working name and renamed into place only once
+    // ffmpeg has finished, as the Mac's own combine does. A copy to the card
+    // that lists the folder meanwhile never sees half a movie: on Windows it
+    // could not even open one ffmpeg is still writing, and called the take's
+    // folder gone.
+    const auto workingName = "." + juce::String (job.outputFile);
+    const auto workingNow = [followedFolder, &sessionFolder, &workingName]
+    {
+        return folderNow (followedFolder, sessionFolder).getChildFile (workingName);
+    };
+
     const auto args = buildFfmpegArguments (ffmpeg.toStdString(),
                                             video.getFullPathName().toStdString(),
                                             audioPaths,
                                             concatList.getFullPathName().toStdString(),
-                                            output.getFullPathName().toStdString(),
+                                            sessionFolder.getChildFile (workingName).getFullPathName().toStdString(),
                                             job.audioLeadSeconds,
                                             job.audioBitDepth);
 
@@ -433,7 +447,7 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
     // can poll the child in bounded steps and honour shutdown promptly.
     if (! process.start (argv, 0))
     {
-        outputNow().deleteFile();
+        workingNow().deleteFile();
         problem = "ffmpeg wouldn't start.";
         return Attempt::Failed;
     }
@@ -461,7 +475,7 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
             (void) process.waitForProcessToFinish (1000);
         }
 
-        outputNow().deleteFile();
+        workingNow().deleteFile();
         return state.cancelling.load (std::memory_order_acquire) ? Attempt::Cancelled
                                                                  : Attempt::Yielded;
     }
@@ -471,12 +485,34 @@ TakeCombiner::Attempt TakeCombiner::combineOnce (RunState& state,
     // already-reaped child and make JUCE replace the real status.
     if (process.getExitCode() != 0)
     {
-        outputNow().deleteFile();
+        workingNow().deleteFile();
         problem = "ffmpeg stopped before it made a complete file.";
         return Attempt::Failed;
     }
 
-    return Attempt::Written;
+    // A finished movie is minutes of work: its rename is tried again for a
+    // few seconds before it is given up on. Windows refuses a rename while an
+    // antivirus or indexing service has the just-closed file open, which is
+    // straight after ffmpeg exits; one refusal used to throw the movie away
+    // and report the camera as not combined. Quitting still wins.
+    for (int attempt = 0;; ++attempt)
+    {
+        if (state.rename (workingNow(), outputNow()))
+            return Attempt::Written;
+
+        if (attempt + 1 >= kRenameAttempts || state.cancelling.load (std::memory_order_acquire))
+            break;
+
+        std::this_thread::sleep_for (std::chrono::milliseconds (kRenameRetryMs));
+    }
+
+    workingNow().deleteFile();
+
+    if (state.cancelling.load (std::memory_order_acquire))
+        return Attempt::Cancelled;
+
+    problem = "The combined file couldn't be given its name.";
+    return Attempt::Failed;
 }
 
 void TakeCombiner::run (std::shared_ptr<RunState> state,

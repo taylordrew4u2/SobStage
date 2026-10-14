@@ -134,7 +134,9 @@ TEST_CASE (QuitQuestions_ANewTakeWhileWaitingCallsTheQuitOff)
     REQUIRE (q.onTakeSettled (false, true) == Step::AskAboutWork);
     REQUIRE (q.onWorkAnswered (WorkAnswer::QuitWhenDone) == Next::Wait);
 
-    REQUIRE (q.onWaitTick (true, true) == Tick::StopWaiting);
+    // Called off, as "Don't Quit" would: the app stops watching the copies
+    // the wait was for, so nothing it kept is asked about at a later quit.
+    REQUIRE (q.onWaitTick (true, true) == Tick::CalledOff);
     REQUIRE_FALSE (q.isWaiting());
 
     // The "Stop and Quit" was for the last take; this one is asked about.
@@ -257,4 +259,139 @@ TEST_CASE (QuitQuestions_EachProblemWithTheTakeIsNamed)
     REQUIRE (describeUnseenTakeProblem (outcome)
              == "The card stopped answering. The backup copy is at /Users/me/Backup. "
                 "Desk Cam could not finish its video file.");
+}
+
+// "Quit When Done" while the copy to the card ran, and the copy failed: the
+// wait ended because the copy was no longer running, and the app quit as
+// though it had finished. The user left with a card that did not hold the
+// take, having been told the app would quit once the copy was done.
+TEST_CASE (QuitQuestions_ACopyThatFailsWhileWaitingIsAskedAboutNotQuitOver)
+{
+    QuitQuestions q;
+    REQUIRE (q.onTakeSettled (false, true) == Step::AskAboutWork);
+    REQUIRE (q.onWorkAnswered (WorkAnswer::QuitWhenDone) == Next::Wait);
+
+    // Still copying: whatever has failed is asked about once it is all done.
+    REQUIRE (q.onWaitTick (false, true, true) == Tick::KeepWaiting);
+
+    REQUIRE (q.onWaitTick (false, false, true) == Tick::AskAboutProblem);
+    REQUIRE (q.isAsking());
+    REQUIRE_FALSE (q.isWaiting());
+    REQUIRE (q.onQuitRequested (false) == Step::BringQuestionForward);
+
+    // "Don't Quit": open, and nothing quits by itself.
+    REQUIRE (q.onProblemAnswered (false) == Next::Stay);
+    REQUIRE (q.onWaitTick (false, false, true) == Tick::StopWaiting);
+}
+
+TEST_CASE (QuitQuestions_QuitAnywayAfterAFailedCopyQuits)
+{
+    QuitQuestions q;
+    REQUIRE (q.onTakeSettled (false, true) == Step::AskAboutWork);
+    REQUIRE (q.onWorkAnswered (WorkAnswer::QuitWhenDone) == Next::Wait);
+    REQUIRE (q.onWaitTick (false, false, true) == Tick::AskAboutProblem);
+    REQUIRE (q.onProblemAnswered (true) == Next::CarryOn);
+
+    // Told: the take's problem (the failed copy) is not asked again.
+    REQUIRE (q.onTakeSettled (true, false) == Step::Quit);
+}
+
+TEST_CASE (QuitQuestions_AFailedCopyIsAskedEvenAfterAnEarlierProblemWasAnswered)
+{
+    // "Quit Anyway" was the answer to the take's silent files. The copy that
+    // failed afterwards is a different problem, and is asked about too.
+    QuitQuestions q;
+    REQUIRE (q.onTakeSettled (true, true) == Step::AskAboutProblem);
+    REQUIRE (q.onProblemAnswered (true) == Next::CarryOn);
+    REQUIRE (q.onTakeSettled (true, true) == Step::AskAboutWork);
+    REQUIRE (q.onWorkAnswered (WorkAnswer::QuitWhenDone) == Next::Wait);
+    REQUIRE (q.onWaitTick (false, false, true) == Tick::AskAboutProblem);
+}
+
+TEST_CASE (QuitQuestions_ACopyThatFinishesWhileWaitingStillQuitsByItself)
+{
+    QuitQuestions q;
+    REQUIRE (q.onTakeSettled (false, true) == Step::AskAboutWork);
+    REQUIRE (q.onWorkAnswered (WorkAnswer::QuitWhenDone) == Next::Wait);
+    REQUIRE (q.onWaitTick (false, false, false) == Tick::Quit);
+}
+
+// The bug: the "Still saving" question, asked about the copy to the card,
+// still ended "the recording itself is already saved" -- beside Quit Now,
+// which left the take only on this computer and the card without it. Said
+// to a producer about to walk off with the card, that read as the take being
+// safe on it. Mutation: the copy to the card worded like the combined video.
+TEST_CASE (QuitQuestions_StillSavingTheCopyToTheCardSaysTheTakeIsNotOnTheCardYet)
+{
+    StillSaving copy;
+    copy.copyingToCard = true;
+    copy.takesCopying = 1;
+    copy.computerFolder = "/Users/me/RECORDINGS-MIRROR";
+
+    const auto text = describeStillSaving (copy);
+    REQUIRE (text.find ("already saved") == std::string::npos);
+    REQUIRE (text.find ("from the last take") == std::string::npos);
+    REQUIRE (text.find ("isn't on the card yet") != std::string::npos);
+    REQUIRE (text.find ("only on this computer, in /Users/me/RECORDINGS-MIRROR") != std::string::npos);
+    REQUIRE (text.find ("the next time you open SobStage with the card in") != std::string::npos);
+
+    // Two takes, one the launch picked up: not "the last take".
+    copy.takesCopying = 2;
+    REQUIRE (describeStillSaving (copy).find ("still copying 2 takes to the card. They aren't on the card yet")
+             != std::string::npos);
+
+    // With the combined video too: that one is cancelled, the take stays here.
+    copy.takesCopying = 1;
+    copy.otherWork = "the combined video";
+    const auto both = describeStillSaving (copy);
+    REQUIRE (both.find ("isn't on the card yet") != std::string::npos);
+    REQUIRE (both.find ("also still making the combined video, which quitting now cancels") != std::string::npos);
+    REQUIRE (both.find ("already saved") == std::string::npos);
+}
+
+// The bug: a take already copied and checked -- its saved-take card saying
+// "Copied to the card" -- whose combined video was then being copied was
+// called "still copying 1 take to the card. It isn't on the card yet". Its
+// audio was. Mutation: a file added since counted as a whole take.
+TEST_CASE (QuitQuestions_StillSavingOnlyAnAddedFileSaysTheTakeIsOnTheCard)
+{
+    StillSaving copy;
+    copy.copyingToCard = true;
+    copy.takesCopying = 0;
+    copy.takesAddingFiles = 1;
+    copy.computerFolder = "/Users/me/RECORDINGS-MIRROR";
+
+    const auto text = describeStillSaving (copy);
+    REQUIRE (text.find ("isn't on the card yet") == std::string::npos);
+    REQUIRE (text.find ("aren't on the card yet") == std::string::npos);
+    REQUIRE (text.find ("a file added to 1 take since it was copied (a combined video or podcast copy)")
+             != std::string::npos);
+    REQUIRE (text.find ("That take is on the card already") != std::string::npos);
+    REQUIRE (text.find ("leaves only that file on this computer, in /Users/me/RECORDINGS-MIRROR")
+             != std::string::npos);
+
+    // Beside a whole take still going: each said as what it is.
+    copy.takesCopying = 1;
+    copy.takesAddingFiles = 2;
+    const auto both = describeStillSaving (copy);
+    REQUIRE (both.find ("still copying 1 take to the card. It isn't on the card yet") != std::string::npos);
+    REQUIRE (both.find ("also still copying files added to 2 other takes") != std::string::npos);
+    REQUIRE (both.find ("Those takes are on the card already") != std::string::npos);
+}
+
+TEST_CASE (QuitQuestions_StillSavingTheCombinedVideoKeepsItsWords)
+{
+    StillSaving video;
+    video.otherWork = "the combined video";
+    REQUIRE (describeStillSaving (video)
+             == "SobStage is still making the combined video from the last take. Quitting now cancels it; "
+                "the recording itself is already saved.");
+
+    // A take an earlier copy left only on this computer is said too, with
+    // where it is -- never that it is on the card.
+    video.takesNotOnCard = 1;
+    video.computerFolder = "/Users/me/RECORDINGS-MIRROR";
+    const auto text = describeStillSaving (video);
+    REQUIRE (text.find ("1 take isn't on the card yet. It's safe on this computer in /Users/me/RECORDINGS-MIRROR.")
+             != std::string::npos);
 }

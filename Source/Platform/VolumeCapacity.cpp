@@ -4,10 +4,17 @@
 #include <cctype>
 #include <filesystem>
 #include <system_error>
+#include <vector>
 
 #if ! defined(_WIN32)
  #include <cerrno>
  #include <sys/stat.h>
+#else
+ #ifndef NOMINMAX
+  #define NOMINMAX
+ #endif
+ #include <windows.h>
+ #include <cstdio>
 #endif
 
 #if defined(__APPLE__)
@@ -35,6 +42,48 @@ uint64_t choose (uint64_t basicAvailable, std::optional<int64_t> importantUsage)
         return static_cast<uint64_t> (*importantUsage);
 
     return basicAvailable;
+}
+
+bool isUnderMissingMountPoint (const std::string& path,
+                               const std::function<bool (const std::string&)>& exists)
+{
+    if (path.empty() || path.front() != '/')
+        return false;
+
+    std::vector<std::string> parts;
+    std::string part;
+
+    for (size_t i = 1; i <= path.size(); ++i)
+    {
+        if (i == path.size() || path[i] == '/')
+        {
+            if (! part.empty())
+                parts.push_back (part);
+            part.clear();
+        }
+        else
+        {
+            part += path[i];
+        }
+    }
+
+    // How many leading parts name the mount point itself.
+    size_t depth = 0;
+
+    if (parts.size() >= 2 && parts[0] == "Volumes")
+        depth = 2;
+    else if (parts.size() >= 3 && parts[0] == "media")
+        depth = 3;
+    else if (parts.size() >= 4 && parts[0] == "run" && parts[1] == "media")
+        depth = 4;
+    else
+        return false;
+
+    std::string mountPoint;
+    for (size_t i = 0; i < depth; ++i)
+        mountPoint += "/" + parts[i];
+
+    return ! exists (mountPoint);
 }
 
 } // namespace volumecapacity
@@ -148,6 +197,17 @@ VolumeIdentity volumeIdentityOf (const std::string& path) noexcept
         if (! root.empty())
             identity.device = "root:" + root;
        #else
+        // A card that is not plugged in is not the startup disk its mount
+        // point's parent (/Volumes, /media/<user>) is on. Climbing there
+        // called the card "on this computer", and a take meant for it went
+        // "straight" into a folder that could not be made.
+        if (volumecapacity::isUnderMissingMountPoint (utf8FromPath (p), [] (const std::string& candidate)
+            {
+                struct stat info {};
+                return ::stat (candidate.c_str(), &info) == 0;
+            }))
+            return identity;
+
         // The backup folder does not exist before its first take: walk up to
         // the nearest folder that does, which is where it will be created.
         for (int depth = 0; depth < 128 && ! p.empty(); ++depth)
@@ -273,6 +333,43 @@ VolumeFingerprint volumeFingerprintOf (const std::string& path) noexcept
     }
 
     return fingerprint;
+}
+
+std::string cardIdentityOf (const std::string& path) noexcept
+{
+    try
+    {
+       #if defined(_WIN32)
+        // The volume serial number: set when the card is formatted, and read
+        // from whichever card is in the drive now, whatever its letter.
+        wchar_t volume[MAX_PATH + 1] = {};
+        DWORD serial = 0;
+        const auto wide = pathFromUtf8 (path).wstring();
+
+        if (path.empty() || GetVolumePathNameW (wide.c_str(), volume, MAX_PATH) == 0
+            || GetVolumeInformationW (volume, nullptr, 0, &serial, nullptr, nullptr, nullptr, 0) == 0)
+            return {};
+
+        char text[32] = {};
+        std::snprintf (text, sizeof (text), "serial:%08lX", static_cast<unsigned long> (serial));
+        return text;
+       #else
+        // A card that is out: its path climbs to the startup disk, which is
+        // never the card.
+        if (path.empty() || volumecapacity::isUnderMissingMountPoint (path, [] (const std::string& candidate)
+            {
+                struct stat info {};
+                return ::stat (candidate.c_str(), &info) == 0;
+            }))
+            return {};
+
+        return cardIdentity (volumeFingerprintOf (path));
+       #endif
+    }
+    catch (...)
+    {
+        return {};
+    }
 }
 
 } // namespace mma

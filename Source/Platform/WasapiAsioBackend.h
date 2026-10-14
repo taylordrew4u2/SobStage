@@ -50,6 +50,7 @@ public:
     void closeAllStreams() override;
 
     std::string getLastOpenError() const override { return lastOpenError; }
+    OpenRefusal getLastOpenRefusal() const override { return lastOpenRefusal; }
 
     std::string getHotplugProblem() const override { return hotplugProblem; }
 
@@ -60,6 +61,7 @@ public:
 
 private:
     std::string lastOpenError;
+    OpenRefusal lastOpenRefusal = OpenRefusal::unknown;
     std::string hotplugProblem;
 
     /// §0.1: where the worker threads leave a stream that stopped on its own.
@@ -110,12 +112,14 @@ private:
     /// shared mode for the monitor path -- see class doc.
     /// Does the whole COM open -- Activate, format negotiation, Initialize,
     /// service acquisition -- and returns the finished stream, or nullptr with
-    /// the reason in `openError`. Deliberately touches no member: it runs on a
-    /// worker that openWasapiExclusiveStream() may stop waiting for.
+    /// the reason in `openError` and its kind in `refusal`. Deliberately
+    /// touches no member: it runs on a worker that openWasapiExclusiveStream()
+    /// may stop waiting for.
     std::unique_ptr<WasapiStream> buildExclusiveStream (const std::string& deviceId,
                                                         double sampleRate, int bufferSizeSamples,
                                                         bool isInput, AudioCallback callback,
-                                                        std::string& openError);
+                                                        std::string& openError,
+                                                        OpenRefusal& refusal);
 
     bool openWasapiExclusiveStream (const std::string& deviceId, double sampleRate,
                                     int bufferSizeSamples, bool isInput, AudioCallback callback);

@@ -144,6 +144,9 @@ public:
     std::function<void()> onSetupGuideClicked;
     std::function<void (bool)> onMirrorToggled;
 
+    /// "Record on this computer, then copy to the card". On by default.
+    std::function<void (bool)> onCopyToCardToggled;
+
     /// Whether a finished take also writes one video-with-sound file per
     /// camera. Beside the separate files, never instead of them.
     std::function<void (bool)> onCombineVideoToggled;
@@ -180,6 +183,12 @@ public:
         mirrorToggle.setToggleState (enabled, juce::dontSendNotification);
     }
     bool isMirrorEnabled() const { return mirrorToggle.getToggleState(); }
+
+    void setCopyToCardEnabled (bool enabled)
+    {
+        copyToCardToggle.setToggleState (enabled, juce::dontSendNotification);
+    }
+    bool isCopyToCardEnabled() const { return copyToCardToggle.getToggleState(); }
     std::function<void()> onDestinationFolderClicked;
 
     /// Saved shows: the rig's whole setup under a name. Fills the picker
@@ -222,6 +231,12 @@ private:
     juce::Label aggregateNameLabel;
     juce::TextEditor aggregateNameEditor;
     juce::Label aggregateStatusLabel;
+    // Takes for an SD card or USB stick are recorded on this computer's own
+    // drive and copied to the card after Stop. The note says why to leave it
+    // on, in the user's terms, and what turning it off does.
+    juce::ToggleButton copyToCardToggle { "Record on this computer, then copy to the card" };
+    juce::Label copyToCardNote;
+
     juce::ToggleButton mirrorToggle { "Keep a local backup copy" };
 
     // The reason, under the switch, in the app's voice. §6.3's backup exists

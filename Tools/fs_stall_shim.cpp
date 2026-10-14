@@ -26,7 +26,33 @@
  * first one made while the trigger exists; every other call goes straight
  * through. "<trigger>.caught" appears when that rename starts waiting and
  * "<trigger>.released" once it has returned, so a gate can tell that the write
- * it meant to hold was held, and when it has landed.
+ * it meant to hold was held, and when it has landed. Once it is released, the
+ * trigger made again holds the next such rename: a copy retried after the
+ * first one failed can be held at the same step.
+ *
+ *   MMA_STALL_CARD_FREE_MB  the card reports no more free space than this
+ *
+ *   MMA_STALL_CARD_PREFIX  the card, for the two below, when it is not the
+ *                          stalled prefix: a gate that stalls this computer's
+ *                          own folder still has a card that reports itself one
+ *
+ *   MMA_STALL_COMPUTER_PREFIX, MMA_STALL_COMPUTER_FREE_MB_FILE  this
+ *                          computer's home folder, and a file holding a size
+ *                          in MB: while it holds one, everything under that
+ *                          folder but the card reports no more free space than
+ *                          that -- this computer "nearly full", on demand
+ *
+ *   MMA_STALL_CARD_FAT_MB_FILE  a file holding a size in MB: the card reports
+ *                               itself a FAT card of that size, which is what
+ *                               tells one card from another (cardIdentityOf).
+ *                               Another size written there is another card.
+ *
+ * The gates' "card" is a folder on this computer's own disk, and whether a
+ * take is recorded here and copied, or goes straight to the card, depends on
+ * how much the card could hold against how much this computer has. On one
+ * disk the two are the same, and a runner with less than four hours of
+ * takes free sent every take straight to the "card". A card reporting a few
+ * GB is a card, whatever the disk under it.
  */
 // Fortified builds turn open() and friends into inline wrappers, which would
 // collide with the definitions below.
@@ -80,9 +106,25 @@ const char* trigger()
     return t;
 }
 
-bool underPrefix (const char* path)
+// The card, for its size and room (MMA_STALL_CARD_FREE_MB and
+// MMA_STALL_CARD_FAT_MB_FILE): MMA_STALL_CARD_PREFIX when set, so a gate can
+// stall this computer's own folder (MMA_STALL_PREFIX) while the card still
+// reports itself a card; MMA_STALL_PREFIX otherwise.
+const std::string& cardPrefix()
 {
-    if (path == nullptr || prefix().empty())
+    static const std::string p = [] {
+        const char* v = std::getenv ("MMA_STALL_CARD_PREFIX");
+        std::string s = v != nullptr && *v != 0 ? v : prefix();
+        while (s.size() > 1 && s.back() == '/')
+            s.pop_back();
+        return s;
+    }();
+    return p;
+}
+
+bool underGivenPrefix (const char* path, const std::string& given)
+{
+    if (path == nullptr || given.empty())
         return false;
 
     std::string p (path);
@@ -97,8 +139,11 @@ bool underPrefix (const char* path)
 
     // The exact directory, or something inside it. "RECORDINGS-MIRROR" beside
     // "RECORDINGS" is the local backup and must never be caught by this.
-    return p == prefix() || p.compare (0, prefix().size() + 1, prefix() + "/") == 0;
+    return p == given || p.compare (0, given.size() + 1, given + "/") == 0;
 }
+
+bool underPrefix (const char* path) { return underGivenPrefix (path, prefix()); }
+bool underCardPrefix (const char* path) { return underGivenPrefix (path, cardPrefix()); }
 
 std::mutex& fdMutex() { static std::mutex m; return m; }
 std::set<int>& cardFds() { static std::set<int> s; return s; }
@@ -163,8 +208,12 @@ void touchFd (int fd)
         waitWhileCardIsDead();
 }
 
+// A rename is being held, or was and the trigger has not been made again.
+std::atomic<bool> renameHeld { false };
+
 // MMA_STALL_RENAME_ONTO: true for the one rename to hold -- onto the named
-// file under the prefix, while the trigger exists, and the first such.
+// file under the prefix, while the trigger exists, and the first such since
+// the last one held was released.
 bool isTheRenameToHold (const char* to)
 {
     if (renameOnto() == nullptr || to == nullptr || ! underPrefix (to) || ! cardIsDead())
@@ -175,8 +224,7 @@ bool isTheRenameToHold (const char* to)
     if (std::strcmp (slash != nullptr ? slash + 1 : to, renameOnto()) != 0)
         return false;
 
-    static std::atomic<bool> held { false };
-    return ! held.exchange (true);
+    return ! renameHeld.exchange (true);
 }
 
 // "<trigger><suffix>", created empty. The trigger is outside the prefix.
@@ -199,6 +247,114 @@ mode_t modeArg (int flags, va_list args)
 {
     return (flags & O_CREAT) != 0 || (flags & O_TMPFILE) == O_TMPFILE
                ? static_cast<mode_t> (va_arg (args, int)) : 0;
+}
+
+// MMA_STALL_CARD_FREE_MB: free blocks under the prefix capped at that size.
+template <typename Stat>
+int capCardFree (int result, const char* path, Stat* out, unsigned long blockSize)
+{
+    static const long long capMb = [] {
+        const char* v = std::getenv ("MMA_STALL_CARD_FREE_MB");
+        return v != nullptr && *v != 0 ? std::atoll (v) : -1LL;
+    }();
+
+    if (result != 0 || out == nullptr || capMb < 0 || blockSize == 0 || ! underCardPrefix (path))
+        return result;
+
+    const auto capBlocks = static_cast<unsigned long long> (capMb) * 1024ull * 1024ull / blockSize;
+
+    if (static_cast<unsigned long long> (out->f_bavail) > capBlocks)
+        out->f_bavail = capBlocks;
+    if (static_cast<unsigned long long> (out->f_bfree) > capBlocks)
+        out->f_bfree = capBlocks;
+
+    return result;
+}
+
+// MMA_STALL_COMPUTER_FREE_MB_FILE: a file holding a size in MB. While it
+// holds one, statfs under MMA_STALL_COMPUTER_PREFIX -- this computer's folder
+// for takes -- reports no more free space than that: a gate fills this
+// computer up, and empties it again, by writing the file. Read on every call;
+// an empty or missing file leaves the answer as it is.
+template <typename Stat>
+int capComputerFree (int result, const char* path, Stat* out, unsigned long blockSize)
+{
+    static const std::string computer = [] {
+        const char* v = std::getenv ("MMA_STALL_COMPUTER_PREFIX");
+        std::string s = v != nullptr ? v : "";
+        while (s.size() > 1 && s.back() == '/')
+            s.pop_back();
+        return s;
+    }();
+    static const char* file = [] {
+        const char* v = std::getenv ("MMA_STALL_COMPUTER_FREE_MB_FILE");
+        return v != nullptr && *v != 0 ? v : nullptr;
+    }();
+
+    // The card may be a folder inside it -- the gates' cards are under their
+    // home -- and is never this computer.
+    if (result != 0 || out == nullptr || file == nullptr || blockSize == 0 || ! underGivenPrefix (path, computer)
+        || underCardPrefix (path))
+        return result;
+
+    static const auto realOpen = real<int (*) (const char*, int, ...)> ("open");
+    static const auto realRead = real<ssize_t (*) (int, void*, size_t)> ("read");
+    static const auto realClose = real<int (*) (int)> ("close");
+
+    char text[32] = {};
+    const int fd = realOpen (file, O_RDONLY);
+    if (fd < 0)
+        return result;
+    const auto got = realRead (fd, text, sizeof (text) - 1);
+    realClose (fd);
+
+    if (got <= 0)
+        return result;
+
+    const auto capBlocks = static_cast<unsigned long long> (std::atoll (text)) * 1024ull * 1024ull / blockSize;
+
+    if (static_cast<unsigned long long> (out->f_bavail) > capBlocks)
+        out->f_bavail = capBlocks;
+    if (static_cast<unsigned long long> (out->f_bfree) > capBlocks)
+        out->f_bfree = capBlocks;
+
+    return result;
+}
+
+// MMA_STALL_CARD_FAT_MB_FILE: statfs under the prefix reports a FAT card the
+// size, in MB, that this file holds -- so the card has an identity (a FAT
+// card's is its format and size), and a gate puts "another card" in its place
+// by writing another size. Read on every call; an empty or missing file
+// leaves the answer as it is.
+template <typename Stat>
+void fakeFatCard (const char* path, Stat* out)
+{
+    static const char* file = [] {
+        const char* v = std::getenv ("MMA_STALL_CARD_FAT_MB_FILE");
+        return v != nullptr && *v != 0 ? v : nullptr;
+    }();
+
+    if (file == nullptr || out == nullptr || out->f_bsize <= 0 || ! underCardPrefix (path))
+        return;
+
+    static const auto realOpen = real<int (*) (const char*, int, ...)> ("open");
+    static const auto realRead = real<ssize_t (*) (int, void*, size_t)> ("read");
+    static const auto realClose = real<int (*) (int)> ("close");
+
+    char text[32] = {};
+    const int fd = realOpen (file, O_RDONLY);
+    if (fd < 0)
+        return;
+    const auto got = realRead (fd, text, sizeof (text) - 1);
+    realClose (fd);
+
+    const long long mb = got > 0 ? std::atoll (text) : 0;
+    if (mb <= 0)
+        return;
+
+    out->f_type = 0x4d44; // MSDOS_SUPER_MAGIC
+    out->f_blocks = static_cast<unsigned long long> (mb) * 1024ull * 1024ull
+                  / static_cast<unsigned long long> (out->f_bsize);
 }
 
 } // namespace
@@ -448,6 +604,9 @@ int rename (const char* from, const char* to)
         const int result = fn (from, to);
         const int savedErrno = errno;
         mark (".released");
+        // The trigger is gone by now: the next rename held is one made after
+        // it is made again.
+        renameHeld.store (false);
         errno = savedErrno;
         return result;
     }
@@ -475,28 +634,40 @@ int statvfs (const char* path, struct statvfs* out)
 {
     touchPath (path);
     static const auto fn = real<int (*) (const char*, struct statvfs*)> ("statvfs");
-    return fn (path, out);
+    const int r = fn (path, out);
+    capComputerFree (r, path, out, r == 0 ? (out->f_frsize != 0 ? out->f_frsize : out->f_bsize) : 0);
+    return capCardFree (r, path, out, r == 0 ? (out->f_frsize != 0 ? out->f_frsize : out->f_bsize) : 0);
 }
 
 int statvfs64 (const char* path, struct statvfs64* out)
 {
     touchPath (path);
     static const auto fn = real<int (*) (const char*, struct statvfs64*)> ("statvfs64");
-    return fn (path, out);
+    const int r = fn (path, out);
+    capComputerFree (r, path, out, r == 0 ? (out->f_frsize != 0 ? out->f_frsize : out->f_bsize) : 0);
+    return capCardFree (r, path, out, r == 0 ? (out->f_frsize != 0 ? out->f_frsize : out->f_bsize) : 0);
 }
 
 int statfs (const char* path, struct statfs* out)
 {
     touchPath (path);
     static const auto fn = real<int (*) (const char*, struct statfs*)> ("statfs");
-    return fn (path, out);
+    const int r = fn (path, out);
+    if (r == 0)
+        fakeFatCard (path, out);
+    capComputerFree (r, path, out, r == 0 ? static_cast<unsigned long> (out->f_bsize) : 0);
+    return capCardFree (r, path, out, r == 0 ? static_cast<unsigned long> (out->f_bsize) : 0);
 }
 
 int statfs64 (const char* path, struct statfs64* out)
 {
     touchPath (path);
     static const auto fn = real<int (*) (const char*, struct statfs64*)> ("statfs64");
-    return fn (path, out);
+    const int r = fn (path, out);
+    if (r == 0)
+        fakeFatCard (path, out);
+    capComputerFree (r, path, out, r == 0 ? static_cast<unsigned long> (out->f_bsize) : 0);
+    return capCardFree (r, path, out, r == 0 ? static_cast<unsigned long> (out->f_bsize) : 0);
 }
 
 char* realpath (const char* path, char* resolved)

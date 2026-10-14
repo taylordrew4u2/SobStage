@@ -27,7 +27,8 @@ public:
                   const juce::StringArray& fileNames,
                   int armedCameraCount,
                   int readyCameraCount,
-                  const juce::String& mirrorNote = {});
+                  const juce::String& mirrorNote = {},
+                  const juce::String& computerFolder = {});
 
     void setSessionName (const juce::String& name);
     juce::String getSessionName() const { return nameEditor.getText(); }
@@ -78,6 +79,10 @@ private:
     juce::Label blockedReason;
     juce::Label videoNote;
     juce::Label mirrorValue;
+    /// Height of the backup line: two lines, or four for the longer
+    /// "recorded on this computer first" one with its path, which needs them
+    /// on the narrowest card.
+    int mirrorValueHeight = 32;
 
     juce::ToggleButton askEveryTimeToggle { "Ask me this before every recording" };
     juce::TextButton chooseButton { "Choose a different folder..." };

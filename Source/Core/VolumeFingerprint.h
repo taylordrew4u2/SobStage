@@ -94,4 +94,25 @@ inline bool volumesDiffer (const VolumeFingerprint& a, const VolumeFingerprint& 
     return sizeIdentifiesVolume (a.fsType) && a.totalBytes != b.totalBytes;
 }
 
+/// Which card this is, as text kept with a take that is still to be copied
+/// to it (cardcopy::Marker::cardIdentity), so another card at the same place
+/// is never written to as though it were this one. It must not change when
+/// the same card is put back, so the device node -- which a Mac or Linux can
+/// hand out afresh at every insertion -- is not part of it: the volume's UUID,
+/// or for a FAT or ExFAT card without one, its format and size. Empty when
+/// neither tells one card from another.
+inline std::string cardIdentity (const VolumeFingerprint& fingerprint)
+{
+    if (! fingerprint.known)
+        return {};
+
+    if (! fingerprint.uuid.empty())
+        return "uuid:" + fingerprint.uuid;
+
+    if (sizeIdentifiesVolume (fingerprint.fsType) && fingerprint.totalBytes > 0)
+        return "size:" + fingerprint.fsType + ":" + std::to_string (fingerprint.totalBytes);
+
+    return {};
+}
+
 } // namespace mma

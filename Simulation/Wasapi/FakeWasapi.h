@@ -110,6 +110,26 @@ struct EndpointSpec
     /// over at all.
     bool allowActivate = true;
 
+    /// Non-zero: Activate for IAudioClient fails with this HRESULT -- for
+    /// instance AUDCLNT_E_DEVICE_INVALIDATED, a microphone that dropped off
+    /// the bus between being listed and being opened, or E_ACCESSDENIED.
+    long activateError = 0;
+
+    /// Non-zero: every IsFormatSupported answers this HRESULT -- for instance
+    /// AUDCLNT_E_DEVICE_INVALIDATED, a microphone that dropped off the bus
+    /// after Activate, while its formats were being asked about.
+    long formatQuestionError = 0;
+
+    /// With formatQuestionError: GetState reports the endpoint gone too once
+    /// a format has been asked about, as Windows does after a removal.
+    bool goneAfterFormatQuestion = false;
+
+    /// Non-zero: every Initialize answers this HRESULT, the formats having
+    /// been accepted -- for instance E_ACCESSDENIED, which is where Windows'
+    /// microphone privacy settings refuse a desktop app ("Failed to
+    /// initialize audio client: 80070005"), Activate having succeeded.
+    long initializeError = 0;
+
     /// When set, the first Initialize returns AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED
     /// and reports this size, which the backend must retry at.
     int alignedFrames = 0;
@@ -117,6 +137,10 @@ struct EndpointSpec
     /// With alignedFrames: the re-Activate the backend must do before its
     /// retry fails, as a device yanked mid-open would.
     bool failActivateAfterAlignment = false;
+
+    /// With failActivateAfterAlignment: the HRESULT that re-Activate fails
+    /// with. 0 is E_FAIL.
+    long reactivateError = 0;
 
     /// The smallest period the device runs at, as GetDevicePeriod reports it.
     /// Initialize rejects anything shorter with AUDCLNT_E_INVALID_DEVICE_PERIOD.

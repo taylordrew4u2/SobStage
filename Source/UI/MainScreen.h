@@ -76,6 +76,12 @@ public:
     /// written. Empty outside a take. Someone watching this line has already
     /// been answered before they think to ask where the recording went.
     void setFilesBeingSavedText (const juce::String& text) { filesSavingLabel.setText (text, juce::dontSendNotification); }
+
+    /// "Copy to this card", beside that line: shown while takes wait for
+    /// their own card with another in its place, which that line says. The
+    /// only way to them for every take but the one whose saved-take card is up.
+    void setCopyToThisCardVisible (bool visible);
+    std::function<void()> onCopyToThisCardClicked;
     void setNoMicsMessage (bool show);
     void setRecordButtonEnabled (bool enabled, const juce::String& disabledReason);
 
@@ -349,6 +355,8 @@ private:
     int cameraRowHeightForSpare (int spare) const;
 
     juce::TextButton recordButton { "Start recording" };
+    juce::TextButton copyToThisCardButton { "Copy to this card" };
+    static constexpr int kCopyToThisCardRow = 28;
     juce::Label elapsedLabel, remainingLabel, saveLocationLabel, filesSavingLabel, noMicsLabel, disabledReasonLabel;
     juce::Label monitorProblemLabel, adviceLabel;
     juce::Slider volumeSlider;

@@ -159,7 +159,7 @@ files really are empty and the card says so instead of calling it saved.
 
 > The screenshots are historical UI checkpoints from several earlier binaries;
 > the version visible in each masthead identifies the build. They are retained
-> to show the implemented flows, not as proof of the v1.13.27 release candidate.
+> to show the implemented flows, not as proof of the v1.13.28 release candidate.
 > They were rendered headless on Linux by
 > [`Tools/screenshot_app.sh`](../Tools/screenshot_app.sh) against the virtual ALSA microphones
 > [`Tools/setup_alsa_fixture.sh`](../Tools/setup_alsa_fixture.sh) creates — the
@@ -338,32 +338,143 @@ files really are empty and the card says so instead of calling it saved.
 - **Before your first take, the app asks where it's going.** One card, two
   questions: what to call the recording, and where to put it. It shows the
   exact folder that will be created, what will be inside it, and where the
-  backup copy goes, with a button to pick somewhere else. Answer it once and
-  every later press of record starts immediately — the question is asked again
-  only if you point the app at a different drive, or tick *Ask me this before
-  every recording*.
+  backup copy goes — or, for an SD card or USB stick, where on this computer
+  the take is recorded before it is copied to the card — with a button to
+  pick somewhere else. Answer it once and every later press of record starts
+  immediately — the question is asked again only if you point the app at a
+  different drive, or tick *Ask me this before every recording*.
 - **While you record, you can watch the files appear.** The screen shows the
   take's own folder and a live count and size — "Writing 5 files — 240 MB so
   far" — read off the disk rather than assumed.
 - **When you stop, you get the files.** Not a line of status text: a panel
   naming every file that was written, with its size, plus the backup copy's
   location and an **Open the folder** button. If the files came out empty it
-  says so, and says to check the mute switches on the mics.
+  says so, and says to check the mute switches on the mics. A take for a card
+  shows how its copy to the card is going instead of the backup line (see
+  *Recording for an SD card or USB stick* below).
 - **Quitting asks before it costs you anything.** During a take, quitting
   asks first (*Keep Recording* is the default). If the take it stops turns out
   to have a problem — the card stopped answering, the files hold no sound, a
   camera couldn't finish its movie — the app says so before it closes;
   *Don't Quit* keeps it open and shows the take. If the combined video or the
-  podcast-ready copy is still being made, *Quit When Done* closes the app by
-  itself once it is finished, and says so meanwhile ("SobStage will quit once
-  it has finished the combined video.") on the line under the record button
+  podcast-ready copy is still being made, or a take is being copied to the
+  card, *Quit When Done* closes the app by itself once it is finished, and
+  says so meanwhile ("SobStage will quit once it has finished the combined
+  video.") on the line under the record button
   — and at the foot of any card covering that line, such as the saved-take
   card.
   Quitting again while it waits asks again; only *Quit Now* cancels that file.
+  When a take is being copied to the card, the question says the take isn't
+  on the card yet and where it stays on this computer. A copy to the card that
+  *Quit Now* cuts off is finished the next time you open SobStage with the
+  card in: the take stays on this computer meanwhile. If the copy to the card
+  it was waiting for fails instead — the card is full, or was pulled out —
+  the app does not close as though the take were on the card: it says the
+  copy didn't finish and where the take is safe, and *Don't Quit* keeps it
+  open.
   If SobStage is hidden or behind another app when you quit it from the Dock,
   it comes to the front (or its Dock icon bounces) to ask. On a Mac, a Shut
   Down, Restart or Log Out stops when SobStage asks a question: once SobStage
   has closed, choose it again.
+
+### Recording for an SD card or USB stick
+
+SD cards and USB sticks are where live takes go wrong: a cheap card that
+pauses for a second, or a card reader sharing the microphones' USB hub, and
+sound is lost. So when the save location is a card, a USB stick or an
+external drive, SobStage records the take on this computer's own drive and
+copies it to the card when you press Stop.
+
+- **Where the take is first.** In `RECORDINGS-MIRROR` in your home folder:
+  `/Users/<you>/RECORDINGS-MIRROR` on a Mac, `C:\Users\<you>\RECORDINGS-MIRROR`
+  on Windows. Nothing touches the card while you record.
+- **The copy is checked.** Every file is read back from the card and compared
+  with the one on this computer before it gets its real name, and
+  `session.json` goes last — a folder on the card with `session.json` in it is
+  complete.
+- **This computer keeps its copy.** It is never deleted for you. Once the card
+  copy is checked and you have what you need, delete old takes from
+  `RECORDINGS-MIRROR` yourself.
+- **The saved-take card says how it is going**: "Copying to the card: 40%.",
+  then "Copied to the card: …". **Open the folder** opens the card's copy once
+  it is there. If something stops the copy it says what, and that the take is
+  safe on this computer — "The card isn't plugged in. This take is safe on
+  this computer in …, and will be copied when the card is back." A **Copy
+  again** button tries once more.
+- **A card that is out is copied when it comes back**, by itself, as soon as
+  SobStage sees it — and if you quit then, SobStage asks to wait for that
+  copy. So is a file this computer couldn't read for a moment. A card that is
+  full or locked is tried again at the next Stop, when a card is put back in,
+  or when you press **Copy again**.
+- **A take goes to its own card, not just any card in the same place.** Cards
+  formatted the same way often share a name ("NO NAME" on a Mac), and Windows
+  can give a card reader's drive letter to the next USB stick. If another
+  card is in when the copy runs, nothing is written to it: the saved-take
+  card says the card in now isn't this take's, that the take is safe on this
+  computer, and that it will be copied when its own card is back. To copy it
+  to the card that is in now instead, press **Copy to this card** — on the
+  saved-take card, or under the record button, where it copies every take
+  waiting for its own card (earlier takes, and ones found when SobStage
+  started, included). A take recorded
+  with the card out is for the card last seen at that save location. If
+  SobStage has never seen a card there, the take goes to the first card put
+  in, and says so: "Copied to the card that's in now: …. SobStage didn't know
+  which card this take was for, so check this is the one you meant."
+- **The combined video and the podcast-ready copy go to the card too**, once
+  they are made. Until then the take stays marked to be copied, so if you
+  quit first they are copied at the next launch. If the card is out by then,
+  the take's line says the take is on the card and only the file added since
+  isn't yet.
+- **Renaming the take's folder in Finder or File Explorer while it copies is
+  fine.** The copy follows it.
+- **The line under the record button says what is still to go**: "Waiting to
+  copy 2 takes to the card." If the card stopped answering before a copy
+  could start, it says that instead, and where the takes are safe.
+- **A card formatted FAT32** (most cards of 32 GB and smaller) can't hold a
+  file over 4 GB, such as a camera's movie after about 18 minutes. The movie
+  stays on this computer, everything else from the take goes to the card, and
+  the take's line says so. To copy the movie too, put in another card
+  formatted as ExFAT, and the whole take is copied to that one. Don't
+  reformat the card the take went to: that erases every take already on it.
+  (If you do reformat it while SobStage is open, SobStage copies tonight's
+  takes to it again, and the line under the record button counts them until
+  they are on it; it can't do that for a card reformatted after you quit.)
+- **A take started while another is still copying comes first.** The copy
+  steps aside, and finishes after you stop.
+- **If this computer is nearly full** — it couldn't hold as much as the card
+  could, up to four hours of recording, plus 2 GB — the take goes straight to
+  the card instead, and the activity list says so. A take recorded here never
+  stops for want of room where one recorded on the card would have carried on.
+  To make room, delete takes in `RECORDINGS-MIRROR` that have already been
+  copied to the card. Keep any that haven't: the note on the saved-take card
+  and in the activity list names each folder that isn't all on the card yet
+  ("Keep 2026-10-14_2015_Show: it isn't all on the card yet."), and for those
+  this computer's copy may be the only one.
+- **A card that stops answering doesn't hold up Record.** If SobStage can't
+  tell where the save location is within two seconds, the take is recorded on
+  this computer and copied later.
+- **A card that was out when SobStage started** is checked for interrupted
+  takes as soon as it is plugged in.
+- **To record straight to the card** as before, untick *Record on this
+  computer, then copy to the card* in Settings.
+- **Plug the card reader straight into the computer**, not into the hub the
+  microphones are on.
+
+### When it says a microphone lost its connection
+
+- "Kitchen and Hall both lost their connection. They may need more power: use
+  a USB hub with its own power adapter." Two or more different microphones
+  dropped out within five minutes. Microphones on a hub that only plugs into
+  the computer share that one port's power; a hub with its own power adapter
+  gives each one enough.
+- "Kitchen keeps losing its connection. Try another cable or USB port." The
+  same microphone dropped out more than once and nothing else did, so it is
+  that microphone's cable or port, not the power.
+- A microphone another app is using, or one set to a rate it refuses, is
+  never called a power problem; the activity list gives each microphone's own
+  reason.
+- If a Mac shows its own "USB Accessories Disabled" alert, a port really was
+  asked for more power than it has. Use a hub with its own power adapter.
 
 ## Loudness — aiming at where the take is going
 
@@ -499,16 +610,19 @@ recording remain part of the physical-hardware gate.
   name, your cameras and their names — all of it is still there next time you
   open the app. Setting up once means setting up once.
 - **If the drive starts falling behind, you are told before anything is lost.**
-  At half a buffer the screen says so; if it reaches nine tenths with no backup
-  copy running, the separate microphone tracks stop and the mixed file keeps
-  going, so what survives is one complete recording of everyone rather than
-  eight with the same hole in them. The sample position where that happened
-  goes into `session.json`.
-- **If the drive goes away mid-take, you are told immediately.** Pulling the
-  card stops the recording, closes every open file, and says so — and if the
-  backup copy was running, it gives you the folder that still holds a complete
-  copy. Until now those failed writes were discarded: the recording carried on
-  writing into nothing, with the elapsed time still climbing.
+  This is about recording straight to a drive: a take recorded on this
+  computer for a card (above) does not write to the card until it has
+  stopped. At half a buffer the screen says so; if it reaches nine tenths
+  with no backup copy running, the separate microphone tracks stop and the
+  mixed file keeps going, so what survives is one complete recording of
+  everyone rather than eight with the same hole in them. The sample position
+  where that happened goes into `session.json`.
+- **If the drive goes away mid-take, you are told immediately.** When
+  recording straight to a card, pulling the card stops the recording, closes
+  every open file, and says so — and if the backup copy was running, it gives
+  you the folder that still holds a complete copy. Until now those failed
+  writes were discarded: the recording carried on writing into nothing, with
+  the elapsed time still climbing.
 - **If the app is killed mid-take, it hands the recording back.** On the next
   launch it checks the destination and the backup folder for takes that never
   got a stop timestamp, repairs their file headers from the audio actually on
@@ -523,6 +637,10 @@ recording remain part of the physical-hardware gate.
   exactly as it is and checked again next launch; the activity list says how
   many were skipped. It is never mistaken for an interrupted take, and its
   details are never overwritten.
+  A take recorded on this computer that had not finished copying to the card
+  is copied at the next launch, once these checks are done ("Copying 1
+  earlier take to the card."). One the app was killed in the middle of is
+  copied once you press **Done** on the recovered-takes card.
 
 <p align="center">
   <img src="images/recovered.png" alt="A card headed 'Recovered.' explaining that the app stopped before the take was finished, listing the session folder with '3 files, 4s of sound, and 1 empty file left alone', and buttons reading Done and Open the folder" width="660">

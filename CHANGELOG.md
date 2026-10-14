@@ -1,5 +1,65 @@
 # Changelog
 
+## v1.13.28 -- 2026-10-14 (release candidate)
+
+Takes for an SD card are recorded on this computer and copied to the card after Stop; a stricter power warning.
+
+### Changed
+
+- **Takes going to an SD card or USB stick are now recorded on this
+  computer and copied to the card when you stop, then checked.** The
+  computer keeps its copy, in `RECORDINGS-MIRROR` in your home folder. Turn
+  this off in Settings to record straight to the card. Nothing is written to
+  the card while you record, so a slow or cheap card, or a card reader on the
+  microphones' hub, can no longer cost you sound. The saved-take card shows
+  how the copy is going, says where the take is safe if the card is out,
+  full or locked, and has a **Copy again** button. A card that was out is
+  copied as soon as it is back -- quit then, and SobStage asks to wait for
+  that copy -- and a copy cut off by quitting finishes the next time you open
+  SobStage with the card in. The combined video and podcast-ready copy follow
+  once they are made. On a FAT32 card, a movie too big for it stays on this
+  computer and everything else is copied; put in another card formatted as
+  ExFAT and the whole take goes to that one, even after you quit and reopen
+  SobStage. You are no longer told to reformat the card the take went to,
+  which would erase the takes already on it; if you do reformat it while
+  SobStage is open, the night's takes are copied to it again. If this
+  computer couldn't hold as much as the card could, the take goes straight to
+  the card as before, and you are told which folders in `RECORDINGS-MIRROR`
+  to keep because they aren't all on the card yet. A take goes to its own
+  card: if another card is in its place (cards often share a name, and
+  Windows can give a card reader's letter to a USB stick), nothing is written
+  to it and the take waits for its card; **Copy to this card**, on the
+  saved-take card or under the record button for every take waiting this
+  way, copies them to the card that is in. A take recorded with the card out
+  is for the card last seen there; one that never knew its card says which
+  card it went to, so you can check it. A save folder whose parent folder was
+  deleted on the card is made again. Quitting while a take is still being
+  copied says the take isn't on the card yet and where it stays -- or, when
+  only its combined video or podcast copy is still going, that the take is on
+  the card and only that file isn't. If you choose **Quit When Done** and the
+  copy then fails -- even a retry failing just as the copy before it did --
+  SobStage says so and where the take is safe instead of closing as though it
+  were on the card. When the card's speed check is due while a take is being
+  copied to it, the copy pauses for the check, so a fast card is not measured
+  "too slow". If this computer's own drive stops answering at the end of a
+  take recorded on it, SobStage says so instead of blaming the card.
+
+### Fixed
+
+- **"Your microphones need more power" appeared when the cause was something
+  else**, such as a mic in use by another app or one mic dropping twice. It
+  now names the mics ("Kitchen and Hall both lost their connection. They may
+  need more power: use a USB hub with its own power adapter."), and one mic
+  that keeps dropping gets "Try another cable or USB port." The activity list
+  now gives every mic that would not open its own reason. A mic that drops
+  off while it is being opened, as one short of power does, still counts, and
+  so does a hub losing all its mics at once mid-take or refusing them all as
+  they are opened, a mic that fails again after being plugged back in, and a
+  second mic failing where the first has come back. Mics dropping as a
+  Windows laptop wakes from sleep no longer count, nor do mics that Windows'
+  privacy settings keep from SobStage: those say to turn on "Let desktop apps
+  access your microphone" in Settings > Privacy & security > Microphone.
+
 ## v1.13.27 -- 2026-10-14 (release candidate)
 
 Headphone sound fixes on Mac and Windows: clicks, warble and distortion.

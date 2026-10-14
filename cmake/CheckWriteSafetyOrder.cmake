@@ -47,8 +47,10 @@ else()
         endif()
     endforeach()
 
-    # Still after the two stops that end the take outright.
-    string(FIND "${body}" "the card stopped accepting writes" cardStop)
+    # Still after the two stops that end the take outright. The card-removal
+    # stop's reason is worded for the take's route (the card, or this
+    # computer's drive for a take recorded here).
+    string(FIND "${body}" "stoppedAcceptingWritesReason (" cardStop)
     string(FIND "${body}" "the drive ran out of room" roomStop)
     if (cardStop EQUAL -1 OR roomStop EQUAL -1
         OR NOT (cardStop LESS safety AND roomStop LESS safety))

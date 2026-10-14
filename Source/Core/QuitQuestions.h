@@ -49,9 +49,11 @@ public:
 
     enum class Tick
     {
-        KeepWaiting, ///< the work is still running, or a question is open
-        Quit,        ///< the work is done: quit now
-        StopWaiting, ///< the wait is over without quitting (a take started)
+        KeepWaiting,     ///< the work is still running, or a question is open
+        Quit,            ///< the work is done: quit now
+        StopWaiting,     ///< the wait had already ended (an answer ended it)
+        CalledOff,       ///< a take started while waiting: the quit is off, as after "Don't Quit"
+        AskAboutProblem, ///< the work is done, but a copy to the card failed meanwhile
     };
 
     /// A request to quit. `recording`: a take is running.
@@ -74,8 +76,13 @@ public:
     Next onWorkAnswered (WorkAnswer answer) noexcept;
 
     /// While waiting, polled. `recording`: a take is running.
-    /// `workRunning`: the combined video or podcast copy is still being made.
-    Tick onWaitTick (bool recording, bool workRunning) noexcept;
+    /// `workRunning`: the combined video, the podcast copy or the copy to the
+    /// card is still being made. `problemArose`: a copy to the card failed
+    /// since the quit was asked for, and has not been told -- the copy "Quit
+    /// When Done" waited for, typically. Asked about, whatever was answered
+    /// before: quitting then would leave with a card that does not hold the
+    /// take.
+    Tick onWaitTick (bool recording, bool workRunning, bool problemArose = false) noexcept;
 
     bool isAsking() const noexcept   { return asking != Question::None; }
     bool isWaiting() const noexcept  { return waiting; }
@@ -95,6 +102,41 @@ private:
     bool quitNowConfirmed = false;    ///< "Quit Now"
     bool waiting = false;             ///< "Quit When Done"
 };
+
+/// What the "Still saving ..." question is about.
+struct StillSaving
+{
+    /// The combined video and the podcast copy still being made: "the
+    /// combined video and the podcast copy". Empty for neither.
+    std::string otherWork;
+
+    /// The copy to the card is part of it.
+    bool copyingToCard = false;
+
+    /// How many takes it is still copying; 0 when that is not known yet (the
+    /// takes left at the last quit still being looked for).
+    int takesCopying = 0;
+
+    /// Takes already on the card whose combined video or podcast copy -- a
+    /// file added since -- is all that is still being copied. Not among
+    /// takesCopying: "it isn't on the card yet" is untrue of them.
+    int takesAddingFiles = 0;
+
+    /// Takes that are not on the card and not being copied: a copy that
+    /// failed, for a card that is out, full or locked.
+    int takesNotOnCard = 0;
+
+    /// Where takes recorded on this computer are kept.
+    std::string computerFolder;
+};
+
+/// The words of the "Still saving ..." question. For the combined video and
+/// the podcast copy, the recording itself is already saved. For the copy to
+/// the card it is not -- not on the card, which is the copy the user will
+/// leave with -- so that is said, with where the take stays meanwhile and
+/// when it goes. "The recording itself is already saved" beside "Quit Now"
+/// used to read as the take being safe on the card.
+std::string describeStillSaving (const StillSaving& work);
 
 /// What happened to a take that was just stopped, as far as quitting needs
 /// to know.
