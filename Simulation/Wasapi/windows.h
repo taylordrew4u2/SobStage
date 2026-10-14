@@ -55,6 +55,7 @@ constexpr HRESULT E_POINTER      = static_cast<HRESULT> (0x80004003);
 constexpr HRESULT E_NOINTERFACE  = static_cast<HRESULT> (0x80004002);
 constexpr HRESULT E_INVALIDARG   = static_cast<HRESULT> (0x80070057);
 constexpr HRESULT E_OUTOFMEMORY  = static_cast<HRESULT> (0x8007000E);
+constexpr HRESULT E_ACCESSDENIED = static_cast<HRESULT> (0x80070005);
 
 constexpr bool SUCCEEDED (HRESULT hr) { return hr >= 0; }
 constexpr bool FAILED (HRESULT hr) { return hr < 0; }

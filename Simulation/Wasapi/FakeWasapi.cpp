@@ -661,6 +661,12 @@ struct FakeDevice : RefCounted<IMMDevice>
             return S_OK;
         }
 
+        if (riid == __uuidof (IAudioClient) && endpoint->spec.activateError != 0)
+        {
+            *out = nullptr;
+            return static_cast<HRESULT> (endpoint->spec.activateError);
+        }
+
         if (! endpoint->spec.allowActivate || riid != __uuidof (IAudioClient)
             || (endpoint->spec.failActivateAfterAlignment && endpoint->alignmentRejected.load()))
         {

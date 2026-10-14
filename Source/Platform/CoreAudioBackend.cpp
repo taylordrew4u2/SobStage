@@ -1304,6 +1304,28 @@ CoreAudioOpenResult refusedBecause (OpenRefusal why, CoreAudioOpenResult result)
     return result;
 }
 
+// §14.2: why CoreAudio would not attach to or start a device. A bus-powered
+// microphone on a starved hub browns out as it starts drawing current -- that
+// is, while it is being opened -- and then answers with a bad-device or
+// bad-object error, or is no longer alive: gone, which counts toward the power
+// warning. Hog mode held by another process is in use. Anything else is
+// unknown, and counted too, so a real brownout is never hidden behind a cause
+// that more power would not fix.
+OpenRefusal refusalForFailedOpen (OSStatus status, bool deviceStillAlive) noexcept
+{
+    if (! deviceStillAlive || status == kAudioHardwareBadDeviceError || status == kAudioHardwareBadObjectError)
+        return OpenRefusal::gone;
+
+    // '!hog': another process holds the device in hog mode.
+    if (status == kAudioDevicePermissionsError)
+        return OpenRefusal::inUse;
+
+    return OpenRefusal::unknown;
+}
+
+const char* const kDisconnectedWhileOpening =
+    "This interface disconnected while SobStage was opening it. Plug it back in, then try again.";
+
 struct CoreAudioCleanupResult
 {
     bool streamSafeToDelete = true;
@@ -1386,18 +1408,24 @@ CoreAudioCleanupResult stopAndDestroyAbandonedStream (CoreAudioStream& stream)
 // timeout never hands closeAllStreams a half-created IOProc.
 CoreAudioOpenResult createAndStartStream (CoreAudioStream& stream)
 {
-    if (AudioDeviceCreateIOProcID (stream.deviceId, ioProcTrampoline, &stream,
-                                   &stream.ioProcId) != noErr
-        || stream.ioProcId == nullptr)
+    if (const auto created = AudioDeviceCreateIOProcID (stream.deviceId, ioProcTrampoline, &stream,
+                                                        &stream.ioProcId);
+        created != noErr || stream.ioProcId == nullptr)
     {
+        // Asked before the clean-up, which may itself be what a device gone
+        // from the bus fails at.
+        const auto why = refusalForFailedOpen (created, readDeviceIsAlive (stream.deviceId));
+
         CoreAudioCleanupResult cleanup;
         if (stream.ioProcId != nullptr || stream.ownsHogMode)
             cleanup = destroyStreamAfterFailedOpen (stream);
 
-        return refusedBecause (OpenRefusal::inUse, {
+        return refusedBecause (why, {
                  false,
-                 "macOS wouldn't let this app attach to this interface. Another app is usually "
-                 "holding it -- close anything else recording or streaming from it, then try again.",
+                 why == OpenRefusal::gone
+                     ? kDisconnectedWhileOpening
+                     : "macOS wouldn't let this app attach to this interface. Another app is usually "
+                       "holding it -- close anything else recording or streaming from it, then try again.",
                  cleanup.streamSafeToDelete, cleanup.cleanupSucceeded });
     }
 
@@ -1422,20 +1450,24 @@ CoreAudioOpenResult createAndStartStream (CoreAudioStream& stream)
 
         const auto cleanup = destroyStreamAfterFailedOpen (stream);
         return refusedBecause (OpenRefusal::gone, {
-                 false,
-                 "This interface disconnected while SobStage was opening it. Plug it back in, "
-                 "then try again.", cleanup.streamSafeToDelete, cleanup.cleanupSucceeded });
+                 false, kDisconnectedWhileOpening, cleanup.streamSafeToDelete, cleanup.cleanupSucceeded });
     }
 
-    if (AudioDeviceStart (stream.deviceId, stream.ioProcId) != noErr)
+    // A refused microphone permission does not make Start fail -- macOS feeds
+    // silence instead (PermissionGuidance) -- so a failure here is the device
+    // going as it starts, or hog mode held elsewhere, or something unknown.
+    if (const auto started = AudioDeviceStart (stream.deviceId, stream.ioProcId); started != noErr)
     {
+        const auto why = refusalForFailedOpen (started, readDeviceIsAlive (stream.deviceId));
         const auto cleanup = destroyStreamAfterFailedOpen (stream);
-        return refusedBecause (OpenRefusal::permission, {
+        return refusedBecause (why, {
                  false,
-                 "macOS wouldn't start this interface. Check that SobStage is allowed to use the "
-                 "microphone in System Settings > Privacy & Security > Microphone, and that no "
-                 "other app is recording from it.", cleanup.streamSafeToDelete,
-                 cleanup.cleanupSucceeded });
+                 why == OpenRefusal::gone
+                     ? kDisconnectedWhileOpening
+                     : "macOS wouldn't start this interface. Check that SobStage is allowed to use the "
+                       "microphone in System Settings > Privacy & Security > Microphone, and that no "
+                       "other app is recording from it.",
+                 cleanup.streamSafeToDelete, cleanup.cleanupSucceeded });
     }
 
     stream.startedSeconds = hostClockSeconds();

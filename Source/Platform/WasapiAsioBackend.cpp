@@ -994,6 +994,27 @@ ExclusiveModeCapability WasapiAsioBackend::checkExclusiveModeCapability (const s
     return cap;
 }
 
+/// §14.2: why IAudioClient could not be had for an endpoint. A microphone
+/// that dropped off the bus as it was opened -- a starved hub browning out as
+/// it starts drawing current -- is invalidated or no longer found, and counts
+/// toward the power warning. Only an outright access refusal is about
+/// permission. Anything else is unknown, and counted, so a real brownout is
+/// never hidden behind a cause that more power would not fix.
+static OpenRefusal refusalForFailedActivate (HRESULT result) noexcept
+{
+    // HRESULT_FROM_WIN32 (ERROR_NOT_FOUND), which GetDevice and Activate give
+    // for an endpoint that is no longer in the system.
+    constexpr HRESULT kNotFound = static_cast<HRESULT> (0x80070490);
+
+    if (result == E_ACCESSDENIED)
+        return OpenRefusal::permission;
+
+    if (result == AUDCLNT_E_DEVICE_INVALIDATED || result == kNotFound)
+        return OpenRefusal::gone;
+
+    return OpenRefusal::unknown;
+}
+
 std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std::string& deviceId,
                                                                       double sampleRate,
                                                                       int bufferSizeSamples,
@@ -1009,8 +1030,14 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
 
     openError.clear();
 
+    // GetDevice hands back an endpoint that is no longer present as readily
+    // as one that is, so its state is asked straight away: a microphone that
+    // dropped off the bus after the list was made is "gone" here, before any
+    // later check could call it something else.
     ComPtr<IMMDevice> device;
-    if (! resolveDevice (deviceId, device) || device == nullptr)
+    DWORD endpointState = 0;
+    if (! resolveDevice (deviceId, device) || device == nullptr
+        || FAILED (device->GetState (&endpointState)) || endpointState != DEVICE_STATE_ACTIVE)
     {
         // §5.4 asks for the cause to be named. Only the format-refused case
         // below ever filled this in, so every other refusal in here reached the
@@ -1055,15 +1082,29 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
     stream->deviceId = isInput ? deviceId : std::string();
     stream->failures = &streamFailures;
 
-    if (FAILED (device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr,
-                                  reinterpret_cast<void**> (stream->client.GetAddressOf()))))
+    if (const auto activated = device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr,
+                                                 reinterpret_cast<void**> (stream->client.GetAddressOf()));
+        FAILED (activated))
     {
-        openError = isInput
-            ? "Windows wouldn't let this app attach to this microphone. Check Settings > Privacy > "
-              "Microphone, then try again."
-            : "Windows wouldn't let this app attach to this output. Close anything else using it, "
-              "then try again.";
-        refusal = OpenRefusal::permission;
+        refusal = refusalForFailedActivate (activated);
+
+        if (refusal == OpenRefusal::gone)
+            openError = isInput
+                ? "This microphone disconnected while SobStage was opening it. Plug it back in, "
+                  "then try again."
+                : "This sound output isn't there any more. Pick a different one in Advanced.";
+        else if (refusal == OpenRefusal::permission)
+            openError = isInput
+                ? "Windows wouldn't let this app attach to this microphone. Check Settings > Privacy > "
+                  "Microphone, then try again."
+                : "Windows wouldn't let this app attach to this output. Close anything else using it, "
+                  "then try again.";
+        else
+            openError = isInput
+                ? "Windows couldn't open this microphone. Unplug it and plug it back in, then try again."
+                : "Windows wouldn't let this app attach to this output. Close anything else using it, "
+                  "then try again.";
+
         return nullptr;
     }
 

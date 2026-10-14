@@ -2153,6 +2153,61 @@ void aSlowButHealthyOutputRateSwitchOpens()
 /// finishing) used to make every later microphone in the same rebuild fail
 /// instantly with "still finishing an earlier audio-rig operation". A healthy
 /// second microphone must wait (bounded) for the first to finish, then open.
+/// §14.2: a bus-powered mic on a starved hub browns out as it starts drawing
+/// current -- while it is being opened. That used to be called "permission"
+/// (a failed AudioDeviceStart) or "in use" (a failed IOProc), neither of
+/// which the power warning counts, so two mics browning out this way said
+/// nothing about power. Hog mode held by another app is still "in use".
+void aMicThatDropsOffWhileOpeningCountsTowardThePowerWarning()
+{
+    std::printf ("\nA mic that drops off the bus while it is being opened\n");
+
+    {
+        fakeca::reset();
+        auto spec = microphone ("Kitchen", "uid-kitchen", 1, fakeca::BufferShape::oneChannelPerBuffer);
+        spec.dropsOffWhenStarted = true;
+        fakeca::addDevice (spec);
+
+        mma::CoreAudioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream (spec.uid, 48000.0, 256, capture.callback()),
+               "a mic that goes as it starts does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::gone, "it is called gone, not permission");
+        check (mma::countsAsPossiblePowerLoss (backend.getLastOpenRefusal()),
+               "and counts toward the power warning");
+        check (backend.getLastOpenError().find ("Privacy") == std::string::npos,
+               "and the user is not sent to the privacy settings");
+    }
+
+    {
+        fakeca::reset();
+        auto spec = microphone ("Hall", "uid-hall", 1, fakeca::BufferShape::oneChannelPerBuffer);
+        spec.dropsOffWhenAttached = true;
+        fakeca::addDevice (spec);
+
+        mma::CoreAudioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream (spec.uid, 48000.0, 256, capture.callback()),
+               "a mic that goes as it is attached to does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::gone, "it is called gone, not in use");
+    }
+
+    {
+        fakeca::reset();
+        auto spec = microphone ("Stage", "uid-stage", 1, fakeca::BufferShape::oneChannelPerBuffer);
+        spec.startError = kAudioDevicePermissionsError;
+        fakeca::addDevice (spec);
+
+        mma::CoreAudioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream (spec.uid, 48000.0, 256, capture.callback()),
+               "a mic another app holds in hog mode does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::inUse, "it is called in use");
+        check (! mma::countsAsPossiblePowerLoss (backend.getLastOpenRefusal()),
+               "which more power would not fix");
+    }
+}
+
 void aSlowMicDoesNotRefuseTheNextHealthyMic()
 {
     std::printf ("\nA mic slow past its deadline, then a healthy mic in the same rebuild\n");
@@ -3183,6 +3238,7 @@ int main()
     aTimedOutUnsafeInputCannotBeUnquarantinedByOtherCleanup();
     aSlowButHealthyOutputRateSwitchOpens();
     aSlowMicDoesNotRefuseTheNextHealthyMic();
+    aMicThatDropsOffWhileOpeningCountsTowardThePowerWarning();
     anInputPropertyCallCannotFreezeLaunch();
     stuckOutputCreateAndStartCallsAreBounded();
     stuckStopAndDestroyCannotFreezeClose();

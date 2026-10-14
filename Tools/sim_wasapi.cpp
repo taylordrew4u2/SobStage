@@ -9,6 +9,11 @@
 #include "../Source/Core/SampleFormat.h"
 #include "../Source/Platform/WasapiAsioBackend.h"
 
+// The simulated Windows headers, for the endpoint states and error codes.
+#include <windows.h>
+#include <mmdeviceapi.h>
+#include <audioclient.h>
+
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -292,6 +297,63 @@ void aFailedReactivationSaysWhy()
     check (! backend.openInputStream ("mic-gone", 48000.0, 256, capture.callback()),
            "the open fails");
     check (! backend.getLastOpenError().empty(), "and says why, rather than nothing");
+}
+
+/// §14.2: a bus-powered microphone on a starved hub browns out as it starts
+/// drawing current -- that is, while it is being opened. Windows still hands
+/// the backend the endpoint (GetDevice finds ones no longer present), so the
+/// open used to fail later and be called "not external" or "permission",
+/// which the power warning never counts. Either way it is a device gone.
+void aMicrophoneThatDropsOffWhileOpeningCountsTowardThePowerWarning()
+{
+    std::printf ("\nA microphone that drops off the bus while it is being opened\n");
+
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-brownout", "Kitchen", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.deviceState = DEVICE_STATE_NOTPRESENT;
+        spec.devNodeLookupAvailable = false; // its device node went with it
+        fakewasapi::addEndpoint (spec);
+
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream ("mic-brownout", 48000.0, 256, capture.callback()),
+               "an endpoint no longer present does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::gone, "it is called gone");
+        check (mma::countsAsPossiblePowerLoss (backend.getLastOpenRefusal()),
+               "and counts toward the power warning");
+    }
+
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-invalidated", "Hall", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.activateError = static_cast<long> (AUDCLNT_E_DEVICE_INVALIDATED);
+        fakewasapi::addEndpoint (spec);
+
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream ("mic-invalidated", 48000.0, 256, capture.callback()),
+               "a microphone invalidated as it is activated does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::gone, "it is called gone, not permission");
+        check (backend.getLastOpenError().find ("Privacy") == std::string::npos,
+               "and the user is not sent to the privacy settings");
+    }
+
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-denied", "Stage", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.activateError = static_cast<long> (E_ACCESSDENIED);
+        fakewasapi::addEndpoint (spec);
+
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream ("mic-denied", 48000.0, 256, capture.callback()),
+               "a refused microphone does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::permission,
+               "an access refusal is still permission");
+        check (! mma::countsAsPossiblePowerLoss (backend.getLastOpenRefusal()),
+               "which more power would not fix");
+    }
 }
 
 /// A buffer below the device's minimum period. Windows rejects it with
@@ -1370,6 +1432,7 @@ int main()
     aDeviceThatAcceptsNothingFailsWithAReason();
     aBufferAlignmentRejectionIsRetried();
     aFailedReactivationSaysWhy();
+    aMicrophoneThatDropsOffWhileOpeningCountsTowardThePowerWarning();
     aBufferBelowTheDeviceMinimumOpensAtTheMinimum();
     microphonesOpenWhenTheMessageThreadIsSingleThreaded();
     aSilentFlaggedPacketIsTreatedAsSilence();

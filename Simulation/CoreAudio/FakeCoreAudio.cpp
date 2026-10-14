@@ -953,6 +953,15 @@ OSStatus AudioDeviceCreateIOProcID (AudioObjectID device, AudioDeviceIOProc proc
         std::this_thread::sleep_for (
             std::chrono::milliseconds (d->spec.createDelayMilliseconds));
 
+    if (d->spec.dropsOffWhenAttached)
+    {
+        d->spec.isAlive = false;
+        return kAudioHardwareBadDeviceError;
+    }
+
+    if (d->spec.createError != noErr)
+        return d->spec.createError;
+
     d->procs.push_back ({ proc, clientData, false });
     *outProcId = proc;
     return noErr;
@@ -984,6 +993,15 @@ OSStatus AudioDeviceStart (AudioObjectID device, AudioDeviceIOProcID procId)
     if (d->spec.startDelayMilliseconds > 0)
         std::this_thread::sleep_for (
             std::chrono::milliseconds (d->spec.startDelayMilliseconds));
+
+    if (d->spec.dropsOffWhenStarted)
+    {
+        d->spec.isAlive = false;
+        return kAudioHardwareBadDeviceError;
+    }
+
+    if (d->spec.startError != noErr)
+        return d->spec.startError;
 
     if (d->spec.startWaitsForRelease)
     {
