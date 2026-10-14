@@ -354,6 +354,106 @@ TEST_CASE (StemAligner_AConfirmedProvisionalOffsetStands)
     REQUIRE (a.getSilenceInserted (0) == 10u);
 }
 
+TEST_CASE (StemAligner_RoomGivenBackPutsItsSilenceWhereTheStreamSkipped)
+{
+    // The quicker channel, held back 308 behind the slowest device. Its own
+    // stream gives back 1092 samples of room it held for a block its device
+    // has left: it drops that much quiet from the newest end of what it had
+    // buffered, so its next sample is 1092 later in the room than the newest
+    // one it handed over. The silence belongs exactly there. The 308 samples
+    // waiting in the line came before the skip and come out on time; only
+    // what follows them is 1092 later. Written at the head instead, the
+    // silence went out first and the 308 waiting samples after it: a gap
+    // 308 samples before the moment the stream skipped, inside whatever
+    // sound was there, and those samples 1092 late against every other stem.
+    StemAligner a;
+    a.prepare (1);
+    a.setOffset (0, 308);
+
+    auto first = ramp (1, 3000);
+    a.process (0, first.data(), first.size());
+    a.setOffset (0, 308 + 1092, StemOffsetKind::released, 1092);
+
+    auto second = ramp (3001, 4000);
+    a.process (0, second.data(), second.size());
+
+    std::vector<float> out (first);
+    out.insert (out.end(), second.begin(), second.end());
+
+    // 308 of starting silence, then every sample up to the skip, in order and
+    // unbroken -- the last of them, 3000, at 3000 + 308 - 1 -- then the room
+    // given back, then on from 3001.
+    for (size_t i = 0; i < 308; ++i)
+        REQUIRE (out[i] == 0.0f);
+    for (size_t i = 308; i < 3308; ++i)
+        REQUIRE (out[i] == static_cast<float> (i - 307));
+    for (size_t i = 3308; i < 3308 + 1092; ++i)
+        REQUIRE (out[i] == 0.0f);
+    for (size_t i = 3308 + 1092; i < out.size(); ++i)
+        REQUIRE (out[i] == static_cast<float> (i - 307 - 1092));
+
+    REQUIRE (a.getSilenceInserted (0) == 1092u);
+    REQUIRE (a.getSamplesDropped (0) == 0u);
+    REQUIRE (a.getOffset (0) == 1400);
+}
+
+TEST_CASE (StemAligner_RoomGivenBackWhileAnotherDeviceGrowsSplitsTheChange)
+{
+    // The same room given back, in the same block as another device's growth
+    // raises the reference by 200: the change is 1292, of which 1092 is this
+    // channel's own skip. The growth's 200 belong at the head (that device's
+    // stream moved at the moment the oldest sample waiting here stands for),
+    // the 1092 behind what is waiting.
+    StemAligner a;
+    a.prepare (1);
+    a.setOffset (0, 308);
+
+    auto first = ramp (1, 3000);
+    a.process (0, first.data(), first.size());
+    a.setOffset (0, 308 + 1092 + 200, StemOffsetKind::released, 1092);
+
+    auto second = ramp (3001, 4000);
+    a.process (0, second.data(), second.size());
+
+    std::vector<float> out (first);
+    out.insert (out.end(), second.begin(), second.end());
+
+    // Samples up to 2692, then the growth's 200 of silence, the 308 that
+    // were waiting (2693 to 3000), the room given back, then on from 3001.
+    for (size_t i = 308; i < 3000; ++i)
+        REQUIRE (out[i] == static_cast<float> (i - 307));
+    for (size_t i = 3000; i < 3200; ++i)
+        REQUIRE (out[i] == 0.0f);
+    for (size_t i = 3200; i < 3508; ++i)
+        REQUIRE (out[i] == static_cast<float> (i - 307 - 200));
+    for (size_t i = 3508; i < 3508 + 1092; ++i)
+        REQUIRE (out[i] == 0.0f);
+    for (size_t i = 3508 + 1092; i < out.size(); ++i)
+        REQUIRE (out[i] == static_cast<float> (i - 307 - 200 - 1092));
+
+    REQUIRE (a.getSilenceInserted (0) == 1292u);
+    REQUIRE (a.getSamplesDropped (0) == 0u);
+}
+
+TEST_CASE (StemAligner_RoomGivenBackBeforeTheChannelStartsIsItsStartingOffset)
+{
+    // Before the channel's first sample there is nothing waiting to put the
+    // silence behind: it is the take's starting alignment, as any other.
+    StemAligner a;
+    a.prepare (1);
+    a.setOffset (0, 308);
+    a.setOffset (0, 1400, StemOffsetKind::released, 1092);
+
+    auto block = ramp (1, 2000);
+    a.process (0, block.data(), block.size());
+
+    for (size_t i = 0; i < 1400; ++i)
+        REQUIRE (block[i] == 0.0f);
+    REQUIRE (block[1400] == 1.0f);
+    REQUIRE (a.getStartOffset (0) == 1400);
+    REQUIRE (a.getSilenceInserted (0) == 0u);
+}
+
 TEST_CASE (StemAligner_AnOffsetPastItsBoundIsClampedAndSaidSo)
 {
     StemAligner a;

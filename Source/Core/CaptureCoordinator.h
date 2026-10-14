@@ -838,11 +838,14 @@ private:
     std::unique_ptr<std::atomic<int>[]> recordingOffsetView;
 
     // Consumer-owned, sized with recordingOffsets: whether each channel's
-    // offset is for a block its device has not confirmed, or takes one back
-    // (StemOffsetKind, handed to the writer beside the offsets), and the
-    // block each stream held at the last update, which is how a refusal is
-    // seen: a held block only ever falls when a provisional one is refused.
+    // offset is for a block its device has not confirmed, takes one back, or
+    // is room its stream gave back (StemOffsetKind, handed to the writer
+    // beside the offsets) and how much room that was; and the block each
+    // stream held at the last update, which is how both are seen: a held
+    // block falls when a provisional one is refused, or when room held for
+    // a settled one is given back.
     std::vector<StemOffsetKind> recordingOffsetKinds;
+    std::vector<int> recordingOffsetReleased;
     std::vector<size_t> heldBlockSeen;
 
     // Consumer-owned, reset with the vectors above: the largest reference the
@@ -1012,7 +1015,8 @@ private:
     void mixAndPublish (const float* const* inputs, int channelCount,
                         float* const* outputs, int numOutputs, int numSamples,
                         int outputFrameOffset, const int* recordingOffsetsForBlock,
-                        const StemOffsetKind* recordingOffsetKindsForBlock) noexcept;
+                        const StemOffsetKind* recordingOffsetKindsForBlock,
+                        const int* recordingOffsetReleasedForBlock) noexcept;
 };
 
 } // namespace mma

@@ -1307,16 +1307,23 @@ struct HeldRoomTakeResult
     int kitchenDropped = 0, kitchenShift = 0, couchDropped = 0, couchShift = 0;
     bool aligned = false;
     int nextTakeKitchenStart = -1, nextTakeCouchStart = -1;
+
+    // With a tone: the last frame of it in each stem, and the longest run of
+    // digital silence inside it in Couch's.
+    long long kitchenToneEnd = -1, couchToneEnd = -1, couchSilenceInTone = -1;
 };
 
 // Another app holds Couch's device at 1156 frames for a second, then lets it
 // go back to 64. Silent but for one clap both microphones hear at once, after
-// the room has been given back. Couch's deliveries may run `couchLate`
-// samples late for a moment around when the room is given back (3.875 s to
-// 4.25 s); after the take, a second one starts on the same streams.
-HeldRoomTakeResult recordAnIoSizeExcursion (int kitchenLatency, int couchLate = 0)
+// the room has been given back -- and, when `toneUntil` is given, a steady
+// 1 kHz tone at -12 dBFS both hear from the start until then (the clap is
+// louder). Couch's deliveries may run `couchLate` samples late for a moment
+// around when the room is given back (3.875 s to 4.25 s); after the take, a
+// second one starts on the same streams.
+HeldRoomTakeResult recordAnIoSizeExcursion (int kitchenLatency, int couchLate = 0, long long toneUntil = 0)
 {
-    const auto dir = tempDir() + "/io_size_return_" + std::to_string (kitchenLatency) + "_" + std::to_string (couchLate);
+    const auto dir = tempDir() + "/io_size_return_" + std::to_string (kitchenLatency) + "_" + std::to_string (couchLate)
+                   + "_" + std::to_string (toneUntil);
     std::remove ((dir + "/01_Kitchen.wav").c_str());
     std::remove ((dir + "/02_Couch.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
@@ -1353,10 +1360,18 @@ HeldRoomTakeResult recordAnIoSizeExcursion (int kitchenLatency, int couchLate = 
     {
         return next + couchBlock (next) + (next >= lateFrom && next < lateUntil ? couchLate : 0);
     };
-    const auto fill = [] (std::vector<float>& v, long long first, int n, long long heardAt)
+    const auto fill = [toneUntil] (std::vector<float>& v, long long first, int n, long long heardAt)
     {
         for (int i = 0; i < n; ++i)
-            v[static_cast<size_t> (i)] = first + i == heardAt ? 0.3f : 0.0f;
+        {
+            // Source time: the clap is at clapAt, heard `heardAt - clapAt` late.
+            const long long t = first + i - (heardAt - clapAt);
+            const float tone = t >= 0 && t < toneUntil
+                                   ? static_cast<float> (0.25 * std::sin (2.0 * 3.141592653589793 * 1000.0
+                                                                          * static_cast<double> (t) / 48000.0))
+                                   : 0.0f;
+            v[static_cast<size_t> (i)] = first + i == heardAt ? 0.3f : tone;
+        }
     };
 
     long long aNext = 0, bNext = 0, outFrame = 0, firstLoud = -1, lastLoud = -1, pullAt = 32;
@@ -1392,8 +1407,10 @@ HeldRoomTakeResult recordAnIoSizeExcursion (int kitchenLatency, int couchLate = 
             if (pullAt > returnAt + 48000 && pullAt < returnAt + 72000)
                 r.slowestWhileHeld = c.getSlowestMonitoringLatencyMs();
 
+            // The clap, not the tone: nothing reaches the headphones before
+            // it is heard.
             for (int i = 0; i < 64; ++i, ++outFrame)
-                if (std::abs (out[static_cast<size_t> (i)]) > 0.1f)
+                if (outFrame >= clapAt && std::abs (out[static_cast<size_t> (i)]) > 0.1f)
                 {
                     firstLoud = firstLoud < 0 ? outFrame : firstLoud;
                     lastLoud = outFrame;
@@ -1432,6 +1449,41 @@ HeldRoomTakeResult recordAnIoSizeExcursion (int kitchenLatency, int couchLate = 
     r.kitchenClap = loudestSampleIn (dir + "/01_Kitchen.wav");
     r.couchClap = loudestSampleIn (dir + "/02_Couch.wav");
     r.mixClap = loudestSampleIn (dir + "/MIX.wav");
+
+    if (toneUntil > 0)
+    {
+        // Loud enough to be the tone (-30 dBFS), and before the clap.
+        const auto lastOfTone = [] (const std::vector<int16_t>& stem, long long before, long long& first)
+        {
+            long long last = -1;
+            first = -1;
+
+            for (long long i = 0; i < std::min (before, static_cast<long long> (stem.size())); ++i)
+                if (std::abs (static_cast<int> (stem[static_cast<size_t> (i)])) > 1000)
+                {
+                    first = first < 0 ? i : first;
+                    last = i;
+                }
+
+            return last;
+        };
+
+        const auto kitchen = stemSamples (dir + "/01_Kitchen.wav");
+        const auto couch = stemSamples (dir + "/02_Couch.wav");
+        long long kitchenFirst = -1, couchFirst = -1;
+        r.kitchenToneEnd = lastOfTone (kitchen, r.kitchenClap - 4800, kitchenFirst);
+        r.couchToneEnd = lastOfTone (couch, r.couchClap - 4800, couchFirst);
+
+        long long run = 0;
+        r.couchSilenceInTone = 0;
+
+        for (long long i = couchFirst; i >= 0 && i <= r.couchToneEnd; ++i)
+        {
+            run = couch[static_cast<size_t> (i)] == 0 ? run + 1 : 0;
+            r.couchSilenceInTone = std::max (r.couchSilenceInTone, run);
+        }
+    }
+
     return r;
 }
 
@@ -1534,6 +1586,39 @@ TEST_CASE (CaptureCoordinator_RoomGivenBackOnTheQuickerDeviceIsNotTakenForARefus
     // samples late, Kitchen on time.
     REQUIRE (r.nextTakeKitchenStart == 0);
     REQUIRE (r.nextTakeCouchStart == 1400);
+}
+
+TEST_CASE (CaptureCoordinator_RoomGivenBackOnTheQuickerDeviceLeavesNoGapInItsSound)
+{
+    // Couch is the quicker device, held back in its stem behind Kitchen
+    // (which reports 1400 frames more input latency, then 3000): 308 samples
+    // while Couch runs at 1156, 1908 at 3000. Both microphones hear a tone
+    // until a moment before Couch's room is given back. Couch's stream
+    // skips that much quiet at the newest sample it has handed over, so the
+    // silence the writer puts in for it belongs there, behind the samples
+    // already waiting in Couch's line. Written at the head of the line it
+    // landed inside the tone -- 1092 samples of digital silence, with tone
+    // either side of it -- and the waiting tone came out 1092 samples late:
+    // Couch's tone ended 23 ms after Kitchen's in the files.
+    for (const int kitchenLatency : { 1400, 3000 })
+    {
+        const auto r = recordAnIoSizeExcursion (kitchenLatency, 0, 200000);
+
+        REQUIRE (r.releases == 1u);
+        REQUIRE (r.released == 1092u);
+
+        REQUIRE (r.couchToneEnd > 0);
+        REQUIRE (r.couchSilenceInTone >= 0);
+        REQUIRE (r.couchSilenceInTone <= 2); // a sine's own zero crossing
+        REQUIRE (std::llabs (r.kitchenToneEnd - r.couchToneEnd) <= 1);
+
+        REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+        REQUIRE (std::llabs (r.mixClap - r.couchClap) <= 1);
+        REQUIRE (static_cast<uint64_t> (r.couchShift) == r.released);
+        REQUIRE (r.kitchenDropped == 0);
+        REQUIRE (r.kitchenShift == 0);
+        REQUIRE (r.aligned);
+    }
 }
 
 TEST_CASE (CaptureCoordinator_ADriverBacklogMovesNothingInItsOwnStem)

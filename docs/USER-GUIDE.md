@@ -239,8 +239,9 @@ files really are empty and the card says so instead of calling it saved.
   while and then back, that microphone is late in your headphones only
   while the larger buffer lasts: about two seconds after it is back, at the
   first quiet moment, it catches up with the others, and the delay shown
-  follows it. Its track gets the same few milliseconds of silence at that
-  moment, so the tracks stay lined up. The figure includes a small safety margin, the same
+  follows it. Its track gets the same few milliseconds of silence in that
+  quiet moment, never in the middle of what someone is saying, so the
+  tracks stay lined up. The figure includes a small safety margin, the same
   for every microphone: about 5 ms at the smallest buffer. It lets a
   computer that is busy for a moment hand a microphone's sound over a few
   milliseconds late without a click or a gap in your headphones or the

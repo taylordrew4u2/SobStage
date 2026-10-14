@@ -221,7 +221,8 @@ bool WritePipeline::start (const std::string& sessionFolder,
 }
 
 bool WritePipeline::pushBlock (const float* const* channelData, int numChannels_, int numSamples,
-                               const int* channelOffsets, const StemOffsetKind* channelOffsetKinds) noexcept
+                               const int* channelOffsets, const StemOffsetKind* channelOffsetKinds,
+                               const int* channelReleased) noexcept
 {
     if (! running.load (std::memory_order_acquire) || numSamples <= 0)
         return false;
@@ -283,8 +284,10 @@ bool WritePipeline::pushBlock (const float* const* channelData, int numChannels_
                 continue;
 
             const auto kind = channelOffsetKinds != nullptr ? channelOffsetKinds[ch] : StemOffsetKind::settled;
+            const int released = kind == StemOffsetKind::released && channelReleased != nullptr
+                                     ? channelReleased[ch] : 0;
 
-            if (offsetQueue.push ({ frame, ch, wanted, kind }))
+            if (offsetQueue.push ({ frame, ch, wanted, kind, released }))
                 published = wanted;
             else
                 alignmentDeferred.store (true, std::memory_order_relaxed);
@@ -567,7 +570,7 @@ void WritePipeline::drainOnce (bool finalFlush)
                         done = at;
                     }
 
-                    aligner.setOffset (ch, event.offset, event.kind);
+                    aligner.setOffset (ch, event.offset, event.kind, event.released);
                 }
 
                 aligner.process (ch, stemScratch.data() + done, frames - done);

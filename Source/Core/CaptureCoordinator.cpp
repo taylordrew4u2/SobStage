@@ -87,6 +87,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     latencyClamped = false;
     recordingOffsets.assign (chans.size(), 0);
     recordingOffsetKinds.assign (chans.size(), StemOffsetKind::settled);
+    recordingOffsetReleased.assign (chans.size(), 0);
     heldBlockSeen.assign (chans.size(), 0);
     stemReferenceFloor = 0;
     recordingOffsetView = std::make_unique<std::atomic<int>[]> (std::max<size_t> (1, chans.size()));
@@ -1662,11 +1663,13 @@ void CaptureCoordinator::processOutputBlock (float* const* outputs, int numOutpu
         updateRecordingOffsets();
 
         const bool offsetsFit = recordingOffsets.size() >= static_cast<size_t> (channelCount)
-                             && recordingOffsetKinds.size() >= static_cast<size_t> (channelCount);
+                             && recordingOffsetKinds.size() >= static_cast<size_t> (channelCount)
+                             && recordingOffsetReleased.size() >= static_cast<size_t> (channelCount);
         mixAndPublish (devicePointers.data(), channelCount, outputs, numOutputs,
                        frames, frameOffset,
                        offsetsFit ? recordingOffsets.data() : nullptr,
-                       offsetsFit ? recordingOffsetKinds.data() : nullptr);
+                       offsetsFit ? recordingOffsetKinds.data() : nullptr,
+                       offsetsFit ? recordingOffsetReleased.data() : nullptr);
         frameOffset += frames;
     }
 
@@ -1721,12 +1724,15 @@ void CaptureCoordinator::updateRecordingOffsets() noexcept
     // took out, where it took it from, and the backlog moves nothing in the
     // stem either. A held block that falls from a settled one is room given
     // back for a block the device has left (DeviceInputStream drops exactly
-    // that much at a quiet moment): settled, a move of its own, which the
-    // writer answers with that much silence where the stream dropped it.
-    // Nothing allocates or locks (§11): the vectors were sized at
+    // that much at a quiet moment, from the newest end of what it buffered):
+    // released, a move of its own, handed over with how much it was, which
+    // the writer answers with that much silence where the stream dropped it
+    // -- behind the samples already waiting in the stem's line, not in front
+    // of them. Nothing allocates or locks (§11): the vectors were sized at
     // startMonitoring().
     const size_t count = std::min ({ deviceStreams.size(), recordingOffsets.size(),
-                                     recordingOffsetKinds.size(), heldBlockSeen.size() });
+                                     recordingOffsetKinds.size(), recordingOffsetReleased.size(),
+                                     heldBlockSeen.size() });
     const bool ready = latenciesReady.load (std::memory_order_acquire) && channelInputLatency.size() >= count;
     int reference = 0;
 
@@ -1759,13 +1765,17 @@ void CaptureCoordinator::updateRecordingOffsets() noexcept
         const auto& stream = *deviceStreams[i];
         const auto held = stream.getHeldBlockSamples();
 
-        // Refused: the held block falls from a provisional one. A held block
-        // that falls from a settled one is room given back for a block the
-        // device no longer runs at -- a move of its own, settled.
+        // Refused: the held block falls from a provisional one. Released: it
+        // falls from a settled one -- room given back for a block the device
+        // no longer runs at, a move of its own by exactly the difference.
         const bool wasProvisional = recordingOffsetKinds[i] == StemOffsetKind::provisional;
-        recordingOffsetKinds[i] = held > stream.getSettledBlockSamples()  ? StemOffsetKind::provisional
-                                : held < heldBlockSeen[i] && wasProvisional ? StemOffsetKind::refused
-                                                                            : StemOffsetKind::settled;
+        const bool fell = held < heldBlockSeen[i];
+        recordingOffsetKinds[i] = held > stream.getSettledBlockSamples() ? StemOffsetKind::provisional
+                                : fell && wasProvisional                 ? StemOffsetKind::refused
+                                : fell                                   ? StemOffsetKind::released
+                                                                         : StemOffsetKind::settled;
+        recordingOffsetReleased[i] = recordingOffsetKinds[i] == StemOffsetKind::released
+                                         ? static_cast<int> (heldBlockSeen[i] - held) : 0;
         heldBlockSeen[i] = held;
 
         // A device that did not open is silent; it is not moved.
@@ -2077,7 +2087,7 @@ void CaptureCoordinator::processAudioBlock (const float* const* inputs, int numI
     const int channelCount = std::min (numInputs, static_cast<int> (channels.size()));
 
     // Already lined up by the OS, so the writer leaves every stem where it is.
-    mixAndPublish (inputs, channelCount, outputs, numOutputs, numSamples, 0, nullptr, nullptr);
+    mixAndPublish (inputs, channelCount, outputs, numOutputs, numSamples, 0, nullptr, nullptr, nullptr);
     noteCallbackLoad (callbackStart, numSamples);
 }
 
@@ -2085,7 +2095,8 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
                                         float* const* outputs, int numOutputs,
                                         int numSamples, int outputFrameOffset,
                                         const int* recordingOffsetsForBlock,
-                                        const StemOffsetKind* recordingOffsetKindsForBlock) noexcept
+                                        const StemOffsetKind* recordingOffsetKindsForBlock,
+                                        const int* recordingOffsetReleasedForBlock) noexcept
 {
     if (inputs == nullptr || channelCount <= 0)
         return;
@@ -2108,7 +2119,7 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
         // rejects a mismatched block anyway -- what it does with it now is
         // count it.
         activeWriter->pushBlock (inputs, channelCount, numSamples, recordingOffsetsForBlock,
-                                 recordingOffsetKindsForBlock);
+                                 recordingOffsetKindsForBlock, recordingOffsetReleasedForBlock);
     }
 
     pipelineUsers.fetch_sub (1, std::memory_order_release);
