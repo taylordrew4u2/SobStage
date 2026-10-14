@@ -300,7 +300,10 @@ std::string lastPartOf (const std::string& path)
     return path.substr (start, end - start);
 }
 
-Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marker& marker, Control& control)
+namespace {
+
+Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const Marker& marker, Control& control,
+                     std::set<std::string>& verified)
 {
     Result result;
     result.cardFolder = marker.cardFolder;
@@ -348,11 +351,11 @@ Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marke
     names = copyOrder (std::move (names));
 
     const auto markerPath = joinPath (localFolder, kMarkerFileName);
-    std::set<std::string> scratchVerified;
-    auto& verified = control.verified != nullptr ? *control.verified : scratchVerified;
 
     // Everything already checked on the card in this run of the app: nothing
-    // new arrived, so the card is not touched at all.
+    // new arrived, so the card is not touched at all. Every key here was put
+    // there by an attempt that ended Copied -- a failed attempt forgets its
+    // take's keys (copyTake) -- so this only says again what was true then.
     if (! marker.cardFolder.empty()
         && std::all_of (names.begin(), names.end(), [&] (const std::string& name)
            {
@@ -437,6 +440,19 @@ Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marke
             onCard[e.name] = e.size;
     }
 
+    // A file checked earlier in this run is on the card only while the card
+    // still lists it, under its name and at its size. A reader that dropped
+    // out and came back, a card whose last folder updates were lost, or
+    // another card with the same name mounted in its place: each is read as
+    // it is now, and whatever is missing is copied again.
+    for (const auto& name : names)
+    {
+        const auto there = onCard.find (name);
+
+        if (there == onCard.end() || there->second != localSizes[name])
+            verified.erase (verifiedKey (joinPath (cardFolder, name), localSizes[name]));
+    }
+
     // 6. Refused before anything is written: a file this card's format cannot
     //    hold, a different file already under one of the take's names, and a
     //    card without room for the rest.
@@ -475,6 +491,10 @@ Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marke
     //    the cache and matched, and only then given its real name.
     std::vector<unsigned char> bufferA (kChunkBytes), bufferB (kChunkBytes);
     uint64_t done = 0;
+
+    // A file found already on the card under its real name was renamed by an
+    // attempt that may have been cut off before its folder was flushed.
+    bool folderNeedsSync = false;
 
     const std::function<void()> tick = [&]
     {
@@ -517,6 +537,7 @@ Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marke
             {
                 case Comparison::Match:
                     verified.insert (key);
+                    folderNeedsSync = true;
                     continue;
                 case Comparison::Cancelled:   return finish (result, Outcome::Cancelled);
                 case Comparison::Yielded:     return finish (result, Outcome::Yielded);
@@ -642,9 +663,19 @@ Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marke
             return refusedOnCard (outcome, name, r);
         }
 
+        // The new name on the card itself before the file counts as copied:
+        // a card pulled without ejecting can otherwise come back with only
+        // the hidden working file, which the next attempt deletes.
+        if (const auto r = fs.syncFolder (cardFolder); ! r.ok())
+            return refusedOnCard (outcomeForCardError (fs, root, r), name, r);
+
         verified.insert (key);
         ++result.filesCopied;
     }
+
+    if (folderNeedsSync)
+        if (const auto r = fs.syncFolder (cardFolder); ! r.ok())
+            return refusedOnCard (outcomeForCardError (fs, root, r), {}, r);
 
     // 8. Everything is on the card and checked. The marker going is all that
     //    changes on this computer; if it will not go, the next launch checks
@@ -652,6 +683,35 @@ Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marke
     (void) fs.remove (markerPath);
 
     return finish (result, Outcome::Copied);
+}
+
+} // namespace
+
+Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marker& marker, Control& control)
+{
+    std::set<std::string> scratchVerified;
+    auto& verified = control.verified != nullptr ? *control.verified : scratchVerified;
+
+    auto result = copyTakeOnce (fs, localFolder, marker, control, verified);
+
+    // A failed attempt is a card that cannot be trusted with what it held a
+    // moment ago: pulled, swapped, garbled or refusing. The next attempt
+    // checks every file of this take against the card again.
+    if (isFailure (result.outcome))
+    {
+        for (const auto& folder : { marker.cardFolder, result.cardFolder })
+        {
+            if (folder.empty())
+                continue;
+
+            const auto prefix = joinPath (folder, {});
+
+            for (auto it = verified.begin(); it != verified.end();)
+                it = it->compare (0, prefix.size(), prefix) == 0 ? verified.erase (it) : std::next (it);
+        }
+    }
+
+    return result;
 }
 
 bool isFailure (Outcome outcome) noexcept

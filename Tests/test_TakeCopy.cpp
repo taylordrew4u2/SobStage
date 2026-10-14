@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -74,6 +75,10 @@ public:
     bool pullCardOnWriteFailure = false;
     /// Read-backs of card files, past the cache, that come back corrupted.
     int corruptCardReads = 0;
+    /// Renames not yet flushed by syncFolder, as a FAT card keeps them: a
+    /// card pulled without ejecting comes back with the old names.
+    std::vector<std::pair<std::string, std::string>> unflushedRenames;
+    std::optional<Failure> failSyncFolder;
     /// A read hands back at most this much at a time.
     size_t readPiece = 1u << 20;
 
@@ -102,6 +107,18 @@ public:
     {
         addFolder (parentOf (path));
         files[path] = content;
+    }
+
+    /// Pulled without ejecting, and put back: every rename not yet flushed
+    /// is undone.
+    void pullAndReinsertLosingUnflushedRenames()
+    {
+        for (auto it = unflushedRenames.rbegin(); it != unflushedRenames.rend(); ++it)
+        {
+            files[it->first] = files[it->second];
+            files.erase (it->second);
+        }
+        unflushedRenames.clear();
     }
 
     void pullCard()
@@ -310,6 +327,21 @@ public:
             return { FsError::Other, 17 };
         files[to] = files[from];
         files.erase (from);
+        if (startsWith (to, "/cards/"))
+            unflushedRenames.emplace_back (from, to);
+        return {};
+    }
+
+    FsResult syncFolder (const std::string& path) override
+    {
+        calls.push_back ({ "syncFolder", path });
+        if (failSyncFolder.has_value())
+            return { failSyncFolder->error, failSyncFolder->osError };
+        if (folders.count (path) == 0)
+            return { FsError::NotFound, 2 };
+        unflushedRenames.erase (std::remove_if (unflushedRenames.begin(), unflushedRenames.end(),
+                                                [&path] (const auto& r) { return parentOf (r.second) == path; }),
+                                unflushedRenames.end());
         return {};
     }
 
@@ -495,6 +527,68 @@ TEST_CASE (TakeCopy_FlushedBeforeRename)
 
         REQUIRE (syncedBefore);
     }
+}
+
+// Mutation: the card's folder not flushed after a rename, or flushed only
+// after "Copied". A card pulled without ejecting straight after must still
+// have every file under its real name.
+TEST_CASE (TakeCopy_RenamesAreOnTheCardBeforeItIsCopied)
+{
+    FakeFs fs;
+    finishedTake (fs);
+    fs.files[local (kMarkerFileName)] = markerToJson (toTheCard());
+
+    REQUIRE (run (fs).outcome == Outcome::Copied);
+
+    size_t lastRename = 0, lastSync = 0, markerGone = 0;
+    for (size_t i = 0; i < fs.calls.size(); ++i)
+    {
+        const auto& c = fs.calls[i];
+        if (c.op == "rename") lastRename = i;
+        if (c.op == "syncFolder" && c.path == kCardTake) lastSync = i;
+        if (c.op == "remove" && lastPartOf (c.path) == kMarkerFileName) markerGone = i;
+    }
+    REQUIRE (lastSync > lastRename);
+    REQUIRE (markerGone > lastSync);
+
+    fs.pullAndReinsertLosingUnflushedRenames();
+    for (const char* name : { "MIX.wav", "01_Alice.wav", "02_Bob.wav", "activity.log", "session.json" })
+        REQUIRE (fs.files.count (card (name)) == 1);
+
+    // A card that cannot flush its folder is not called copied.
+    FakeFs refusing;
+    finishedTake (refusing);
+    refusing.files[local (kMarkerFileName)] = markerToJson (toTheCard());
+    refusing.failSyncFolder = FakeFs::Failure { FsError::Other, 5 };
+    REQUIRE (run (refusing).outcome == Outcome::CardWriteFailed);
+    REQUIRE (refusing.files.count (local (kMarkerFileName)) == 1);
+
+    // A take found already on the card by a resumed copy is flushed too: the
+    // attempt that renamed it may have been cut off before it could.
+    FakeFs resumed;
+    finishedTake (resumed);
+    for (const char* name : { "MIX.wav", "01_Alice.wav", "02_Bob.wav", "activity.log", "session.json" })
+        resumed.addFile (card (name), resumed.files[local (name)]);
+    REQUIRE (run (resumed, { kRoot, kCardTake }).outcome == Outcome::Copied);
+    REQUIRE (resumed.count ("syncFolder", kCardTake) >= 1);
+}
+
+// Mutation: a failed attempt keeping its take's checked files. The next one
+// must look at the card again rather than trust it.
+TEST_CASE (TakeCopy_AFailedAttemptForgetsWhatItChecked)
+{
+    FakeFs fs;
+    finishedTake (fs);
+    fs.writeFailPath = "MIX.wav";
+    fs.writeFailure = { FsError::Other, 5 };
+
+    Control control;
+    std::set<std::string> verified;
+    verified.insert ("/cards/SD/RECORDINGS/Another_Take/MIX.wav|10");
+    control.verified = &verified;
+
+    REQUIRE (run (fs, toTheCard(), &control).outcome == Outcome::CardWriteFailed);
+    REQUIRE (verified.size() == 1u); // only the other take's
 }
 
 // Mutation: any write, rename or remove under the take's folder on this
@@ -976,6 +1070,67 @@ TEST_CASE (TakeCopy_AlreadyVerifiedFilesDoNotTouchTheCard)
     REQUIRE (fs.files[card ("V01_Cam_with-sound.mov")] == fs.files[local ("V01_Cam_with-sound.mov")]);
 }
 
+// Mutation: a file checked earlier in the run skipped without looking at the
+// card now. The card reader drops out after the first files are checked and
+// comes back empty -- the same card with its last folder updates lost, or
+// another card with the same name. Every file must reach the card again.
+TEST_CASE (TakeCopy_ACardThatCameBackIsCheckedNotTrusted)
+{
+    FakeFs fs;
+    finishedTake (fs);
+    fs.writeFailPath = "MIX.wav";
+    fs.pullCardOnWriteFailure = true;
+
+    Control control;
+    std::set<std::string> verified;
+    control.verified = &verified;
+
+    const auto first = run (fs, toTheCard(), &control);
+    REQUIRE (first.outcome == Outcome::CardMissing);
+
+    fs.writeFailPath.clear();
+    fs.addFolder (kRoot);
+
+    const auto again = run (fs, { kRoot, first.cardFolder }, &control);
+    REQUIRE (again.outcome == Outcome::Copied);
+
+    for (const char* name : { "MIX.wav", "01_Alice.wav", "02_Bob.wav", "activity.log", "session.json" })
+        REQUIRE (fs.files.count (card (name)) == 1 && fs.files[card (name)] == fs.files[local (name)]);
+}
+
+// Mutation: the same, for a card swapped while the take's copy was copied and
+// a combined video arrived after. The new card gets the whole take, not only
+// the new file.
+TEST_CASE (TakeCopy_ASwappedCardGetsTheWholeTake)
+{
+    FakeFs fs;
+    finishedTake (fs);
+
+    Control control;
+    std::set<std::string> verified;
+    control.verified = &verified;
+
+    const auto first = run (fs, toTheCard(), &control);
+    REQUIRE (first.outcome == Outcome::Copied);
+
+    fs.pullCard();
+    fs.addFolder (kRoot); // another card, same name, nothing on it
+
+    fs.addFile (local ("V01_Cam_with-sound.mov"), bytes (5000, 7));
+    const auto again = run (fs, { kRoot, first.cardFolder }, &control);
+    REQUIRE (again.outcome == Outcome::Copied);
+
+    for (const char* name : { "MIX.wav", "01_Alice.wav", "02_Bob.wav", "V01_Cam_with-sound.mov",
+                              "activity.log", "session.json" })
+        REQUIRE (fs.files.count (card (name)) == 1 && fs.files[card (name)] == fs.files[local (name)]);
+
+    // A file still on the card under its name and size is not read again.
+    fs.addFile (local ("MIX - Apple Podcasts.wav"), bytes (4000, 8));
+    fs.calls.clear();
+    REQUIRE (run (fs, { kRoot, first.cardFolder }, &control).outcome == Outcome::Copied);
+    REQUIRE (fs.count ("openRead", "/cards/") == 1);
+}
+
 // Mutation: the card's root not looked at again after a failed write. A card
 // pulled mid-copy answers with any error at all.
 TEST_CASE (TakeCopy_CardPulledMidCopyIsCalledMissing)
@@ -1180,10 +1335,14 @@ TEST_CASE (TakeCopy_ReadingBackCountsAsMoving)
     Control control;
     control.progress = [&ticks] (uint64_t, uint64_t) { ++ticks; };
 
-    // Everything else already checked, so the movie is only read back.
+    // Everything else already on the card and checked, so the movie is only
+    // read back.
     std::set<std::string> verified;
     for (const char* name : { "MIX.wav", "01_Alice.wav", "02_Bob.wav", "activity.log", "session.json" })
+    {
+        fs.addFile (card (name), fs.files[local (name)]);
         verified.insert (card (name) + "|" + std::to_string (fs.files[local (name)].size()));
+    }
     control.verified = &verified;
 
     REQUIRE (run (fs, { kRoot, kCardTake }, &control).outcome == Outcome::Copied);

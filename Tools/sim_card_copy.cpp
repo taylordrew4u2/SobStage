@@ -168,6 +168,7 @@ public:
     cardcopy::FsResult replaceText (const std::string& p, const std::string& t) override { gate->note (p); return real.replaceText (p, t); }
     cardcopy::FsResult rename (const std::string& a, const std::string& b, bool r) override { gate->note (a); return real.rename (a, b, r); }
     cardcopy::FsResult remove (const std::string& p) override { gate->note (p); return real.remove (p); }
+    cardcopy::FsResult syncFolder (const std::string& p) override { gate->note (p); return real.syncFolder (p); }
 
     std::unique_ptr<Reader> openRead (const std::string& p, bool bypass, cardcopy::FsResult& r) override
     {

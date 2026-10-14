@@ -684,4 +684,32 @@ FsResult NativeCopyFileSystem::remove (const std::string& path)
    #endif
 }
 
+FsResult NativeCopyFileSystem::syncFolder (const std::string& path)
+{
+   #if defined(_WIN32)
+    // Nothing more to do: every rename here is MOVEFILE_WRITE_THROUGH, which
+    // returns only once the new name is on the card.
+    (void) path;
+    return {};
+   #else
+    const int fd = ::open (path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return fromErrno (errno);
+
+    FsResult result;
+    if (! fullSync (fd))
+    {
+        const int e = errno;
+
+        // A format that cannot flush a folder on its own says so rather than
+        // failing; its renames are as safe as that format can make them.
+        if (e != EINVAL && e != ENOTSUP && e != EOPNOTSUPP && e != EBADF)
+            result = fromErrno (e);
+    }
+
+    ::close (fd);
+    return result;
+   #endif
+}
+
 } // namespace mma

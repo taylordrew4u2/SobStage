@@ -159,6 +159,11 @@ public:
     virtual std::unique_ptr<Writer> createNew (const std::string& path, FsResult& result) = 0;
     virtual FsResult rename (const std::string& from, const std::string& to, bool replace) = 0;
     virtual FsResult remove (const std::string& path) = 0;
+    /// The folder's own entries flushed to the card, so a rename in it is on
+    /// the card itself and not only in this computer's memory. A FAT or ExFAT
+    /// card pulled without ejecting otherwise loses renames made seconds
+    /// before.
+    virtual FsResult syncFolder (const std::string& path) = 0;
 };
 
 enum class Outcome
@@ -186,7 +191,9 @@ struct Control
     std::function<void (uint64_t done, uint64_t total)> progress;
     /// "cardPath|size" of every file already checked on the card in this app
     /// run, so a re-run after a combined video or podcast copy is added reads
-    /// back only what is new.
+    /// back only what is new. Trusted only while the card's listing still
+    /// shows the file under its name and size, and forgotten for the whole
+    /// take when an attempt fails.
     std::set<std::string>* verified = nullptr;
 };
 

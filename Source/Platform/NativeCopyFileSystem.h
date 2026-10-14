@@ -42,6 +42,7 @@ public:
     std::unique_ptr<Writer> createNew (const std::string& path, cardcopy::FsResult& result) override;
     cardcopy::FsResult rename (const std::string& from, const std::string& to, bool replace) override;
     cardcopy::FsResult remove (const std::string& path) override;
+    cardcopy::FsResult syncFolder (const std::string& path) override;
 };
 
 } // namespace mma
