@@ -109,6 +109,7 @@ add_library(mma_core STATIC
     Source/Platform/SystemPermissions.cpp
     Source/Platform/SleepInhibitor.cpp
     Source/Platform/VolumeCapacity.cpp
+    Source/Platform/NativeCopyFileSystem.cpp
     Source/Platform/AlsaInputPolicy.cpp
     Source/Platform/AlsaBackend.cpp
 )
@@ -266,6 +267,7 @@ if (MMA_BUILD_APP)
         Source/App/CameraController.cpp
         Source/App/TakeCombiner.cpp
         Source/App/PodcastExport.cpp
+        Source/App/CardCopier.cpp
         Source/App/AlarmSpeaker.cpp
     )
 
@@ -596,6 +598,22 @@ if (MMA_BUILD_APP)
         mma_core juce::juce_core juce::juce_audio_formats)
     add_test(NAME sim_podcast_export COMMAND sim_podcast_export)
     set_tests_properties(sim_podcast_export PROPERTIES TIMEOUT 60)
+
+    # Record on this computer, then copy to the card: CardCopier against the
+    # real disk in a temporary folder, every call countable and holdable. A
+    # copy held for a take makes no card call, one held mid-file stops at a
+    # chunk and leaves nothing half-written, quitting while the card is stuck
+    # in a write does not wait for it, a second pass after a combined video
+    # reads back only what is new, and the system's own EFBIG reaches the
+    # right words.
+    add_executable(sim_card_copy
+        Tools/sim_card_copy.cpp
+        Source/App/CardCopier.cpp)
+    target_include_directories(sim_card_copy PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(sim_card_copy PRIVATE mma_core mma_warnings)
+    add_test(NAME sim_card_copy COMMAND sim_card_copy)
+    set_tests_properties(sim_card_copy PROPERTIES TIMEOUT 30)
 
     if (WIN32)
         # AvSetMmThreadCharacteristics: Pro Audio scheduling for the WASAPI
