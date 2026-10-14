@@ -1463,6 +1463,26 @@ TEST_CASE (TakeCopyWording_TheLineUnderRecordAgreesWithTheSavedTakeCard)
     REQUIRE (tallyLine (added) == "1 take has a file still to copy to the card.");
 }
 
+// Asked before quitting when the copy a quit waited for failed: says the copy
+// did not finish and where each take is safe, never that it is on the card.
+TEST_CASE (TakeCopyWording_ACopyThatFailedBeforeQuittingSaysWhereTheTakeIs)
+{
+    REQUIRE (copyFailedBeforeQuitting ({}).empty());
+
+    Result full;
+    full.outcome = Outcome::CardFull;
+    const auto one = copyFailedBeforeQuitting ({ { full, kLocal } });
+    REQUIRE (one.find ("The copy to the card didn't finish. The card is full.") == 0);
+    REQUIRE (one.find ("safe on this computer in " + std::string (kLocal)) != std::string::npos);
+
+    Result pulled;
+    pulled.outcome = Outcome::CardMissing;
+    const auto two = copyFailedBeforeQuitting ({ { full, kLocal }, { pulled, "/home/u/RECORDINGS-MIRROR/Late" } });
+    REQUIRE (two.find ("The copies of 2 takes to the card didn't finish.") == 0);
+    REQUIRE (two.find ("2026-10-14_2000_Show: The card is full.") != std::string::npos);
+    REQUIRE (two.find ("Late: The card isn't plugged in.") != std::string::npos);
+}
+
 TEST_CASE (TakeCopy_TheComputerCopyGoneIsSaid)
 {
     FakeFs fs;

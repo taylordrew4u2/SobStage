@@ -27,6 +27,15 @@
  * through. "<trigger>.caught" appears when that rename starts waiting and
  * "<trigger>.released" once it has returned, so a gate can tell that the write
  * it meant to hold was held, and when it has landed.
+ *
+ *   MMA_STALL_CARD_FREE_MB  the card reports no more free space than this
+ *
+ * The gates' "card" is a folder on this computer's own disk, and whether a
+ * take is recorded here and copied, or goes straight to the card, depends on
+ * how much the card could hold against how much this computer has. On one
+ * disk the two are the same, and a runner with less than four hours of
+ * takes free sent every take straight to the "card". A card reporting a few
+ * GB is a card, whatever the disk under it.
  */
 // Fortified builds turn open() and friends into inline wrappers, which would
 // collide with the definitions below.
@@ -199,6 +208,28 @@ mode_t modeArg (int flags, va_list args)
 {
     return (flags & O_CREAT) != 0 || (flags & O_TMPFILE) == O_TMPFILE
                ? static_cast<mode_t> (va_arg (args, int)) : 0;
+}
+
+// MMA_STALL_CARD_FREE_MB: free blocks under the prefix capped at that size.
+template <typename Stat>
+int capCardFree (int result, const char* path, Stat* out, unsigned long blockSize)
+{
+    static const long long capMb = [] {
+        const char* v = std::getenv ("MMA_STALL_CARD_FREE_MB");
+        return v != nullptr && *v != 0 ? std::atoll (v) : -1LL;
+    }();
+
+    if (result != 0 || out == nullptr || capMb < 0 || blockSize == 0 || ! underPrefix (path))
+        return result;
+
+    const auto capBlocks = static_cast<unsigned long long> (capMb) * 1024ull * 1024ull / blockSize;
+
+    if (static_cast<unsigned long long> (out->f_bavail) > capBlocks)
+        out->f_bavail = capBlocks;
+    if (static_cast<unsigned long long> (out->f_bfree) > capBlocks)
+        out->f_bfree = capBlocks;
+
+    return result;
 }
 
 } // namespace
@@ -475,28 +506,32 @@ int statvfs (const char* path, struct statvfs* out)
 {
     touchPath (path);
     static const auto fn = real<int (*) (const char*, struct statvfs*)> ("statvfs");
-    return fn (path, out);
+    const int r = fn (path, out);
+    return capCardFree (r, path, out, r == 0 ? (out->f_frsize != 0 ? out->f_frsize : out->f_bsize) : 0);
 }
 
 int statvfs64 (const char* path, struct statvfs64* out)
 {
     touchPath (path);
     static const auto fn = real<int (*) (const char*, struct statvfs64*)> ("statvfs64");
-    return fn (path, out);
+    const int r = fn (path, out);
+    return capCardFree (r, path, out, r == 0 ? (out->f_frsize != 0 ? out->f_frsize : out->f_bsize) : 0);
 }
 
 int statfs (const char* path, struct statfs* out)
 {
     touchPath (path);
     static const auto fn = real<int (*) (const char*, struct statfs*)> ("statfs");
-    return fn (path, out);
+    const int r = fn (path, out);
+    return capCardFree (r, path, out, r == 0 ? static_cast<unsigned long> (out->f_bsize) : 0);
 }
 
 int statfs64 (const char* path, struct statfs64* out)
 {
     touchPath (path);
     static const auto fn = real<int (*) (const char*, struct statfs64*)> ("statfs64");
-    return fn (path, out);
+    const int r = fn (path, out);
+    return capCardFree (r, path, out, r == 0 ? static_cast<unsigned long> (out->f_bsize) : 0);
 }
 
 char* realpath (const char* path, char* resolved)

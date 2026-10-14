@@ -258,3 +258,58 @@ TEST_CASE (QuitQuestions_EachProblemWithTheTakeIsNamed)
              == "The card stopped answering. The backup copy is at /Users/me/Backup. "
                 "Desk Cam could not finish its video file.");
 }
+
+// "Quit When Done" while the copy to the card ran, and the copy failed: the
+// wait ended because the copy was no longer running, and the app quit as
+// though it had finished. The user left with a card that did not hold the
+// take, having been told the app would quit once the copy was done.
+TEST_CASE (QuitQuestions_ACopyThatFailsWhileWaitingIsAskedAboutNotQuitOver)
+{
+    QuitQuestions q;
+    REQUIRE (q.onTakeSettled (false, true) == Step::AskAboutWork);
+    REQUIRE (q.onWorkAnswered (WorkAnswer::QuitWhenDone) == Next::Wait);
+
+    // Still copying: whatever has failed is asked about once it is all done.
+    REQUIRE (q.onWaitTick (false, true, true) == Tick::KeepWaiting);
+
+    REQUIRE (q.onWaitTick (false, false, true) == Tick::AskAboutProblem);
+    REQUIRE (q.isAsking());
+    REQUIRE_FALSE (q.isWaiting());
+    REQUIRE (q.onQuitRequested (false) == Step::BringQuestionForward);
+
+    // "Don't Quit": open, and nothing quits by itself.
+    REQUIRE (q.onProblemAnswered (false) == Next::Stay);
+    REQUIRE (q.onWaitTick (false, false, true) == Tick::StopWaiting);
+}
+
+TEST_CASE (QuitQuestions_QuitAnywayAfterAFailedCopyQuits)
+{
+    QuitQuestions q;
+    REQUIRE (q.onTakeSettled (false, true) == Step::AskAboutWork);
+    REQUIRE (q.onWorkAnswered (WorkAnswer::QuitWhenDone) == Next::Wait);
+    REQUIRE (q.onWaitTick (false, false, true) == Tick::AskAboutProblem);
+    REQUIRE (q.onProblemAnswered (true) == Next::CarryOn);
+
+    // Told: the take's problem (the failed copy) is not asked again.
+    REQUIRE (q.onTakeSettled (true, false) == Step::Quit);
+}
+
+TEST_CASE (QuitQuestions_AFailedCopyIsAskedEvenAfterAnEarlierProblemWasAnswered)
+{
+    // "Quit Anyway" was the answer to the take's silent files. The copy that
+    // failed afterwards is a different problem, and is asked about too.
+    QuitQuestions q;
+    REQUIRE (q.onTakeSettled (true, true) == Step::AskAboutProblem);
+    REQUIRE (q.onProblemAnswered (true) == Next::CarryOn);
+    REQUIRE (q.onTakeSettled (true, true) == Step::AskAboutWork);
+    REQUIRE (q.onWorkAnswered (WorkAnswer::QuitWhenDone) == Next::Wait);
+    REQUIRE (q.onWaitTick (false, false, true) == Tick::AskAboutProblem);
+}
+
+TEST_CASE (QuitQuestions_ACopyThatFinishesWhileWaitingStillQuitsByItself)
+{
+    QuitQuestions q;
+    REQUIRE (q.onTakeSettled (false, true) == Step::AskAboutWork);
+    REQUIRE (q.onWorkAnswered (WorkAnswer::QuitWhenDone) == Next::Wait);
+    REQUIRE (q.onWaitTick (false, false, false) == Tick::Quit);
+}

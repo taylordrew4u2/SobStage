@@ -18,9 +18,16 @@
 #            aside, nothing reaches the card until the second take stops, and
 #            the second take records cleanly
 #   crash    the app is killed mid-copy: the next launch finishes the copy
+#   quit     the window is closed while a copy runs and "Quit When Done" is
+#            chosen; the card is pulled before the copy finishes. The app
+#            does not quit as though the take were on the card: it says the
+#            copy did not finish and where the take is safe, and stays open
+#            on "Don't Quit"
 #
 # The scratch home and the "card" are on one disk, so MMA_TREAT_AS_CARD (test
-# builds only) makes the card folder count as a card.
+# builds only) makes the card folder count as a card, and the shim has the
+# card report 4 GB free: on one disk, a runner with less than four hours of
+# takes free would otherwise send every take straight to the "card".
 #
 #   Tools/e2e_card_copy.sh
 #
@@ -42,6 +49,7 @@ newest() {
 APP=$(newest build/SobStage_artefacts/Release/SobStage build/SobStage_artefacts/SobStage \
              build-app/SobStage_artefacts/Release/SobStage build-app/SobStage_artefacts/SobStage)
 SHIM=$(newest build/libfs_stall_shim.so build-app/libfs_stall_shim.so)
+WINMSG=$(newest build/x11_window_message build-app/x11_window_message)
 test -n "$APP" || { echo "Build the app first"; exit 1; }
 test -n "$SHIM" || { echo "Build with -DMMA_ALLOW_TEST_INPUTS=ON first (no libfs_stall_shim.so)"; exit 1; }
 echo "App: $APP"
@@ -99,12 +107,15 @@ PY
   fi
 
   pkill Xvfb 2>/dev/null || true; sleep 1
-  Xvfb "$DISPLAY_NUM" -screen 0 1280x1200x24 >/dev/null 2>&1 &
+  # -noreset: the window-manager atoms made below must outlive their maker.
+  Xvfb "$DISPLAY_NUM" -noreset -screen 0 1280x1200x24 >/dev/null 2>&1 &
   sleep 2
+  [ -n "$WINMSG" ] && DISPLAY="$DISPLAY_NUM" "./$WINMSG" atoms
 
   env HOME="$SCENARIO_HOME" DISPLAY="$DISPLAY_NUM" \
   MMA_TREAT_AS_CARD="$CARD_ROOT" \
   MMA_STALL_PREFIX="$CARD" MMA_STALL_TRIGGER="$DEAD" MMA_STALL_METER_FILE="$METER" \
+  MMA_STALL_CARD_FREE_MB=4096 \
   LD_PRELOAD="$PWD/$SHIM" \
     MMA_SKIP_SETUP_GUIDE=1 "$@" nohup "./$APP" >"$WORK/$name.$mode.stdout" 2>&1 &
   APP_PID=$!
@@ -449,6 +460,111 @@ else
   else
     fail "crash: the copy did not finish within 60 s of the relaunch"
   fi
+fi
+[ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
+stop_app
+
+# -------------------------------------------------------------------------
+echo
+echo "=== Quit When Done, and the copy it waits for fails ==="
+# The copy is held at its last step, as in "crash"; the window is closed the
+# way a window manager's close button does, and "Quit When Done" chosen. Then
+# the card is pulled, so the copy the quit was waiting for fails.
+BEFORE_FAIL=$FAILED
+if [ -z "$WINMSG" ]; then
+  fail "quit: no x11_window_message (needs X11 headers at build time)"
+else
+launch quit fresh MMA_STALL_RENAME_ONTO=session.json
+dismiss_cards
+press_record
+
+if ! TAKE=$(wait_for_new_take "$STAGING"); then
+  fail "quit: no take started"
+else
+  sleep 5
+  touch "$DEAD"
+  press_stop
+  wait_for_log "Saved on this computer" 20 || fail "quit: the take was not saved"
+  dismiss_saved
+
+  CAUGHT=""
+  for _ in {1..30}; do
+    [ -e "$DEAD.caught" ] && { CAUGHT=yes; break; }
+    sleep 1
+  done
+  [ -n "$CAUGHT" ] && pass "quit: the copy is under way, held at its last file" \
+                   || fail "quit: the copy never reached session.json's rename"
+
+  MAIN_WIN=$(DISPLAY="$DISPLAY_NUM" xdotool search --name '^SobStage$' | head -1 || true)
+  DISPLAY="$DISPLAY_NUM" "./$WINMSG" "$MAIN_WIN" close
+
+  ASK=""
+  for _ in {1..20}; do
+    ASK=$(DISPLAY="$DISPLAY_NUM" xdotool search --name 'Still saving the copy to the card' 2>/dev/null | head -1 || true)
+    [ -n "$ASK" ] && break
+    sleep 0.5
+  done
+
+  if [ -z "$ASK" ]; then
+    fail "quit: closing the window did not ask about the copy still being saved"
+  else
+    pass "quit: closing the window asked about the copy to the card still being saved"
+    DISPLAY="$DISPLAY_NUM" "./$WINMSG" "$ASK" focus
+    sleep 0.5
+    DISPLAY="$DISPLAY_NUM" xdotool key Return   # Quit When Done
+    sleep 2
+
+    if kill -0 "$APP_PID" 2>/dev/null; then
+      pass "quit: Quit When Done waits for the copy"
+    else
+      fail "quit: the app quit at once instead of waiting for the copy"
+    fi
+
+    # The card is pulled while the copy finishes: its last rename fails.
+    rm -rf "$CARD_ROOT"
+    rm -f "$DEAD"
+
+    PROBLEM=""
+    for _ in {1..20}; do
+      kill -0 "$APP_PID" 2>/dev/null || break
+      PROBLEM=$(DISPLAY="$DISPLAY_NUM" xdotool search --name 'problem with the take' 2>/dev/null | head -1 || true)
+      [ -n "$PROBLEM" ] && break
+      sleep 0.5
+    done
+
+    if ! kill -0 "$APP_PID" 2>/dev/null; then
+      fail "quit: the app quit as though the take were on the card, after its copy failed"
+      APP_PID=""
+    elif [ -z "$PROBLEM" ]; then
+      fail "quit: the failed copy was not asked about"
+    else
+      pass "quit: the app asked before quitting, because the copy to the card failed"
+
+      if wait_for_log "The card isn't plugged in" 5; then
+        pass "quit: the failure, and where the take is safe, is in the activity log"
+      else
+        fail "quit: the failed copy is not in the activity log"
+      fi
+
+      DISPLAY="$DISPLAY_NUM" "./$WINMSG" "$PROBLEM" focus
+      sleep 0.5
+      DISPLAY="$DISPLAY_NUM" xdotool key Escape   # Don't Quit
+      sleep 3
+      if kill -0 "$APP_PID" 2>/dev/null; then
+        pass "quit: Don't Quit keeps SobStage open"
+      else
+        fail "quit: SobStage quit after Don't Quit"
+        APP_PID=""
+      fi
+    fi
+
+    if [ -e "$TAKE/.sobstage-card-copy.json" ] && [ -f "$TAKE/MIX.wav" ]; then
+      pass "quit: the take is safe on this computer, still marked to be copied"
+    else
+      fail "quit: the take on this computer lost its mark or its sound"
+    fi
+  fi
+fi
 fi
 [ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
 stop_app

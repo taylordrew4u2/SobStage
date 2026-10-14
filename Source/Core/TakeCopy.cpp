@@ -880,6 +880,22 @@ std::string tallyLine (const Tally& tally)
     return {};
 }
 
+std::string copyFailedBeforeQuitting (const std::vector<std::pair<Result, std::string>>& failures, Wording wording)
+{
+    if (failures.empty())
+        return {};
+
+    if (failures.size() == 1)
+        return "The copy to the card didn't finish. " + describe (failures.front().first, failures.front().second, wording);
+
+    std::string text = "The copies of " + std::to_string (failures.size()) + " takes to the card didn't finish.";
+
+    for (const auto& [result, folder] : failures)
+        text += "\n\n" + lastPartOf (folder) + ": " + describe (result, folder, wording);
+
+    return text;
+}
+
 std::string computerFullNote (const std::string& computerFolder, int takesStillToCopy)
 {
     auto note = "This computer is nearly full, so this take is going straight to the card. To make room, "

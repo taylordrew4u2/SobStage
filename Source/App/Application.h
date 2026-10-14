@@ -154,6 +154,23 @@ public:
     /// take stopped on the way out used to quit before that card could open.
     juce::String unseenProblemWithLastTake() const;
 
+    /// A copy to the card that failed after the quit was asked for and has
+    /// not been told yet, in words for a quit question; empty when none. The
+    /// copy "Quit When Done" was waiting for, typically: a card that is full,
+    /// garbled a write, or was pulled while the app "finished". Finished
+    /// copies are collected (and journalled) here first, so one that failed
+    /// a moment ago is never missed for the status tick that has not run.
+    /// A retry that failed as it did before is not news, and is left out.
+    juce::String cardCopyFailedWhileQuitting();
+
+    /// unseenProblemWithLastTake() and cardCopyFailedWhileQuitting(), for the
+    /// question asked once the take is settled.
+    juce::String problemToTellBeforeQuitting();
+
+    /// The quit's problem question is on screen: the copy failures in it are
+    /// not asked about again in this quit.
+    void problemToldBeforeQuitting();
+
     /// The user chose to stay open after asking to quit. A take the quit
     /// stopped is the saved-take card's to report from here on, so a later
     /// quit does not ask about it again.
@@ -869,6 +886,13 @@ private:
     // See prepareToQuit() and unseenProblemWithLastTake().
     bool lastTakeFinishedWhileQuitting = false;
 
+    // A quit has been asked for: copies to the card that fail from now on are
+    // kept, to be asked about before it happens. See
+    // cardCopyFailedWhileQuitting().
+    bool watchingCopiesForQuit = false;
+    std::vector<std::pair<cardcopy::Result, std::string>> copyFailuresWhileQuitting;
+    size_t copyFailuresTold = 0;
+
     // setProofStarvedForTesting(): the UI walk's take that writes nothing.
     bool proofStarvedForTesting = false;
 
@@ -1014,6 +1038,8 @@ private:
     /// The status tick's part for the copy: results to the journal, retries,
     /// the launch resume, and a copy that has stopped answering.
     void tickCardCopies();
+    /// Finished copies to the journal, and to a quit that is watching them.
+    void reportFinishedCardCopies();
     bool combineVideoAndAudio = false;
     juce::String deliveryTarget;
 

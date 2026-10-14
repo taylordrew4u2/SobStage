@@ -189,21 +189,22 @@ public:
         // and Tab, and the red button is where the eye goes to close a stray
         // window -- either one, pressed by accident during a show, ended the
         // recording on the spot. Keep Recording is the default and Escape.
-       #if ! defined (MMA_UI_WALK)
-        const auto step = questions.onQuitRequested (application != nullptr && application->isRecording());
-
-        if (step == QuitQuestions::Step::AskToStopTheTake)
+        if (! quitsWithoutQuestions())
         {
-            askBeforeStoppingTheTake();
-            return;
-        }
+            const auto step = questions.onQuitRequested (application != nullptr && application->isRecording());
 
-        if (step == QuitQuestions::Step::BringQuestionForward)
-        {
-            bringQuitQuestionForward();
-            return;
+            if (step == QuitQuestions::Step::AskToStopTheTake)
+            {
+                askBeforeStoppingTheTake();
+                return;
+            }
+
+            if (step == QuitQuestions::Step::BringQuestionForward)
+            {
+                bringQuitQuestionForward();
+                return;
+            }
         }
-       #endif
 
         const bool ready = application == nullptr || application->prepareToQuit();
 
@@ -284,14 +285,19 @@ public:
     // for it (the app quits by itself once it is done), or quit now.
     void quitOnceAfterTakeWorkIsSettled()
     {
-       #if defined (MMA_UI_WALK)
-        afterTakeWaitTimer.stopTimer();
-        quit();
-       #else
-        const auto problem = application != nullptr ? application->unseenProblemWithLastTake()
-                                                    : juce::String();
+        if (quitsWithoutQuestions())
+        {
+            afterTakeWaitTimer.stopTimer();
+            quit();
+            return;
+        }
+
+        // The work first: a copy to the card that fails between the two
+        // looks is then a problem below, never neither.
         const auto work = application != nullptr ? application->unfinishedAfterTakeWork()
                                                   : juce::String();
+        const auto problem = application != nullptr ? application->problemToTellBeforeQuitting()
+                                                    : juce::String();
 
         switch (questions.onTakeSettled (problem.isNotEmpty(), work.isNotEmpty()))
         {
@@ -317,6 +323,17 @@ public:
                 // Answers to a quit request, never to a settled take.
                 return;
         }
+    }
+
+    // The UI walk asks to quit at its end and walks none of these questions;
+    // only while it is walking. A test build is otherwise the shipping app,
+    // so the e2e gates reach the questions.
+    bool quitsWithoutQuestions() const
+    {
+       #if defined (MMA_UI_WALK)
+        return uiWalker != nullptr && uiWalker->isWalking();
+       #else
+        return false;
        #endif
     }
 
@@ -329,6 +346,10 @@ public:
     void askAboutTheTakeProblem (const juce::String& problem)
     {
         bringQuitQuestionForward();
+
+        // Said now: the copy failures in it are not asked about again.
+        if (application != nullptr)
+            application->problemToldBeforeQuitting();
 
         auto* window = new juce::AlertWindow ("There is a problem with the take",
                                               problem + "\n\nDon't Quit keeps SobStage open so you "
@@ -453,11 +474,15 @@ private:
     juce::Component::SafePointer<juce::AlertWindow> openQuestion;
     juce::TimedCallback afterTakeWaitTimer { [this]
     {
+        // The work first, then what failed: the copy to the card that the
+        // wait was for is out of the work by the time its failure is read.
         const auto work = application != nullptr ? application->unfinishedAfterTakeWork()
                                                  : juce::String();
+        const auto copyFailed = application != nullptr ? application->cardCopyFailedWhileQuitting()
+                                                       : juce::String();
 
         switch (questions.onWaitTick (application != nullptr && application->isRecording(),
-                                      work.isNotEmpty()))
+                                      work.isNotEmpty(), copyFailed.isNotEmpty()))
         {
             case QuitQuestions::Tick::KeepWaiting:
                 // What is left, as each piece finishes.
@@ -474,6 +499,14 @@ private:
             case QuitQuestions::Tick::Quit:
                 afterTakeWaitTimer.stopTimer();
                 quit();
+                return;
+
+            case QuitQuestions::Tick::AskAboutProblem:
+                // "Quit When Done" was a promise to quit once the copy to the
+                // card was finished. It failed: the card in hand does not hold
+                // the take, and quitting as if it did is what this stops.
+                stopWaitingToQuit();
+                askAboutTheTakeProblem (copyFailed);
                 return;
         }
     } };

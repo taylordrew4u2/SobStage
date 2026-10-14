@@ -49,9 +49,10 @@ public:
 
     enum class Tick
     {
-        KeepWaiting, ///< the work is still running, or a question is open
-        Quit,        ///< the work is done: quit now
-        StopWaiting, ///< the wait is over without quitting (a take started)
+        KeepWaiting,     ///< the work is still running, or a question is open
+        Quit,            ///< the work is done: quit now
+        StopWaiting,     ///< the wait is over without quitting (a take started)
+        AskAboutProblem, ///< the work is done, but a copy to the card failed meanwhile
     };
 
     /// A request to quit. `recording`: a take is running.
@@ -74,8 +75,13 @@ public:
     Next onWorkAnswered (WorkAnswer answer) noexcept;
 
     /// While waiting, polled. `recording`: a take is running.
-    /// `workRunning`: the combined video or podcast copy is still being made.
-    Tick onWaitTick (bool recording, bool workRunning) noexcept;
+    /// `workRunning`: the combined video, the podcast copy or the copy to the
+    /// card is still being made. `problemArose`: a copy to the card failed
+    /// since the quit was asked for, and has not been told -- the copy "Quit
+    /// When Done" waited for, typically. Asked about, whatever was answered
+    /// before: quitting then would leave with a card that does not hold the
+    /// take.
+    Tick onWaitTick (bool recording, bool workRunning, bool problemArose = false) noexcept;
 
     bool isAsking() const noexcept   { return asking != Question::None; }
     bool isWaiting() const noexcept  { return waiting; }

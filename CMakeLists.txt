@@ -722,6 +722,15 @@ if (MMA_BUILD_TOOLS)
         add_library(fs_stall_shim SHARED Tools/fs_stall_shim.cpp)
         target_link_libraries(fs_stall_shim PRIVATE ${CMAKE_DL_LIBS})
 
+        # The close button, for gates under Xvfb with no window manager; see
+        # the file. Only where X11's own headers are installed.
+        find_package(X11 QUIET)
+        if (X11_FOUND)
+            add_executable(x11_window_message Tools/x11_window_message.cpp)
+            target_include_directories(x11_window_message PRIVATE ${X11_INCLUDE_DIR})
+            target_link_libraries(x11_window_message PRIVATE ${X11_LIBRARIES})
+        endif()
+
         add_library(alsa_readi_shim SHARED Tools/alsa_readi_shim.cpp)
         target_link_libraries(alsa_readi_shim PRIVATE ${CMAKE_DL_LIBS})
         if (ALSA_FOUND)

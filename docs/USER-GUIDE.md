@@ -365,7 +365,10 @@ files really are empty and the card says so instead of calling it saved.
   card.
   Quitting again while it waits asks again; only *Quit Now* cancels that file.
   A copy to the card that *Quit Now* cuts off is finished at the next launch:
-  the take stays on this computer meanwhile.
+  the take stays on this computer meanwhile. If the copy to the card it was
+  waiting for fails instead — the card is full, or was pulled out — the app
+  does not close as though the take were on the card: it says the copy didn't
+  finish and where the take is safe, and *Don't Quit* keeps it open.
   If SobStage is hidden or behind another app when you quit it from the Dock,
   it comes to the front (or its Dock icon bounces) to ask. On a Mac, a Shut
   Down, Restart or Log Out stops when SobStage asks a question: once SobStage

@@ -77,6 +77,10 @@ public:
 
     ~UiWalker() override { stopTimer(); }
 
+    /// MMA_UI_WALK_REPORT named a file, so the walk is running. Otherwise a
+    /// test build behaves as the shipping app, quit questions included.
+    bool isWalking() const { return report.is_open(); }
+
 private:
     static constexpr int kTickMs = 100;
 

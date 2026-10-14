@@ -100,7 +100,7 @@ QuitQuestions::Next QuitQuestions::onWorkAnswered (WorkAnswer answer) noexcept
     return Next::Stay;
 }
 
-QuitQuestions::Tick QuitQuestions::onWaitTick (bool recording, bool workRunning) noexcept
+QuitQuestions::Tick QuitQuestions::onWaitTick (bool recording, bool workRunning, bool problemArose) noexcept
 {
     if (! waiting)
         return Tick::StopWaiting;
@@ -119,6 +119,16 @@ QuitQuestions::Tick QuitQuestions::onWaitTick (bool recording, bool workRunning)
         return Tick::KeepWaiting;
 
     waiting = false;
+
+    // The wait is over, and not as promised: a copy it was for failed. The
+    // answer to this question decides, as it does before any wait.
+    if (problemArose)
+    {
+        problemAcknowledged = false;
+        asking = Question::TakeProblem;
+        return Tick::AskAboutProblem;
+    }
+
     return Tick::Quit;
 }
 

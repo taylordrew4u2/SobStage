@@ -3528,7 +3528,7 @@ void Application::toggleRecording()
     }
 }
 
-void Application::tickCardCopies()
+void Application::reportFinishedCardCopies()
 {
     // Reported here, on the message thread: the worker may not touch the
     // journal. A retry that found the card still out is not said again.
@@ -3538,13 +3538,55 @@ void Application::tickCardCopies()
         stallReportedFor.erase (juce::String (done.folderNow));
 
         if (done.result.outcome == cardcopy::Outcome::Copied)
+        {
             noteActivity (ActivityLevel::Stopped, "Card copy",
                           "Copied " + juce::File (juce::String (done.folderNow)).getFileName() + " to the card.",
                           true);
+        }
         else if (! done.repeat)
+        {
             noteActivity (ActivityLevel::Warning, "Card copy",
                           juce::String (cardcopy::describe (done.result, done.folderNow)), true);
+
+            if (watchingCopiesForQuit && cardcopy::isFailure (done.result.outcome))
+                copyFailuresWhileQuitting.emplace_back (done.result, done.folderNow);
+        }
     }
+}
+
+juce::String Application::cardCopyFailedWhileQuitting()
+{
+    reportFinishedCardCopies();
+
+    if (! watchingCopiesForQuit || copyFailuresTold >= copyFailuresWhileQuitting.size())
+        return {};
+
+    const std::vector<std::pair<cardcopy::Result, std::string>> untold (
+        copyFailuresWhileQuitting.begin() + static_cast<std::ptrdiff_t> (copyFailuresTold),
+        copyFailuresWhileQuitting.end());
+
+    return juce::String (cardcopy::copyFailedBeforeQuitting (untold));
+}
+
+juce::String Application::problemToTellBeforeQuitting()
+{
+    const auto copy = cardCopyFailedWhileQuitting();
+    const auto take = unseenProblemWithLastTake();
+
+    if (take.isEmpty() || copy.isEmpty())
+        return take + copy;
+
+    return take + "\n\n" + copy;
+}
+
+void Application::problemToldBeforeQuitting()
+{
+    copyFailuresTold = copyFailuresWhileQuitting.size();
+}
+
+void Application::tickCardCopies()
+{
+    reportFinishedCardCopies();
 
     // At launch, once both checks for interrupted takes are done -- one of
     // them may still be finishing a take that is waiting to be copied --
@@ -3655,6 +3697,16 @@ bool Application::prepareToQuit()
     if (isRecording() || pendingStoppedTakeCompletion != nullptr)
         lastTakeFinishedWhileQuitting = true;
 
+    // From here, a copy to the card that fails is asked about before the app
+    // goes: the quit may be waiting for exactly that copy.
+    if (! watchingCopiesForQuit)
+    {
+        reportFinishedCardCopies();
+        watchingCopiesForQuit = true;
+        copyFailuresWhileQuitting.clear();
+        copyFailuresTold = 0;
+    }
+
     if (isRecording())
     {
         if (stopReason.isEmpty())
@@ -3734,6 +3786,11 @@ void Application::quitCalledOff()
 {
     // Staying open: the saved-take card shows the take, as for any other stop.
     lastTakeFinishedWhileQuitting = false;
+
+    // Its saved-take card and the line under Record say how the copies went.
+    watchingCopiesForQuit = false;
+    copyFailuresWhileQuitting.clear();
+    copyFailuresTold = 0;
 }
 
 juce::String Application::resolveSessionFolderName (juce::Time now, const juce::String& name) const

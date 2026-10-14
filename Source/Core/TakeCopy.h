@@ -316,6 +316,13 @@ std::string computerFullNote (const std::string& computerFolder, int takesStillT
 /// Whether an outcome is one of the copy's failures, reported to the user.
 bool isFailure (Outcome outcome) noexcept;
 
+/// Asked before quitting when copies to the card failed after the quit was
+/// asked for -- the one "Quit When Done" was waiting for, typically. Each
+/// take's last result and its folder on this computer; says where each is
+/// safe. Empty for none.
+std::string copyFailedBeforeQuitting (const std::vector<std::pair<Result, std::string>>& failures,
+                                      Wording wording = kThisSystemsWording);
+
 /// The takes whose copy did not finish, as the line under Record counts them.
 struct Tally
 {
