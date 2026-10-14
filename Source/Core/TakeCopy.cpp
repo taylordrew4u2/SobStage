@@ -266,6 +266,13 @@ std::string joinPath (const std::string& folder, const std::string& name)
     if (isSeparator (folder.back()))
         return folder + name;
 
+    // The separator the folder already uses, so one path never mixes them:
+    // a "/" path given on Windows stays a "/" path, which comparisons with
+    // the folder's own spelling (a card folder, a marker) rely on.
+    for (auto i = folder.size(); i > 0; --i)
+        if (isSeparator (folder[i - 1]))
+            return folder + folder[i - 1] + name;
+
    #if defined(_WIN32)
     return folder + "\\" + name;
    #else

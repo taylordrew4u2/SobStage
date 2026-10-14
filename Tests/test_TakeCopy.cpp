@@ -414,6 +414,18 @@ bool noWorkingFilesOnCard (const FakeFs& fs)
 } // namespace
 
 // Mutation: a name changed on the way, or a file skipped.
+TEST_CASE (TakeCopy_PathsKeepTheSeparatorTheFolderUses)
+{
+    // On every platform, so a Windows-only spelling is checked here too: a
+    // path never mixes "/" and "\\", or a card folder no longer compares
+    // equal to its own spelling.
+    REQUIRE (joinPath ("/cards/SD/RECORDINGS", "Show") == "/cards/SD/RECORDINGS/Show");
+    REQUIRE (joinPath ("C:\\Users\\me\\RECORDINGS-MIRROR", "Show")
+             == "C:\\Users\\me\\RECORDINGS-MIRROR\\Show");
+    REQUIRE (joinPath ("E:/RECORDINGS", "Show") == "E:/RECORDINGS/Show");
+    REQUIRE (joinPath ("/cards/SD/", "Show") == "/cards/SD/Show");
+}
+
 TEST_CASE (TakeCopy_CopiesEveryFileWithTheSameNames)
 {
     FakeFs fs;
