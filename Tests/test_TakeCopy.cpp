@@ -1294,7 +1294,7 @@ TEST_CASE (TakeRoute_OffThisComputerIsCopied)
     TakeRouteInputs in;
     in.destinationOnThisComputer = 0;
     in.computerFreeBytes = 500LL * 1024 * 1024 * 1024;
-    in.projectedTakeBytes = 1LL * 1024 * 1024 * 1024;
+    in.bytesPerSecond = 1024.0 * 1024 * 1024 / 3600.0;
     REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
 }
 
@@ -1305,6 +1305,26 @@ TEST_CASE (TakeRoute_UnknownIsCopied)
     in.destinationOnThisComputer = -1;
     in.computerFreeBytes = 500LL * 1024 * 1024 * 1024;
     REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
+}
+
+// Mutation: no bound on the wait. A card hung before the probe's first answer
+// kept Record on "Checking this save location..." for good, though the take
+// would only have been written on this computer.
+TEST_CASE (TakeRoute_ACardThatNeverAnswersStopsHoldingRecordAfterTwoSeconds)
+{
+    PlacementWait wait;
+    REQUIRE_FALSE (wait.givenUp ("/Volumes/SD", false, 1000.0));
+    REQUIRE_FALSE (wait.givenUp ("/Volumes/SD", false, 1000.0 + PlacementWait::kGiveUpAfterMs));
+    REQUIRE (wait.givenUp ("/Volumes/SD", false, 1001.0 + PlacementWait::kGiveUpAfterMs));
+
+    // Another save location is waited for afresh.
+    REQUIRE_FALSE (wait.givenUp ("/Volumes/OTHER", false, 5000.0));
+    REQUIRE (wait.givenUp ("/Volumes/OTHER", false, 7001.0));
+
+    // An answer ends the wait; a later unanswered look starts a new one.
+    REQUIRE_FALSE (wait.givenUp ("/Volumes/OTHER", true, 8000.0));
+    REQUIRE_FALSE (wait.givenUp ("/Volumes/OTHER", false, 9000.0));
+    REQUIRE (wait.givenUp ("/Volumes/OTHER", false, 11001.0));
 }
 
 TEST_CASE (TakeRoute_SettingOffGoesStraightToTheCard)
@@ -1321,13 +1341,51 @@ TEST_CASE (TakeRoute_ComputerFullBoundary)
 {
     TakeRouteInputs in;
     in.destinationOnThisComputer = 0;
-    in.projectedTakeBytes = 3LL * 1024 * 1024 * 1024;
+    in.bytesPerSecond = 3.0 * 1024 * 1024 * 1024 / 3600.0; // 3 GB an hour
 
-    in.computerFreeBytes = in.projectedTakeBytes + MirrorPolicy::kMinHeadroomBytes;
+    const auto projected = projectedTakeBytes (in);
+    REQUIRE (projected == static_cast<int64_t> (in.bytesPerSecond * kPlanningSeconds));
+
+    in.computerFreeBytes = projected + MirrorPolicy::kMinHeadroomBytes;
     REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
 
-    in.computerFreeBytes = in.projectedTakeBytes + MirrorPolicy::kMinHeadroomBytes + 1;
+    in.computerFreeBytes = projected + MirrorPolicy::kMinHeadroomBytes + 1;
     REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
+}
+
+// Mutation: the card's room left out of the projection. A 3-hour show on six
+// mics (about 4 GB an hour) with a 64 GB card and 12 GB free here: recorded
+// here it would stop at about 2.5 hours for want of room, where the card
+// would have held all of it. So it goes to the card.
+TEST_CASE (TakeRoute_NeverStopsATakeTheCardWouldHaveHeld)
+{
+    constexpr double gb = 1024.0 * 1024 * 1024;
+
+    TakeRouteInputs in;
+    in.destinationOnThisComputer = 0;
+    in.bytesPerSecond = 4.0 * gb / 3600.0;
+    in.destinationRemainingSeconds = 60.0 * gb / in.bytesPerSecond; // 15 hours
+    in.computerFreeBytes = static_cast<int64_t> (12.0 * gb);
+    REQUIRE (projectedTakeBytes (in) == static_cast<int64_t> (in.bytesPerSecond * kLongestShowSeconds));
+    REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
+
+    // Room here for the longest show: recorded here.
+    in.computerFreeBytes = projectedTakeBytes (in) + MirrorPolicy::kMinHeadroomBytes + 1;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
+
+    // A card with less room than that: this computer needs only what the
+    // card could have held, at the same boundary.
+    in.destinationRemainingSeconds = 2.0 * 3600.0;
+    const auto cardHolds = static_cast<int64_t> (in.bytesPerSecond * 2.0 * 3600.0);
+    REQUIRE (projectedTakeBytes (in) == cardHolds);
+    in.computerFreeBytes = cardHolds + MirrorPolicy::kMinHeadroomBytes;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
+    in.computerFreeBytes = cardHolds + MirrorPolicy::kMinHeadroomBytes + 1;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
+
+    // The card out: recording here is the only way, and an hour is enough.
+    in.destinationRemainingSeconds.reset();
+    REQUIRE (projectedTakeBytes (in) == static_cast<int64_t> (in.bytesPerSecond * kPlanningSeconds));
 }
 
 // Not knowing how much room there is does not send the take to the card.
@@ -1335,7 +1393,7 @@ TEST_CASE (TakeRoute_FreeSpaceUnknownIsCopied)
 {
     TakeRouteInputs in;
     in.destinationOnThisComputer = 0;
-    in.projectedTakeBytes = 3LL * 1024 * 1024 * 1024;
+    in.bytesPerSecond = 3.0 * 1024 * 1024 * 1024 / 3600.0;
     REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
 }
 
@@ -1380,6 +1438,23 @@ TEST_CASE (TakeCopyWording_EveryFailureNamesWhereTheTakeIsInPlainWords)
     }
 
     REQUIRE (stalledLine (where) == "The card stopped answering. This take is safe on this computer in " + where + ".");
+}
+
+// Mutation: the old advice, "Delete old takes in RECORDINGS-MIRROR". Some of
+// them may be the only copy of a take the card never got.
+TEST_CASE (TakeCopyWording_ComputerFullPointsOnlyAtCopiedTakes)
+{
+    const std::string folder = "/Users/sam/RECORDINGS-MIRROR";
+
+    const auto none = computerFullNote (folder, 0);
+    REQUIRE (none.find ("delete takes in " + folder + " that have already been copied to the card.")
+             != std::string::npos);
+    REQUIRE (none.find ("Delete old takes") == std::string::npos);
+    REQUIRE (none.find ("Keep") == std::string::npos);
+
+    REQUIRE (computerFullNote (folder, 1).find ("1 take there hasn't been copied yet. Keep it.") != std::string::npos);
+    REQUIRE (computerFullNote (folder, 3).find ("3 takes there haven't been copied yet. Keep them.")
+             != std::string::npos);
 }
 
 TEST_CASE (TakeCopyWording_CopyingLineIsAPercentage)

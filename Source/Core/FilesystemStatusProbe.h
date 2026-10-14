@@ -95,6 +95,13 @@ public:
     void setRequest (Request request);
     Snapshot getSnapshot() const;
 
+    /// Whether `snapshot` shows `destination` there as a folder, from a look
+    /// begun after `after` -- between takes, by the worker that may touch the
+    /// drive. How a save location missing when it was checked for interrupted
+    /// takes is noticed once it is plugged in, with nothing else writing to it.
+    static bool showsDestinationAfter (const Snapshot& snapshot, const std::string& destination,
+                                       std::chrono::steady_clock::time_point after) noexcept;
+
     /// Deterministic test/support hook. Shipping UI code never waits.
     bool waitForRevisionAfter (uint64_t revision, Snapshot& result,
                                std::chrono::milliseconds timeout) const;

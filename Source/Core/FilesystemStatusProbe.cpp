@@ -402,4 +402,16 @@ void FilesystemStatusProbe::run (std::shared_ptr<State> shared)
     }
 }
 
+bool FilesystemStatusProbe::showsDestinationAfter (const Snapshot& snapshot, const std::string& destination,
+                                                   std::chrono::steady_clock::time_point after) noexcept
+{
+    // A room figure is only worked out for a destination that is a folder
+    // (sample()), so one is the folder being there.
+    return snapshot.ready && ! destination.empty()
+        && snapshot.request.destinationPath == destination
+        && snapshot.request.sessionFolder.empty()
+        && snapshot.remainingSeconds >= 0.0
+        && snapshot.sampleStartedAt > after;
+}
+
 } // namespace mma

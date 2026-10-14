@@ -16,17 +16,26 @@
 
 namespace mma {
 
+int64_t projectedTakeBytes (const TakeRouteInputs& in) noexcept
+{
+    const double seconds = in.destinationRemainingSeconds.has_value() && *in.destinationRemainingSeconds >= 0.0
+        ? std::min (*in.destinationRemainingSeconds, kLongestShowSeconds)
+        : kPlanningSeconds;
+
+    return static_cast<int64_t> (std::max (0.0, in.bytesPerSecond) * seconds);
+}
+
 TakeRoute decideTakeRoute (const TakeRouteInputs& in) noexcept
 {
     if (! in.copyAfterTakeEnabled || in.destinationOnThisComputer == 1)
         return TakeRoute::StraightToDestination;
 
     // The same rule the backup copy has always had: room for the take plus
-    // 2 GB to spare. A computer that fills up mid-take stops the take, so a
-    // nearly full one records straight to the card, which is how every take
-    // was recorded before this.
+    // 2 GB to spare. A computer that fills up mid-take stops the take, so one
+    // that cannot hold what the card could records straight to the card,
+    // which is how every take was recorded before this.
     if (in.computerFreeBytes.has_value()
-        && *in.computerFreeBytes <= in.projectedTakeBytes + MirrorPolicy::kMinHeadroomBytes)
+        && *in.computerFreeBytes <= projectedTakeBytes (in) + MirrorPolicy::kMinHeadroomBytes)
         return TakeRoute::StraightToCardComputerFull;
 
     return TakeRoute::ComputerThenCard;
@@ -739,6 +748,19 @@ Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marke
     }
 
     return result;
+}
+
+std::string computerFullNote (const std::string& computerFolder, int takesStillToCopy)
+{
+    auto note = "This computer is nearly full, so this take is going straight to the card. To make room, "
+                "delete takes in " + computerFolder + " that have already been copied to the card.";
+
+    if (takesStillToCopy == 1)
+        note += " 1 take there hasn't been copied yet. Keep it.";
+    else if (takesStillToCopy > 1)
+        note += " " + std::to_string (takesStillToCopy) + " takes there haven't been copied yet. Keep them.";
+
+    return note;
 }
 
 bool isFailure (Outcome outcome) noexcept

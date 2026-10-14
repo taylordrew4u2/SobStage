@@ -38,14 +38,56 @@ struct TakeRouteInputs
     int destinationOnThisComputer = -1;
     /// Free space on the disk the backup folder is on, when known.
     std::optional<int64_t> computerFreeBytes;
-    /// One hour of audio and cameras at the current settings.
-    int64_t projectedTakeBytes = 0;
+    /// Audio and cameras at the current settings.
+    double bytesPerSecond = 0.0;
+    /// How long the destination itself could record for at that rate, when
+    /// known: what a take recorded straight to it could last.
+    std::optional<double> destinationRemainingSeconds;
 };
 
-/// The route for the next take. Free space at or below the projection plus
-/// MirrorPolicy::kMinHeadroomBytes sends the take straight to the card: the
-/// same 2 GB rule the backup copy has always followed (§1, §6.3).
+/// What this computer must be able to hold for a take recorded here: as much
+/// as the card could hold, up to kLongestShowSeconds -- so a take recorded
+/// here never stops for want of room where one recorded straight to the card
+/// would have carried on. An hour when the card's room is not known (it is
+/// out, so recording here is the only way anyway).
+int64_t projectedTakeBytes (const TakeRouteInputs& inputs) noexcept;
+
+inline constexpr double kLongestShowSeconds = 4.0 * 60.0 * 60.0;
+inline constexpr double kPlanningSeconds = 60.0 * 60.0;
+
+/// The route for the next take. Free space at or below projectedTakeBytes()
+/// plus MirrorPolicy::kMinHeadroomBytes sends the take straight to the card:
+/// the same 2 GB rule the backup copy has always followed (§1, §6.3).
 TakeRoute decideTakeRoute (const TakeRouteInputs& inputs) noexcept;
+
+/// How long Record waits for the first answer about where a save location
+/// is before going on without it. A card that hangs before the status probe
+/// has answered holds the probe inside that call; not knowing is treated as
+/// "not this computer", so the take is recorded here -- which is what the
+/// arm itself concludes after its own 1.5 s wait.
+class PlacementWait
+{
+public:
+    static constexpr double kGiveUpAfterMs = 2000.0;
+
+    /// True once `destination` has gone unanswered for longer than
+    /// kGiveUpAfterMs. A new destination, or an answer, starts the wait again.
+    bool givenUp (const std::string& destination, bool answered, double nowMs)
+    {
+        if (answered || destination != waitingFor)
+        {
+            waitingFor = answered ? std::string() : destination;
+            since = nowMs;
+            return false;
+        }
+
+        return nowMs - since > kGiveUpAfterMs;
+    }
+
+private:
+    std::string waitingFor;
+    double since = 0.0;
+};
 
 namespace cardcopy {
 
@@ -242,6 +284,11 @@ std::string waitingLine (int takes);
 /// Takes held back by a check of the card that has not finished: the card
 /// stopped answering before their copies could begin.
 std::string notAnsweringLine (int takes, const std::string& computerFolder);
+
+/// Said when a take goes straight to the card because this computer is too
+/// full. Points only at takes already on the card: some in `computerFolder`
+/// may be the only copy of a take not copied yet (`takesStillToCopy`).
+std::string computerFullNote (const std::string& computerFolder, int takesStillToCopy);
 
 /// Whether an outcome is one of the copy's failures, reported to the user.
 bool isFailure (Outcome outcome) noexcept;

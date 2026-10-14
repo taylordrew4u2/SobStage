@@ -410,9 +410,19 @@ copies it to the card when you press Stop.
   could start, it says that instead, and where the takes are safe.
 - **A take started while another is still copying comes first.** The copy
   steps aside, and finishes after you stop.
-- **If this computer is nearly full** — less than 2 GB plus an hour of
-  recording left — the take goes straight to the card instead, and the
-  activity list says so. Delete old takes in `RECORDINGS-MIRROR` to make room.
+- **If this computer is nearly full** — it couldn't hold as much as the card
+  could, up to four hours of recording, plus 2 GB — the take goes straight to
+  the card instead, and the activity list says so. A take recorded here never
+  stops for want of room where one recorded on the card would have carried on.
+  To make room, delete takes in `RECORDINGS-MIRROR` that have already been
+  copied to the card. Keep any that haven't: the line under the record button
+  says how many are still to go, and for those this computer's copy may be the
+  only one.
+- **A card that stops answering doesn't hold up Record.** If SobStage can't
+  tell where the save location is within two seconds, the take is recorded on
+  this computer and copied later.
+- **A card that was out when SobStage started** is checked for interrupted
+  takes as soon as it is plugged in.
 - **To record straight to the card** as before, untick *Record on this
   computer, then copy to the card* in Settings.
 - **Plug the card reader straight into the computer**, not into the hub the

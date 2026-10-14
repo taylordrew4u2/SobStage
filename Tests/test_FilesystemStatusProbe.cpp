@@ -548,3 +548,40 @@ TEST_CASE (FilesystemStatusProbe_SaysWhichVolumeIsAtTheDestinationBetweenTakes)
     REQUIRE (snapshot.request == during);
     REQUIRE (! snapshot.destinationVolume.known);
 }
+
+// Mutation: a card that was out when it was checked for interrupted takes is
+// never checked again once plugged in, while takes are recorded on this
+// computer (the drive check, the only other sign, never runs then).
+TEST_CASE (FilesystemStatusProbe_SaysASaveLocationHasAppeared)
+{
+    using Clock = std::chrono::steady_clock;
+    const auto missedAt = Clock::now();
+
+    FilesystemStatusProbe::Snapshot seen;
+    seen.ready = true;
+    seen.request.destinationPath = "/Volumes/SD/RECORDINGS";
+    seen.remainingSeconds = 3600.0;
+    seen.sampleStartedAt = missedAt + std::chrono::milliseconds (500);
+
+    REQUIRE (FilesystemStatusProbe::showsDestinationAfter (seen, "/Volumes/SD/RECORDINGS", missedAt));
+
+    // A look begun before the miss proves nothing.
+    auto stale = seen;
+    stale.sampleStartedAt = missedAt - std::chrono::milliseconds (1);
+    REQUIRE_FALSE (FilesystemStatusProbe::showsDestinationAfter (stale, "/Volumes/SD/RECORDINGS", missedAt));
+
+    // Still not there: no room figure.
+    auto absent = seen;
+    absent.remainingSeconds = -1.0;
+    REQUIRE_FALSE (FilesystemStatusProbe::showsDestinationAfter (absent, "/Volumes/SD/RECORDINGS", missedAt));
+
+    // Another save location, or a look at a take's folder mid-take.
+    REQUIRE_FALSE (FilesystemStatusProbe::showsDestinationAfter (seen, "/Volumes/OTHER/RECORDINGS", missedAt));
+    auto midTake = seen;
+    midTake.request.sessionFolder = "/Volumes/SD/RECORDINGS/2026-10-14_2000_Show";
+    REQUIRE_FALSE (FilesystemStatusProbe::showsDestinationAfter (midTake, "/Volumes/SD/RECORDINGS", missedAt));
+
+    auto notReady = seen;
+    notReady.ready = false;
+    REQUIRE_FALSE (FilesystemStatusProbe::showsDestinationAfter (notReady, "/Volumes/SD/RECORDINGS", missedAt));
+}

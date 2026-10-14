@@ -987,8 +987,10 @@ private:
     /// is not plugged in). The probe's last answer; with `mayWait`, asked on a
     /// disposable worker for up to 1.5 s when the probe has none.
     int destinationOnThisComputer (bool mayWait) const;
-    /// Whether the probe has answered for the destination as it stands.
+    /// Whether the probe has answered for the destination as it stands, or
+    /// has been waited for long enough (PlacementWait).
     bool destinationPlacementKnown() const;
+    mutable PlacementWait placementWait;
     /// The probe's last firm answer (1 or 0) per destination. A card that has
     /// stopped answering holds the probe inside its next look, and the copy to
     /// it may be what it stopped during; the next take must still be able to
@@ -997,6 +999,9 @@ private:
     /// The route for the next take. `authoritative` (arm time only) asks the
     /// disks themselves; otherwise only what the probe already knows.
     TakeRoute plannedTakeRoute (bool authoritative) const;
+    /// How long the save location itself could record for, from the probe's
+    /// last look between takes, or -1 when that is not known.
+    double destinationRoomFromProbe() const;
     /// Test builds' MMA_TREAT_AS_CARD=<prefix>: a destination under it counts
     /// as a card, so the end-to-end gates can exercise the copy on one disk.
     static bool treatAsCardForTesting (const std::string& destination);
@@ -1522,6 +1527,7 @@ private:
     /// yet. Its "nothing interrupted here" holds only until the card mounts.
     mutable bool destinationRecoveryRootWasMissing = false;
     mutable double destinationRecoveryMissingAtMs = 0.0;
+    mutable std::chrono::steady_clock::time_point destinationRecoveryMissingAt {};
     /// Runs the destination scan again once the drive check has written to a
     /// destination that was missing when it was scanned.
     void rescanDestinationIfItHasAppeared();

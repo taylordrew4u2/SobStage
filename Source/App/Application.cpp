@@ -2947,10 +2947,21 @@ void Application::toggleRecording()
                                   "to the card. It will still be copied when you stop, but not after a "
                                   "restart.");
 
-                lastTakeRouteNote = route == TakeRoute::StraightToCardComputerFull
-                    ? "This computer is nearly full, so this take is going straight to the card. "
-                      "Delete old takes in " + backupRootFolder().getFullPathName() + " to make room."
-                    : juce::String();
+                if (route == TakeRoute::StraightToCardComputerFull)
+                {
+                    // Only takes already on the card are safe to delete: the
+                    // rest of that folder may be the only copy of a take whose
+                    // copy is still to go.
+                    const auto copies = cardCopier.summary();
+                    const int stillToCopy = (copies.copyingFolder.empty() ? 0 : 1) + copies.waiting
+                                          + copies.onlyOnComputer + copies.addedFilesWaiting;
+                    lastTakeRouteNote = juce::String (cardcopy::computerFullNote (
+                        backupRootFolder().getFullPathName().toStdString(), stillToCopy));
+                }
+                else
+                {
+                    lastTakeRouteNote.clear();
+                }
 
                 // Held until the take's last movie has finished, so a rename
                 // after the audio stops is still followed. See
@@ -4056,8 +4067,10 @@ void Application::setRecordOnComputerThenCopy (bool enabled)
     saveSettings();
 
     // Off: takes go straight to the card again, so the card has to pass the
-    // speed check before the next one -- it may never have been asked.
-    if (! enabled)
+    // speed check before the next one -- it may never have been asked. Not
+    // during a take: the check writes 200 MB to the card, the load this
+    // setting keeps away from a take. The Record gate starts it after Stop.
+    if (! enabled && ! isRecording())
         beginPreflightForDestination();
 }
 
@@ -4250,9 +4263,15 @@ bool Application::destinationPlacementKnown() const
     filesystemStatusProbe.setRequest (request);
     const auto snapshot = filesystemStatusProbe.getSnapshot();
 
-    return (snapshot.ready && snapshot.request.destinationPath == destinationFolder
-            && snapshot.request.backupRootPath == request.backupRootPath)
-        || placementByDestination.count (destinationFolder) > 0;
+    const bool answered = (snapshot.ready && snapshot.request.destinationPath == destinationFolder
+                           && snapshot.request.backupRootPath == request.backupRootPath)
+                       || placementByDestination.count (destinationFolder) > 0;
+
+    // A card that hangs before the probe's first answer holds the probe in
+    // that call for good. After a short wait, not knowing is an answer: the
+    // take is recorded on this computer, as the arm's own look concludes.
+    return placementWait.givenUp (destinationFolder, answered, juce::Time::getMillisecondCounterHiRes())
+        || answered;
 }
 
 TakeRoute Application::plannedTakeRoute (bool authoritative) const
@@ -4268,8 +4287,13 @@ TakeRoute Application::plannedTakeRoute (bool authoritative) const
     if (in.destinationOnThisComputer == 1)
         return TakeRoute::StraightToDestination;
 
-    // Room for an hour of audio AND cameras: the take writes both here.
-    in.projectedTakeBytes = static_cast<int64_t> (bytesPerSecondOfRecording() * 3600.0);
+    // Room for audio AND cameras, for as long as the card could have held
+    // them: the take writes both here. The card's room is the probe's last
+    // look between takes, so arming asks the card nothing.
+    in.bytesPerSecond = bytesPerSecondOfRecording();
+
+    if (const auto cardRoom = destinationRoomFromProbe(); cardRoom >= 0.0)
+        in.destinationRemainingSeconds = cardRoom;
 
     if (authoritative)
     {
@@ -4284,6 +4308,23 @@ TakeRoute Application::plannedTakeRoute (bool authoritative) const
     }
 
     return decideTakeRoute (in);
+}
+
+double Application::destinationRoomFromProbe() const
+{
+    // Between takes the probe measures the save location itself; during a
+    // take it measures the take's own folder, which is not the card's room.
+    if (isRecording())
+        return -1.0;
+
+    const auto request = currentFilesystemProbeRequest();
+    filesystemStatusProbe.setRequest (request);
+    const auto snapshot = filesystemStatusProbe.getSnapshot();
+
+    if (! snapshot.ready || ! (snapshot.request == request) || snapshot.request.destinationPath != destinationFolder)
+        return -1.0;
+
+    return snapshot.remainingSeconds;
 }
 
 bool Application::wouldRecordOnComputer() const
@@ -8384,9 +8425,17 @@ void Application::rescanDestinationIfItHasAppeared()
     const auto verdict = preflightResults.find (destinationFolder);
     const auto verdictAt = preflightVerdictAtMs.find (destinationFolder);
 
-    if (verdict == preflightResults.end() || verdict->second.couldNotWrite
-        || verdictAt == preflightVerdictAtMs.end()
-        || verdictAt->second <= destinationRecoveryMissingAtMs)
+    const bool drivesCheckSawIt = verdict != preflightResults.end() && ! verdict->second.couldNotWrite
+                               && verdictAt != preflightVerdictAtMs.end()
+                               && verdictAt->second > destinationRecoveryMissingAtMs;
+
+    // With takes recorded on this computer and copied to the card, the drive
+    // check never runs, so it can never say the card is back. The status
+    // probe's own look between takes, begun after the miss, says it instead.
+    const bool probeSawIt = FilesystemStatusProbe::showsDestinationAfter (
+        filesystemStatusProbe.getSnapshot(), destinationFolder, destinationRecoveryMissingAt);
+
+    if (! drivesCheckSawIt && ! probeSawIt)
         return;
 
     destinationRecoveryRootWasMissing = false;
@@ -8889,6 +8938,7 @@ void Application::publishCompletedRecoveryScans() const
         {
             destinationRecoveryRootWasMissing = completed->rootMissing;
             destinationRecoveryMissingAtMs = juce::Time::getMillisecondCounterHiRes();
+            destinationRecoveryMissingAt = std::chrono::steady_clock::now();
         }
 
         for (const auto& entry : completed->activity)
