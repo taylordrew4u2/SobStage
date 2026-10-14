@@ -60,6 +60,11 @@ public:
     /// thread on every call.
     std::string resolve() const;
 
+    /// Which folder this is on its disk ("device:inode"), wherever it has
+    /// been moved to; empty when nothing is held or the platform cannot say.
+    /// Two trackers on the same folder answer alike, however each reached it.
+    std::string fileIdentity() const;
+
 private:
     std::string currentSystemPath() const;
 

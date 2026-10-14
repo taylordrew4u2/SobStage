@@ -1228,6 +1228,49 @@ int main()
         check (! fs::exists (f.card / "2026-10-15_0100_Now_2"), "and nothing goes to the card a second time");
     }
 
+    // A take stopped while the copies are held behind the card's check for
+    // interrupted takes, and renamed in Finder before that check ends: the
+    // launch's look for marked takes found it under its new name -- not the
+    // name it was started with -- and copied it a second time, into "_2",
+    // as "an earlier take".
+    std::printf ("\n17b. A take stopped here and renamed before the launch's look\n");
+    {
+       #if defined(__linux__) || defined(__APPLE__)
+        Fixture f;
+        const auto local = f.take ("2026-10-15_0105_Night 1");
+        const auto renamed = f.staging / "Night 1 - early";
+
+        CardCopier copier (f.factory());
+        copier.setHeld (true);
+
+        auto tracker = std::make_shared<TakeFolderTracker>();
+        check (tracker->open (local.string()), "the take's folder is held");
+        auto job = f.job (local, false, tracker);
+        job.stoppedHere = true;
+        copier.start (job);
+
+        fs::rename (local, renamed);
+        copier.resumePendingIn (f.staging.string());
+        copier.setHeld (false);
+
+        const auto done = collectResults (copier, 1, 15s);
+        std::optional<int> resumed;
+        for (int i = 0; i < 100 && ! resumed.has_value(); ++i)
+        {
+            resumed = copier.takeResumedCount();
+            std::this_thread::sleep_for (10ms);
+        }
+
+        check (resumed == std::optional<int> (0), "the look finds no earlier take: it is this run's own");
+        check (done.size() == 1u && done.front().result.outcome == cardcopy::Outcome::Copied,
+               "the take is copied once");
+        check (fs::exists (f.card / "Night 1 - early") && ! fs::exists (f.card / "Night 1 - early_2"),
+               "and is on the card once, under its new name");
+       #else
+        check (true, "(Windows: no folder tracker)");
+       #endif
+    }
+
     // The FAT32 advice followed: "reformat the card as ExFAT (this erases it)
     // or use another card". Either is a card with another identity, and the
     // take was refused it as "not the one this take is for" for ever.

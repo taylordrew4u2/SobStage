@@ -544,14 +544,50 @@ void CardCopier::scan (State& s, cardcopy::CopyFileSystem& fs, const std::string
     // Here, on the worker: the folders are on this computer, but still disk
     // calls. A platform that cannot follow one holds nothing (null).
     std::vector<std::shared_ptr<TakeFolderTracker>> followed;
+    std::vector<std::string> foundIdentity;
 
     for (const auto& [folder, marker] : found)
     {
         auto tracker = std::make_shared<TakeFolderTracker>();
         followed.push_back (tracker->open (folder) ? std::move (tracker) : nullptr);
+        foundIdentity.push_back (followed.back() != nullptr ? followed.back()->fileIdentity() : std::string());
     }
 
-    const std::lock_guard<std::mutex> lock (s.lock);
+    // Where every take this run already knows is now, and which folder on
+    // the disk it is: one stopped while the copies were held -- behind the
+    // card's check for interrupted takes -- and renamed in Finder since is
+    // found here under its new name, and was copied a second time, into
+    // "<name>_2", as "an earlier take". Asked of the folders themselves,
+    // outside the lock, and asked again if a take was started meanwhile.
+    std::set<std::string> knownPaths, knownFolders;
+    std::unique_lock<std::mutex> lock (s.lock, std::defer_lock);
+
+    for (int round = 0;; ++round)
+    {
+        std::vector<std::shared_ptr<TakeFolderTracker>> trackers;
+        TakeId knownUpTo = 0;
+        {
+            const std::lock_guard<std::mutex> look (s.lock);
+            knownUpTo = s.nextId;
+            for (const auto& [id, record] : s.records)
+                if (record.job.followedFolder != nullptr)
+                    trackers.push_back (record.job.followedFolder);
+        }
+
+        for (const auto& t : trackers)
+        {
+            if (const auto now = t->resolve(); ! now.empty())
+                knownPaths.insert (now);
+            if (const auto identity = t->fileIdentity(); ! identity.empty())
+                knownFolders.insert (identity);
+        }
+
+        lock.lock();
+        if (s.nextId == knownUpTo || round >= 3)
+            break;
+        lock.unlock();
+    }
+
     int added = 0;
 
     for (size_t i = 0; i < found.size(); ++i)
@@ -561,6 +597,10 @@ void CardCopier::scan (State& s, cardcopy::CopyFileSystem& fs, const std::string
         // This run already knows it: started at a Stop, found before, or a
         // take of this run still to be started at its Stop.
         if (s.newestAt.count (folder) > 0 || s.expected.count (folder) > 0)
+            continue;
+
+        // Or it is one of those, under the name it has now.
+        if (knownPaths.count (folder) > 0 || (! foundIdentity[i].empty() && knownFolders.count (foundIdentity[i]) > 0))
             continue;
 
         Job job;

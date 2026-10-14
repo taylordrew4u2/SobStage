@@ -129,6 +129,20 @@ std::string TakeFolderTracker::currentSystemPath() const
 #endif
 }
 
+std::string TakeFolderTracker::fileIdentity() const
+{
+#if defined (__APPLE__) || defined (__linux__)
+    struct stat held {};
+    if (descriptor < 0 || ::fstat (descriptor, &held) != 0)
+        return {};
+
+    return std::to_string (static_cast<unsigned long long> (held.st_dev)) + ":"
+         + std::to_string (static_cast<unsigned long long> (held.st_ino));
+#else
+    return {};
+#endif
+}
+
 std::string TakeFolderTracker::resolve() const
 {
     const auto now = currentSystemPath();
