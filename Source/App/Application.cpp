@@ -3575,25 +3575,20 @@ void Application::reportFinishedCardCopies()
         {
             noteActivity (ActivityLevel::Warning, "Card copy",
                           juce::String (cardcopy::describe (done.result, done.folderNow)), true);
-
-            if (watchingCopiesForQuit && cardcopy::isFailure (done.result.outcome))
-                copyFailuresWhileQuitting.emplace_back (done.result, done.folderNow);
         }
+
+        // A repeat too, which the log leaves out: a quit that waited for the
+        // retry of a card put back must not go without a word when that
+        // retry fails as the one before it did. And one copied after all
+        // drops what was kept for it.
+        copyFailuresWhileQuitting.noteFinished (done.localFolder, done.folderNow, done.result);
     }
 }
 
 juce::String Application::cardCopyFailedWhileQuitting()
 {
     reportFinishedCardCopies();
-
-    if (! watchingCopiesForQuit || copyFailuresTold >= copyFailuresWhileQuitting.size())
-        return {};
-
-    const std::vector<std::pair<cardcopy::Result, std::string>> untold (
-        copyFailuresWhileQuitting.begin() + static_cast<std::ptrdiff_t> (copyFailuresTold),
-        copyFailuresWhileQuitting.end());
-
-    return juce::String (cardcopy::copyFailedBeforeQuitting (untold));
+    return juce::String (cardcopy::copyFailedBeforeQuitting (copyFailuresWhileQuitting.untold()));
 }
 
 juce::String Application::problemToTellBeforeQuitting()
@@ -3609,7 +3604,7 @@ juce::String Application::problemToTellBeforeQuitting()
 
 void Application::problemToldBeforeQuitting()
 {
-    copyFailuresTold = copyFailuresWhileQuitting.size();
+    copyFailuresWhileQuitting.told();
 }
 
 void Application::tickCardCopies()
@@ -3728,12 +3723,10 @@ bool Application::prepareToQuit()
 
     // From here, a copy to the card that fails is asked about before the app
     // goes: the quit may be waiting for exactly that copy.
-    if (! watchingCopiesForQuit)
+    if (! copyFailuresWhileQuitting.isWatching())
     {
         reportFinishedCardCopies();
-        watchingCopiesForQuit = true;
-        copyFailuresWhileQuitting.clear();
-        copyFailuresTold = 0;
+        copyFailuresWhileQuitting.startWatching();
     }
 
     if (isRecording())
@@ -3817,9 +3810,7 @@ void Application::quitCalledOff()
     lastTakeFinishedWhileQuitting = false;
 
     // Its saved-take card and the line under Record say how the copies went.
-    watchingCopiesForQuit = false;
-    copyFailuresWhileQuitting.clear();
-    copyFailuresTold = 0;
+    copyFailuresWhileQuitting.stopWatching();
 }
 
 juce::String Application::resolveSessionFolderName (juce::Time now, const juce::String& name) const

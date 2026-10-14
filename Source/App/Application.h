@@ -160,7 +160,8 @@ public:
     /// garbled a write, or was pulled while the app "finished". Finished
     /// copies are collected (and journalled) here first, so one that failed
     /// a moment ago is never missed for the status tick that has not run.
-    /// A retry that failed as it did before is not news, and is left out.
+    /// A retry that failed as it did before is asked about too: the quit may
+    /// have waited for exactly that retry. A take copied since is not.
     juce::String cardCopyFailedWhileQuitting();
 
     /// unseenProblemWithLastTake() and cardCopyFailedWhileQuitting(), for the
@@ -889,9 +890,7 @@ private:
     // A quit has been asked for: copies to the card that fail from now on are
     // kept, to be asked about before it happens. See
     // cardCopyFailedWhileQuitting().
-    bool watchingCopiesForQuit = false;
-    std::vector<std::pair<cardcopy::Result, std::string>> copyFailuresWhileQuitting;
-    size_t copyFailuresTold = 0;
+    cardcopy::FailuresWhileQuitting copyFailuresWhileQuitting;
 
     // setProofStarvedForTesting(): the UI walk's take that writes nothing.
     bool proofStarvedForTesting = false;

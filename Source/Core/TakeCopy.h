@@ -345,6 +345,52 @@ bool isFailure (Outcome outcome) noexcept;
 std::string copyFailedBeforeQuitting (const std::vector<std::pair<Result, std::string>>& failures,
                                       Wording wording = kThisSystemsWording);
 
+/// The copies to the card that failed after a quit was asked for, kept to be
+/// asked about before the app goes (copyFailedBeforeQuitting): the copy
+/// "Quit When Done" waited for, typically.
+///
+/// Every failure while watching is kept, a repeat of the take's last one
+/// included. The activity log leaves a repeat out -- a retry that found the
+/// card still out is not news there -- but a quit that waited for that retry
+/// and then went without a word left the user with a card that did not hold
+/// the take. And a take copied after all is no longer a failure to ask about.
+class FailuresWhileQuitting
+{
+public:
+    /// The quit was asked for. Asked again while already watching -- the quit
+    /// asks on every poll while the cameras finish -- it changes nothing.
+    void startWatching();
+
+    /// The quit is off: "Don't Quit", or a take started while it waited.
+    /// Nothing kept is asked about at some later quit.
+    void stopWatching();
+
+    bool isWatching() const noexcept { return watching; }
+
+    /// A finished attempt for the take started at `localFolder`, now at
+    /// `folderNow`. A failure is kept while watching, as that take's latest;
+    /// one that copied the take drops whatever was kept for it.
+    void noteFinished (const std::string& localFolder, const std::string& folderNow, const Result& result);
+
+    /// Each take's latest failure not yet told, with where it is now, in the
+    /// order they failed.
+    std::vector<std::pair<Result, std::string>> untold() const;
+
+    /// Everything kept so far has been asked about.
+    void told() noexcept;
+
+private:
+    struct Kept
+    {
+        std::string localFolder, folderNow;
+        Result result;
+        bool told = false;
+    };
+
+    std::vector<Kept> kept;
+    bool watching = false;
+};
+
 /// The takes whose copy did not finish, as the line under Record counts them.
 struct Tally
 {

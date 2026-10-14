@@ -1491,6 +1491,90 @@ TEST_CASE (TakeCopyWording_ACopyThatFailedBeforeQuittingSaysWhereTheTakeIs)
     REQUIRE (two.find ("Late: The card isn't plugged in.") != std::string::npos);
 }
 
+// The bug: "Quit When Done" waited for a retry of a card put back, the reader
+// dropped out again, and the retry failed exactly as the attempt before it.
+// That repeat was left out of the activity log -- rightly -- and out of the
+// failures kept for the quit with it, so the app quit as though the copy had
+// finished. Mutation: noteFinished keeps only a failure unlike the take's last.
+TEST_CASE (TakeCopyQuitWatch_ARetryThatFailsAsBeforeIsStillAskedAbout)
+{
+    const std::string other = "/home/u/RECORDINGS-MIRROR/2026-10-14_1900_Early";
+
+    Result missing;
+    missing.outcome = Outcome::CardMissing;
+    missing.fileName = "session.json";
+
+    FailuresWhileQuitting watch;
+
+    // Before the quit: the first failure is the line under Record's, not the
+    // quit's to ask about.
+    watch.noteFinished (kLocal, kLocal, missing);
+    REQUIRE (watch.untold().empty());
+
+    watch.startWatching();
+    watch.noteFinished (kLocal, kLocal, missing);
+    REQUIRE (watch.untold().size() == 1u);
+    REQUIRE (copyFailedBeforeQuitting (watch.untold()).find ("The copy to the card didn't finish.") == 0);
+
+    // Asked again by the quit's next poll: what is kept stays.
+    watch.startWatching();
+    REQUIRE (watch.untold().size() == 1u);
+
+    // Told, then the same again: news again, one entry per take.
+    watch.told();
+    REQUIRE (watch.untold().empty());
+    watch.noteFinished (kLocal, kLocal, missing);
+    watch.noteFinished (other, other, missing);
+    REQUIRE (watch.untold().size() == 2u);
+    REQUIRE (watch.untold().front().second == kLocal);
+}
+
+// The bug: a failure kept while a quit waited stayed kept after the take was
+// copied after all -- the retry at the next Stop, or the card put back while
+// the combined video was still being made -- and was asked about as a copy
+// that "didn't finish". Mutation: a Copied result leaves what was kept.
+TEST_CASE (TakeCopyQuitWatch_ATakeCopiedSinceIsNotAskedAbout)
+{
+    Result missing;
+    missing.outcome = Outcome::CardMissing;
+    Result copied;
+    copied.outcome = Outcome::Copied;
+
+    FailuresWhileQuitting watch;
+    watch.startWatching();
+    watch.noteFinished (kLocal, kLocal, missing);
+    REQUIRE (watch.untold().size() == 1u);
+
+    // Followed through a rename: the take is the folder it was started at.
+    watch.noteFinished (kLocal, "/home/u/RECORDINGS-MIRROR/Act 1", copied);
+    REQUIRE (watch.untold().empty());
+    REQUIRE (copyFailedBeforeQuitting (watch.untold()).empty());
+}
+
+// The bug: "Quit When Done", then a new take -- the quit is off -- and the
+// failures kept for that wait carried over to the next quit, which reused
+// them because it was still "watching". Mutation: stopWatching keeps them.
+TEST_CASE (TakeCopyQuitWatch_AQuitCalledOffForgetsWhatItKept)
+{
+    Result full;
+    full.outcome = Outcome::CardFull;
+
+    FailuresWhileQuitting watch;
+    watch.startWatching();
+    watch.noteFinished (kLocal, kLocal, full);
+    watch.stopWatching();
+    REQUIRE_FALSE (watch.isWatching());
+    REQUIRE (watch.untold().empty());
+
+    // Not watching: nothing is kept.
+    watch.noteFinished (kLocal, kLocal, full);
+    REQUIRE (watch.untold().empty());
+
+    // The next quit starts from nothing.
+    watch.startWatching();
+    REQUIRE (watch.untold().empty());
+}
+
 // Mutation: the card's identity not compared. The place a card mounts is not
 // the card: Windows hands a card reader's letter to the next USB stick, and a
 // Mac mounts every FAT32 card at /Volumes/NO NAME. A take waiting for its

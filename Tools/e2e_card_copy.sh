@@ -23,6 +23,12 @@
 #            does not quit as though the take were on the card: it says the
 #            copy did not finish and where the take is safe, and stays open
 #            on "Don't Quit"
+#   requit   as quit, for a retry: the copy fails with the card pulled, is
+#            tried again once the card is back, and that retry -- the one
+#            "Quit When Done" waits for -- fails just as the first did. Not
+#            news to the activity log, but still asked about before quitting
+#
+# MMA_E2E_ONLY="quit requit" runs only the scenarios named.
 #
 # The scratch home and the "card" are on one disk, so MMA_TREAT_AS_CARD (test
 # builds only) makes the card folder count as a card, and the shim has the
@@ -71,6 +77,17 @@ trap cleanup EXIT
 
 fail() { echo "  FAIL  $*"; FAILED=$(( FAILED + 1 )); }
 pass() { echo "  PASS  $*"; }
+
+# MMA_E2E_ONLY="quit requit" runs only those scenarios; unset, all of them.
+want() { [ -z "${MMA_E2E_ONLY:-}" ] || [[ " $MMA_E2E_ONLY " == *" $1 "* ]]; }
+
+wait_for_file() {  # path, seconds
+  for _ in $(seq 1 "$(( $2 * 2 ))"); do
+    [ -e "$1" ] && return 0
+    sleep 0.5
+  done
+  return 1
+}
 
 click() {
   local win geo x y
@@ -239,6 +256,7 @@ verify() {  # scenario, take folder, seconds
   fi
 }
 
+if want copy; then
 # -------------------------------------------------------------------------
 echo
 echo "=== A take for the card is recorded on this computer and copied after Stop ==="
@@ -274,7 +292,9 @@ else
 fi
 [ "$FAILED" = "0" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
 stop_app
+fi
 
+if want stall; then
 # -------------------------------------------------------------------------
 echo
 echo "=== The card stops answering during the copy ==="
@@ -324,7 +344,9 @@ else
 fi
 [ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
 stop_app
+fi
 
+if want second; then
 # -------------------------------------------------------------------------
 echo
 echo "=== A second take is started while the first is copying ==="
@@ -395,7 +417,9 @@ else
 fi
 [ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
 stop_app
+fi
 
+if want crash; then
 # -------------------------------------------------------------------------
 echo
 echo "=== The app is killed in the middle of a copy ==="
@@ -463,7 +487,9 @@ else
 fi
 [ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
 stop_app
+fi
 
+if want quit; then
 # -------------------------------------------------------------------------
 echo
 echo "=== Quit When Done, and the copy it waits for fails ==="
@@ -568,6 +594,126 @@ fi
 fi
 [ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
 stop_app
+fi
+
+if want requit; then
+# -------------------------------------------------------------------------
+echo
+echo "=== Quit When Done, and the retry it waits for fails as the first copy did ==="
+# The card is pulled as the take's copy finishes, so the copy fails. The card
+# goes back in and the copy is tried again by itself; the window is closed
+# while that retry is held at its last step, and "Quit When Done" chosen.
+# The reader drops out again, and the retry fails exactly as the first
+# attempt did. A failure like the last one is not news to the activity log,
+# but it is to someone about to leave with the card: the app still asks.
+BEFORE_FAIL=$FAILED
+if [ -z "$WINMSG" ]; then
+  fail "requit: no x11_window_message (needs X11 headers at build time)"
+else
+launch requit fresh MMA_STALL_RENAME_ONTO=session.json
+dismiss_cards
+press_record
+
+if ! TAKE=$(wait_for_new_take "$STAGING"); then
+  fail "requit: no take started"
+else
+  sleep 5
+  touch "$DEAD"
+  press_stop
+  wait_for_log "Saved on this computer" 20 || fail "requit: the take was not saved"
+  dismiss_saved
+
+  wait_for_file "$DEAD.caught" 30 || fail "requit: the copy never reached session.json's rename"
+
+  # Pulled as the copy finishes: its last rename fails, the card gone. Put
+  # back once that failure is in, with the next rename onto session.json
+  # held again.
+  rm -rf "$CARD_ROOT"
+  rm -f "$DEAD"
+  wait_for_file "$DEAD.released" 20 || fail "requit: the held rename never finished"
+  if wait_for_log "The card isn't plugged in" 10; then
+    pass "requit: the first copy failed with the card pulled"
+  else
+    fail "requit: the first copy's failure was not reported"
+  fi
+  FIRST_FAILURES=$(grep -c "The card isn't plugged in" "$LOG" || true)
+
+  rm -f "$DEAD.caught" "$DEAD.released"
+  touch "$DEAD"
+  mkdir -p "$CARD"
+
+  if ! wait_for_file "$DEAD.caught" 40; then
+    fail "requit: the copy was not tried again, once the card was back, up to its last file"
+  else
+    pass "requit: the card back, the copy is tried again by itself and held at its last file"
+
+    MAIN_WIN=$(DISPLAY="$DISPLAY_NUM" xdotool search --name '^SobStage$' | head -1 || true)
+    DISPLAY="$DISPLAY_NUM" "./$WINMSG" "$MAIN_WIN" close
+
+    ASK=""
+    for _ in {1..20}; do
+      ASK=$(DISPLAY="$DISPLAY_NUM" xdotool search --name 'Still saving the copy to the card' 2>/dev/null | head -1 || true)
+      [ -n "$ASK" ] && break
+      sleep 0.5
+    done
+
+    if [ -z "$ASK" ]; then
+      fail "requit: closing the window did not ask about the copy still being saved"
+    else
+      pass "requit: closing the window asked about the copy to the card still being saved"
+      DISPLAY="$DISPLAY_NUM" "./$WINMSG" "$ASK" focus
+      sleep 0.5
+      DISPLAY="$DISPLAY_NUM" xdotool key Return   # Quit When Done
+      sleep 2
+      kill -0 "$APP_PID" 2>/dev/null || fail "requit: the app quit at once instead of waiting for the copy"
+
+      # The reader drops out again: the retry fails just as the first copy did.
+      rm -rf "$CARD_ROOT"
+      rm -f "$DEAD"
+
+      PROBLEM=""
+      for _ in {1..20}; do
+        kill -0 "$APP_PID" 2>/dev/null || break
+        PROBLEM=$(DISPLAY="$DISPLAY_NUM" xdotool search --name 'problem with the take' 2>/dev/null | head -1 || true)
+        [ -n "$PROBLEM" ] && break
+        sleep 0.5
+      done
+
+      AGAIN=$(grep -c "The card isn't plugged in" "$LOG" || true)
+      [ "$AGAIN" = "$FIRST_FAILURES" ] \
+        && echo "  (the retry's failure was a repeat of the first: not written to the log again)"
+
+      if ! kill -0 "$APP_PID" 2>/dev/null; then
+        fail "requit: the app quit as though the take were on the card, after the retry it waited for failed"
+        APP_PID=""
+      elif [ -z "$PROBLEM" ]; then
+        fail "requit: the failed retry was not asked about"
+      else
+        pass "requit: the app asked before quitting, because the retry it waited for failed"
+        DISPLAY="$DISPLAY_NUM" "./$WINMSG" "$PROBLEM" focus
+        sleep 0.5
+        DISPLAY="$DISPLAY_NUM" xdotool key Escape   # Don't Quit
+        sleep 3
+        if kill -0 "$APP_PID" 2>/dev/null; then
+          pass "requit: Don't Quit keeps SobStage open"
+        else
+          fail "requit: SobStage quit after Don't Quit"
+          APP_PID=""
+        fi
+      fi
+
+      if [ -e "$TAKE/.sobstage-card-copy.json" ] && [ -f "$TAKE/MIX.wav" ]; then
+        pass "requit: the take is safe on this computer, still marked to be copied"
+      else
+        fail "requit: the take on this computer lost its mark or its sound"
+      fi
+    fi
+  fi
+fi
+fi
+[ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
+stop_app
+fi
 
 echo
 if [ "$FAILED" = "0" ]; then

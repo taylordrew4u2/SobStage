@@ -929,6 +929,62 @@ std::string copyFailedBeforeQuitting (const std::vector<std::pair<Result, std::s
     return text;
 }
 
+void FailuresWhileQuitting::startWatching()
+{
+    if (watching)
+        return;
+
+    watching = true;
+    kept.clear();
+}
+
+void FailuresWhileQuitting::stopWatching()
+{
+    watching = false;
+    kept.clear();
+}
+
+void FailuresWhileQuitting::noteFinished (const std::string& localFolder, const std::string& folderNow,
+                                          const Result& result)
+{
+    // On the card after all -- the next Stop's retry, or the card put back
+    // while the quit waited for something else: nothing to ask about.
+    if (result.outcome == Outcome::Copied)
+    {
+        kept.erase (std::remove_if (kept.begin(), kept.end(),
+                                    [&localFolder] (const Kept& k) { return k.localFolder == localFolder; }),
+                    kept.end());
+        return;
+    }
+
+    if (! watching || ! isFailure (result.outcome))
+        return;
+
+    // The take's latest attempt replaces its earlier one, told or not: failing
+    // again after the user was told is news again.
+    kept.erase (std::remove_if (kept.begin(), kept.end(),
+                                [&localFolder] (const Kept& k) { return k.localFolder == localFolder; }),
+                kept.end());
+    kept.push_back ({ localFolder, folderNow, result, false });
+}
+
+std::vector<std::pair<Result, std::string>> FailuresWhileQuitting::untold() const
+{
+    std::vector<std::pair<Result, std::string>> out;
+
+    for (const auto& k : kept)
+        if (! k.told)
+            out.emplace_back (k.result, k.folderNow);
+
+    return out;
+}
+
+void FailuresWhileQuitting::told() noexcept
+{
+    for (auto& k : kept)
+        k.told = true;
+}
+
 std::string computerFullNote (const std::string& computerFolder, int takesStillToCopy)
 {
     auto note = "This computer is nearly full, so this take is going straight to the card. To make room, "

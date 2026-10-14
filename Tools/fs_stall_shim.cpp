@@ -26,7 +26,9 @@
  * first one made while the trigger exists; every other call goes straight
  * through. "<trigger>.caught" appears when that rename starts waiting and
  * "<trigger>.released" once it has returned, so a gate can tell that the write
- * it meant to hold was held, and when it has landed.
+ * it meant to hold was held, and when it has landed. Once it is released, the
+ * trigger made again holds the next such rename: a copy retried after the
+ * first one failed can be held at the same step.
  *
  *   MMA_STALL_CARD_FREE_MB  the card reports no more free space than this
  *
@@ -172,8 +174,12 @@ void touchFd (int fd)
         waitWhileCardIsDead();
 }
 
+// A rename is being held, or was and the trigger has not been made again.
+std::atomic<bool> renameHeld { false };
+
 // MMA_STALL_RENAME_ONTO: true for the one rename to hold -- onto the named
-// file under the prefix, while the trigger exists, and the first such.
+// file under the prefix, while the trigger exists, and the first such since
+// the last one held was released.
 bool isTheRenameToHold (const char* to)
 {
     if (renameOnto() == nullptr || to == nullptr || ! underPrefix (to) || ! cardIsDead())
@@ -184,8 +190,7 @@ bool isTheRenameToHold (const char* to)
     if (std::strcmp (slash != nullptr ? slash + 1 : to, renameOnto()) != 0)
         return false;
 
-    static std::atomic<bool> held { false };
-    return ! held.exchange (true);
+    return ! renameHeld.exchange (true);
 }
 
 // "<trigger><suffix>", created empty. The trigger is outside the prefix.
@@ -479,6 +484,9 @@ int rename (const char* from, const char* to)
         const int result = fn (from, to);
         const int savedErrno = errno;
         mark (".released");
+        // The trigger is gone by now: the next rename held is one made after
+        // it is made again.
+        renameHeld.store (false);
         errno = savedErrno;
         return result;
     }

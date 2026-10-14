@@ -51,7 +51,8 @@ public:
     {
         KeepWaiting,     ///< the work is still running, or a question is open
         Quit,            ///< the work is done: quit now
-        StopWaiting,     ///< the wait is over without quitting (a take started)
+        StopWaiting,     ///< the wait had already ended (an answer ended it)
+        CalledOff,       ///< a take started while waiting: the quit is off, as after "Don't Quit"
         AskAboutProblem, ///< the work is done, but a copy to the card failed meanwhile
     };
 

@@ -106,11 +106,14 @@ QuitQuestions::Tick QuitQuestions::onWaitTick (bool recording, bool workRunning,
         return Tick::StopWaiting;
 
     // A new take started while waiting: the quit is off. Quitting by itself
-    // mid-show would be far worse than not quitting.
+    // mid-show would be far worse than not quitting. Called off as "Don't
+    // Quit" calls it off, not merely stopped: what the wait was watching for
+    // -- a copy to the card that failed -- must not be asked about at some
+    // later quit, long after it was copied.
     if (recording)
     {
         reset();
-        return Tick::StopWaiting;
+        return Tick::CalledOff;
     }
 
     // The question on screen decides, even if the work has just finished:

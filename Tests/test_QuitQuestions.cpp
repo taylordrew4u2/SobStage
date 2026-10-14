@@ -134,7 +134,9 @@ TEST_CASE (QuitQuestions_ANewTakeWhileWaitingCallsTheQuitOff)
     REQUIRE (q.onTakeSettled (false, true) == Step::AskAboutWork);
     REQUIRE (q.onWorkAnswered (WorkAnswer::QuitWhenDone) == Next::Wait);
 
-    REQUIRE (q.onWaitTick (true, true) == Tick::StopWaiting);
+    // Called off, as "Don't Quit" would: the app stops watching the copies
+    // the wait was for, so nothing it kept is asked about at a later quit.
+    REQUIRE (q.onWaitTick (true, true) == Tick::CalledOff);
     REQUIRE_FALSE (q.isWaiting());
 
     // The "Stop and Quit" was for the last take; this one is asked about.

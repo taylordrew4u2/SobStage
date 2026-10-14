@@ -491,9 +491,15 @@ private:
                 return;
 
             case QuitQuestions::Tick::StopWaiting:
-                // A new take started while waiting -- the quit is off -- or
-                // the wait had already ended.
+                // The wait had already ended.
                 stopWaitingToQuit();
+                return;
+
+            case QuitQuestions::Tick::CalledOff:
+                // A new take started while waiting: the quit is off, as after
+                // "Don't Quit". A copy failure kept for it would otherwise be
+                // asked about at the next quit, long after it was copied.
+                stayOpen();
                 return;
 
             case QuitQuestions::Tick::Quit:
