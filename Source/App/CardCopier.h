@@ -82,8 +82,11 @@ public:
     CardCopier (const CardCopier&) = delete;
     CardCopier& operator= (const CardCopier&) = delete;
 
-    /// Queues one take. A take already queued or being copied is not queued
-    /// twice. False when quitting.
+    /// Queues one take, at its Stop. Every call is a take of its own, even at
+    /// a folder an earlier take of this run had: take folders are named by
+    /// the minute, so an earlier one renamed or deleted in Finder leaves its
+    /// path to a take armed in the same minute. Neither inherits the other's
+    /// copy. False when quitting.
     bool start (Job job);
 
     /// While held no copy starts, and one under way stops at its next chunk,
@@ -113,13 +116,15 @@ public:
     /// How long the copy under way has gone without moving, or 0 when none is.
     double msSinceProgress() const;
 
+    /// The newest take started at `localFolder`: the one the app means by it.
     View view (const std::string& localFolder) const;
 
     /// Queues again every take whose last attempt failed and matches.
     int retry (const std::function<bool (const cardcopy::Result&)>& shouldRetry);
 
-    /// The user's "Copy again". False when the take is not one this copier
-    /// knows, or it is already queued or under way.
+    /// The user's "Copy again", for the newest take at `localFolder`. False
+    /// when the take is not one this copier knows, or it is already queued or
+    /// under way.
     bool copyAgain (const std::string& localFolder);
 
     /// The combined videos and podcast copies being made are all finished:
@@ -162,6 +167,9 @@ public:
     static constexpr double kStalledAfterMs = 15000.0;
 
 private:
+    /// One take, for the life of this copier. Never reused.
+    using TakeId = uint64_t;
+
     struct Record
     {
         Job job;
@@ -187,10 +195,13 @@ private:
     {
         mutable std::mutex lock;
         std::condition_variable changed;
-        std::deque<std::string> queued;     // keys into records
-        std::map<std::string, Record> records;
+        std::deque<TakeId> queued;
+        std::map<TakeId, Record> records;
+        /// The newest take started at each folder on this computer.
+        std::map<std::string, TakeId> newestAt;
+        TakeId nextId = 1;
         std::vector<Finished> finished;
-        std::string inFlight;
+        TakeId inFlight = 0;                // 0: none
         std::string scanRoot;               // a resumePendingIn() still to do
         std::optional<int> resumedCount;
         bool running = false;
@@ -206,7 +217,11 @@ private:
     std::shared_ptr<State> state;
 
     /// Under the lock. True when the caller must start the worker.
-    static bool enqueueLocked (State& s, const std::string& key, bool atFront = false);
+    static bool enqueueLocked (State& s, TakeId id, bool atFront = false);
+    /// Under the lock: a new record for `job`, now the newest at its folder.
+    static TakeId addTakeLocked (State& s, Job job);
+    /// Under the lock: the newest take at `localFolder`, or nothing.
+    static Record* newestLocked (State& s, const std::string& localFolder, TakeId* id = nullptr);
     void startWorkerIfNeeded (bool needed);
 
     static void run (std::shared_ptr<State> state);

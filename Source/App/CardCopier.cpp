@@ -41,17 +41,17 @@ CardCopier::~CardCopier()
     waitUntilIdle (kShutdownWaitMs);
 }
 
-bool CardCopier::enqueueLocked (State& s, const std::string& key, bool atFront)
+bool CardCopier::enqueueLocked (State& s, TakeId id, bool atFront)
 {
-    if (std::find (s.queued.begin(), s.queued.end(), key) == s.queued.end())
+    if (std::find (s.queued.begin(), s.queued.end(), id) == s.queued.end())
     {
         if (atFront)
-            s.queued.push_front (key);
+            s.queued.push_front (id);
         else
-            s.queued.push_back (key);
+            s.queued.push_back (id);
     }
 
-    auto& record = s.records[key];
+    auto& record = s.records[id];
     record.phase = Phase::Waiting;
     record.done = record.total = 0;
 
@@ -60,6 +60,32 @@ bool CardCopier::enqueueLocked (State& s, const std::string& key, bool atFront)
 
     s.running = true;
     return true;
+}
+
+CardCopier::TakeId CardCopier::addTakeLocked (State& s, Job job)
+{
+    const auto id = s.nextId++;
+    auto& record = s.records[id];
+    record.awaitingFollowUps = job.moreFilesComing;
+    record.job = std::move (job);
+    s.newestAt[record.job.localFolder] = id;
+    return id;
+}
+
+CardCopier::Record* CardCopier::newestLocked (State& s, const std::string& localFolder, TakeId* id)
+{
+    const auto at = s.newestAt.find (localFolder);
+    if (at == s.newestAt.end())
+        return nullptr;
+
+    const auto found = s.records.find (at->second);
+    if (found == s.records.end())
+        return nullptr;
+
+    if (id != nullptr)
+        *id = at->second;
+
+    return &found->second;
 }
 
 void CardCopier::startWorkerIfNeeded (bool needed)
@@ -92,22 +118,9 @@ bool CardCopier::start (Job job)
         if (state->cancelling.load (std::memory_order_acquire))
             return false;
 
-        const auto key = job.localFolder;
-        auto& record = state->records[key];
-
-        if (state->inFlight == key)
-        {
-            record.againWhenDone = true;
-            return true;
-        }
-
-        if (std::find (state->queued.begin(), state->queued.end(), key) != state->queued.end())
-            return true;
-
-        record.awaitingFollowUps = job.moreFilesComing;
-        record.job = std::move (job);
-        record.resync = false;
-        needed = enqueueLocked (*state, key);
+        // A record of its own, even at a folder an earlier take had: that one
+        // keeps its own job, which follows its folder wherever it went.
+        needed = enqueueLocked (*state, addTakeLocked (*state, std::move (job)));
     }
 
     startWorkerIfNeeded (needed);
@@ -143,25 +156,25 @@ std::vector<CardCopier::Finished> CardCopier::collectFinished()
 bool CardCopier::isRunning() const
 {
     const std::lock_guard<std::mutex> lock (state->lock);
-    return ! state->inFlight.empty() || ! state->queued.empty() || ! state->scanRoot.empty();
+    return state->inFlight != 0 || ! state->queued.empty() || ! state->scanRoot.empty();
 }
 
 bool CardCopier::isCopying() const
 {
     const std::lock_guard<std::mutex> lock (state->lock);
-    return ! state->inFlight.empty() && ! state->held.load (std::memory_order_acquire);
+    return state->inFlight != 0 && ! state->held.load (std::memory_order_acquire);
 }
 
 bool CardCopier::hasWorkToFinish() const
 {
     const std::lock_guard<std::mutex> lock (state->lock);
 
-    if (! state->inFlight.empty() || ! state->scanRoot.empty())
+    if (state->inFlight != 0 || ! state->scanRoot.empty())
         return true;
 
-    for (const auto& key : state->queued)
+    for (const auto id : state->queued)
     {
-        const auto found = state->records.find (key);
+        const auto found = state->records.find (id);
 
         // A retry of a card that was out, full or locked is not work a quit
         // cuts short: the marker keeps it for the next launch either way, and
@@ -188,7 +201,7 @@ double CardCopier::msSinceProgress() const
 {
     const std::lock_guard<std::mutex> lock (state->lock);
 
-    if (state->inFlight.empty())
+    if (state->inFlight == 0)
         return 0.0;
 
     return std::chrono::duration<double, std::milli> (Clock::now() - state->lastProgress).count();
@@ -199,11 +212,11 @@ CardCopier::View CardCopier::view (const std::string& localFolder) const
     const std::lock_guard<std::mutex> lock (state->lock);
     View v;
 
-    const auto found = state->records.find (localFolder);
-    if (found == state->records.end())
+    const auto* found = newestLocked (*state, localFolder);
+    if (found == nullptr)
         return v;
 
-    const auto& r = found->second;
+    const auto& r = *found;
     v.phase = r.phase;
     v.done = r.done;
     v.total = r.total;
@@ -224,13 +237,13 @@ int CardCopier::retry (const std::function<bool (const cardcopy::Result&)>& shou
         if (state->cancelling.load (std::memory_order_acquire))
             return 0;
 
-        for (auto& [key, record] : state->records)
+        for (auto& [id, record] : state->records)
         {
             if (record.phase != Phase::StillOnComputer || ! record.last.has_value()
                 || ! shouldRetry (*record.last))
                 continue;
 
-            needed = enqueueLocked (*state, key) || needed;
+            needed = enqueueLocked (*state, id) || needed;
             ++queuedNow;
         }
     }
@@ -249,12 +262,13 @@ bool CardCopier::copyAgain (const std::string& localFolder)
         if (state->cancelling.load (std::memory_order_acquire))
             return false;
 
-        const auto found = state->records.find (localFolder);
-        if (found == state->records.end() || found->second.phase == Phase::Waiting
-            || found->second.phase == Phase::Copying || found->second.job.marker.destinationRoot.empty())
+        TakeId id = 0;
+        const auto* found = newestLocked (*state, localFolder, &id);
+        if (found == nullptr || found->phase == Phase::Waiting
+            || found->phase == Phase::Copying || found->job.marker.destinationRoot.empty())
             return false;
 
-        needed = enqueueLocked (*state, localFolder);
+        needed = enqueueLocked (*state, id);
     }
 
     startWorkerIfNeeded (needed);
@@ -272,7 +286,7 @@ int CardCopier::followUpsFinished()
         if (state->cancelling.load (std::memory_order_acquire))
             return 0;
 
-        for (auto& [key, record] : state->records)
+        for (auto& [id, record] : state->records)
         {
             // Only the takes something was being made for. Every other copied
             // take is left alone: its folder may even have been deleted since,
@@ -297,7 +311,7 @@ int CardCopier::followUpsFinished()
                 continue;
 
             record.resync = true;
-            needed = enqueueLocked (*state, key) || needed;
+            needed = enqueueLocked (*state, id) || needed;
             ++queuedNow;
         }
     }
@@ -341,11 +355,11 @@ CardCopier::Summary CardCopier::summary() const
     const std::lock_guard<std::mutex> lock (state->lock);
     Summary s;
 
-    for (const auto& [key, record] : state->records)
+    for (const auto& [id, record] : state->records)
     {
-        if (key == state->inFlight)
+        if (id == state->inFlight)
         {
-            s.copyingFolder = record.folderNow.empty() ? key : record.folderNow;
+            s.copyingFolder = record.folderNow.empty() ? record.job.localFolder : record.folderNow;
             s.done = record.done;
             s.total = record.total;
         }
@@ -418,14 +432,11 @@ void CardCopier::scan (State& s, cardcopy::CopyFileSystem& fs, const std::string
 
     for (auto& [folder, marker] : found)
     {
-        auto& record = s.records[folder];
-
         // This run already knows it: started at a Stop, or found before.
-        if (record.phase != Phase::None)
+        if (s.newestAt.count (folder) > 0)
             continue;
 
-        record.job = { folder, std::move (marker), nullptr };
-        enqueueLocked (s, folder);
+        enqueueLocked (s, addTakeLocked (s, { folder, std::move (marker), nullptr }));
         ++added;
     }
 
@@ -448,7 +459,7 @@ void CardCopier::run (std::shared_ptr<State> s)
 
     for (;;)
     {
-        std::string key;
+        TakeId key = 0;
         Job job;
         std::string scanRoot;
         bool keepMarker = false;
@@ -507,9 +518,17 @@ void CardCopier::run (std::shared_ptr<State> s)
             if (const auto now = job.followedFolder->resolve(); ! now.empty())
                 folder = now;
 
+        // Not followed to anywhere else, and a later take now has the folder
+        // it was started at: whatever is there is that take, never this one
+        // to be copied under this one's name.
+        bool folderTakenOver = false;
+
         {
             const std::lock_guard<std::mutex> lock (s->lock);
             s->records[key].folderNow = folder;
+
+            const auto newest = s->newestAt.find (job.localFolder);
+            folderTakenOver = folder == job.localFolder && newest != s->newestAt.end() && newest->second != key;
         }
 
         cardcopy::Control control;
@@ -526,7 +545,18 @@ void CardCopier::run (std::shared_ptr<State> s)
             s->lastProgress = Clock::now();
         };
 
-        auto result = cardcopy::copyTake (*fs, folder, job.marker, control);
+        cardcopy::Result result;
+
+        if (folderTakenOver)
+        {
+            result.outcome = cardcopy::Outcome::ComputerCopyMissing;
+            result.cardFolder = job.marker.cardFolder;
+        }
+        else
+        {
+            result = cardcopy::copyTake (*fs, folder, job.marker, control);
+        }
+
         result.addedFilesOnly = addedFilesOnly;
 
         // A file on this computer that went missing mid-copy because the
@@ -541,7 +571,7 @@ void CardCopier::run (std::shared_ptr<State> s)
                 movedTo = now;
 
         const std::lock_guard<std::mutex> lock (s->lock);
-        s->inFlight.clear();
+        s->inFlight = 0;
 
         auto& record = s->records[key];
 
@@ -599,7 +629,7 @@ void CardCopier::run (std::shared_ptr<State> s)
         record.copiedBefore = record.copiedBefore || copied;
 
         if (! quietResync)
-            s->finished.push_back ({ key, folder, result, repeat && ! copied });
+            s->finished.push_back ({ job.localFolder, folder, result, repeat && ! copied });
 
         if (record.againWhenDone)
         {

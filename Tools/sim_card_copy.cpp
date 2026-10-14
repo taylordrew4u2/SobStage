@@ -291,6 +291,26 @@ std::optional<CardCopier::Finished> waitForResult (CardCopier& copier, std::chro
     return std::nullopt;
 }
 
+std::vector<CardCopier::Finished> collectResults (CardCopier& copier, size_t wanted, std::chrono::milliseconds limit)
+{
+    std::vector<CardCopier::Finished> done;
+    const auto until = std::chrono::steady_clock::now() + limit;
+
+    while (done.size() < wanted && std::chrono::steady_clock::now() < until)
+    {
+        for (auto& d : copier.collectFinished())
+            done.push_back (std::move (d));
+        std::this_thread::sleep_for (10ms);
+    }
+
+    // Anything late, so a second report of one take is seen.
+    std::this_thread::sleep_for (300ms);
+    for (auto& d : copier.collectFinished())
+        done.push_back (std::move (d));
+
+    return done;
+}
+
 /// Every file the copy should carry is on the card, byte for byte.
 bool sameOnCard (const fs::path& local, const fs::path& onCard)
 {
@@ -675,8 +695,8 @@ int main()
 
             NativeCopyFileSystem listing;
             std::vector<cardcopy::Entry> entries;
-            const auto r = listing.list (folder.string(), entries);
-            check (r.ok() && entries.size() == 1 && entries.front().name == "MIX.wav",
+            const auto listed = listing.list (folder.string(), entries);
+            check (listed.ok() && entries.size() == 1 && entries.front().name == "MIX.wav",
                    "a listing with an entry that cannot be looked at still lists the rest");
         }
 
@@ -787,6 +807,111 @@ int main()
        #else
         check (true, "(Windows reads back with FILE_FLAG_NO_BUFFERING, which never reads its cache)");
        #endif
+    }
+
+    // Take folders are named by the minute. One renamed or deleted in Finder
+    // leaves its name free, and a take armed in the same minute gets exactly
+    // the path the earlier one had. Each is a take of its own: neither
+    // inherits the other's copy, and neither is reported as the other.
+    std::printf ("\n11. A new take at the folder an earlier take had\n");
+    {
+       #if defined(__linux__) || defined(__APPLE__)
+        Fixture f;
+        const auto path = f.take ("2026-10-14_2230_Show");
+        const auto renamed = f.staging / "Act 1 - Alice";
+
+        auto trackerA = std::make_shared<TakeFolderTracker>();
+        check (trackerA->open (path.string()), "the first take's folder is held");
+
+        CardCopier copier (f.factory());
+        copier.setHeld (true);
+        copier.start (f.job (path, false, trackerA));
+
+        // Renamed while its copy waits, and the next take armed in the same
+        // minute: its folder is the first take's old path, with its own sound.
+        fs::rename (path, renamed);
+        f.take ("2026-10-14_2230_Show");
+        writeBytes (path / "MIX.wav", 3u << 20, 21);
+
+        auto trackerB = std::make_shared<TakeFolderTracker>();
+        trackerB->open (path.string());
+        copier.start (f.job (path, false, trackerB));
+        copier.setHeld (false);
+
+        const auto done = collectResults (copier, 2, 20s);
+        check (done.size() == 2u, "both takes are copied, not one in place of the other");
+        check (sameOnCard (renamed, f.card / "Act 1 - Alice"), "the first take reaches the card under its new name");
+        check (sameOnCard (path, f.card / "2026-10-14_2230_Show"), "the second take reaches the card too");
+        check (! fs::exists (path / cardcopy::kMarkerFileName), "and is no longer marked to be copied");
+
+        const auto second = copier.view (path.string());
+        check (second.phase == CardCopier::Phase::Copied
+                   && second.result.cardFolder == (f.card / "2026-10-14_2230_Show").string(),
+               "its saved-take card names its own folder on the card, not the first take's");
+        check (copier.summary().waiting == 0 && copier.summary().onlyOnComputer == 0, "nothing is left waiting");
+       #else
+        check (true, "(Windows: no folder tracker; covered by 11c)");
+       #endif
+    }
+    {
+        // The first take copied, then deleted from this computer as the guide
+        // suggests; the next take at its path stops with the card out.
+        Fixture f;
+        const auto path = f.take ("2026-10-14_2300_Show");
+
+        CardCopier copier (f.factory());
+        copier.start (f.job (path));
+        const auto first = waitForResult (copier, 15s);
+        check (first.has_value() && first->result.outcome == cardcopy::Outcome::Copied, "11b. the first take is copied");
+
+        fs::remove_all (path);
+        f.take ("2026-10-14_2300_Show");
+        writeBytes (path / "MIX.wav", 3u << 20, 22);
+        fs::rename (f.card.parent_path(), f.base / "CARD-out");
+
+        copier.start (f.job (path));
+        const auto r = waitForResult (copier, 15s);
+        check (r.has_value() && r->result.outcome == cardcopy::Outcome::CardMissing, "the second finds the card out");
+        check (r.has_value() && ! r->result.addedFilesOnly
+                   && cardcopy::describe (r->result, path.string()).find ("This take is on the card") == std::string::npos,
+               "and is not said to be on the card already");
+        check (copier.summary().onlyOnComputer == 1 && copier.summary().addedFilesWaiting == 0,
+               "the status line counts it as only on this computer");
+        fs::rename (f.base / "CARD-out", f.card.parent_path());
+    }
+    {
+        // 11c. As 11 with nothing following the first take's folder (a take
+        // found at launch, or Windows): where it went is not known, and the
+        // folder now at its old path is the second take's, never copied
+        // under the first one's name.
+        Fixture f;
+        const auto path = f.take ("2026-10-14_2330_Show");
+        const auto renamed = f.staging / "Act 2 - Bo";
+
+        CardCopier copier (f.factory());
+        copier.setHeld (true);
+        copier.start (f.job (path));
+        fs::rename (path, renamed);
+        f.take ("2026-10-14_2330_Show");
+        writeBytes (path / "MIX.wav", 3u << 20, 23);
+        copier.start (f.job (path));
+        copier.setHeld (false);
+
+        const auto done = collectResults (copier, 2, 20s);
+        check (done.size() == 2u, "11c. both takes have an answer");
+
+        int copied = 0, lost = 0;
+        for (const auto& d : done)
+        {
+            copied += d.result.outcome == cardcopy::Outcome::Copied ? 1 : 0;
+            lost += d.result.outcome == cardcopy::Outcome::ComputerCopyMissing ? 1 : 0;
+        }
+        check (copied == 1 && lost == 1, "one is copied; the first is said to have left its folder, not copied");
+        check (sameOnCard (path, f.card / "2026-10-14_2330_Show"), "the second take is on the card");
+        check (fs::exists (renamed / cardcopy::kMarkerFileName),
+               "the first stays marked, for the next launch to find");
+        check (copier.view (path.string()).phase == CardCopier::Phase::Copied,
+               "the second take's card reads copied");
     }
 
     std::printf ("\n%s (%d checks, %d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILED", checks, failures);
