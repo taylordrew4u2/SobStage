@@ -41,6 +41,20 @@ public:
     /// the take simply saved. Empty restores the ordinary "Saved." panel.
     void setProblem (const juce::String& text);
 
+    /// A take recorded on this computer and being copied to the card: the
+    /// copy's one line in place of the backup line ("Copying to the card:
+    /// 40%.", "Copied to the card: ..."), and "Copy again" when a copy that
+    /// failed can be tried again. Empty `line` hides it. Cheap to call on a
+    /// timer: nothing moves unless the line or the button changed.
+    void setCardCopy (const juce::String& line, bool canCopyAgain);
+
+    /// Why the take went where it did, when the user should hear it ("This
+    /// computer is nearly full, so this take is going straight to the
+    /// card."). Empty hides it.
+    void setRouteNote (const juce::String& note);
+
+    std::function<void()> onCopyAgain;
+
     /// True when the panel is showing nothing but empty files, which is what a
     /// take that failed to write looks like. The owner uses this to say so
     /// rather than calling it saved.
@@ -74,8 +88,14 @@ private:
     juce::Label mirrorValue;
     juce::Label emptyWarning;
     juce::Label problemLabel;
+    juce::Label routeNote;
+
+    /// The backup line's height: one line for a backup's path, three for the
+    /// card copy's sentence, which names the folder on this computer.
+    int mirrorValueHeight = kRowHeight;
 
     juce::TextButton openButton { "Open the folder" };
+    juce::TextButton copyAgainButton { "Copy again" };
     juce::TextButton doneButton { "Done" };
 
     bool everythingWasEmpty = false;

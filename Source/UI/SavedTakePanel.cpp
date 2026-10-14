@@ -39,6 +39,12 @@ SavedTakePanel::SavedTakePanel()
     styleBody (problemLabel, AppLookAndFeel::danger);
     addChildComponent (problemLabel);
 
+    styleBody (routeNote, AppLookAndFeel::warning);
+    addChildComponent (routeNote);
+
+    copyAgainButton.onClick = [this] { if (onCopyAgain) onCopyAgain(); };
+    addChildComponent (copyAgainButton);
+
     // The offer §6.2 asks for, and the reason this panel exists rather than a
     // status line: a path someone has to retype is a path they will not visit.
     openButton.setColour (juce::TextButton::buttonColourId, AppLookAndFeel::accent);
@@ -123,6 +129,9 @@ void SavedTakePanel::setTake (const juce::String& folder,
     mirrorValue.setVisible (mirrorFolder.isNotEmpty() || mirrorNote.isNotEmpty());
     mirrorValue.setText (mirrorFolder.isNotEmpty() ? "A second copy is in " + mirrorFolder : mirrorNote,
                          juce::dontSendNotification);
+    mirrorValueHeight = kRowHeight;
+    copyAgainButton.setVisible (false);
+    routeNote.setVisible (false);
 
     listHeight = juce::jmin ((int) rows.size(), kMaxVisibleRows) * kRowPitch;
 
@@ -139,6 +148,28 @@ void SavedTakePanel::setProblem (const juce::String& text)
     // nothing went wrong.
     setHeading (text.isNotEmpty() ? "The recording was stopped." : "Saved.", {});
 
+    resized();
+}
+
+void SavedTakePanel::setCardCopy (const juce::String& line, bool canCopyAgain)
+{
+    const bool lineChanged = mirrorValue.getText() != line || mirrorValue.isVisible() != line.isNotEmpty();
+    const bool buttonChanged = copyAgainButton.isVisible() != canCopyAgain;
+
+    if (! lineChanged && ! buttonChanged)
+        return;
+
+    mirrorValue.setText (line, juce::dontSendNotification);
+    mirrorValue.setVisible (line.isNotEmpty());
+    mirrorValueHeight = 3 * kRowHeight;
+    copyAgainButton.setVisible (canCopyAgain);
+    resized();
+}
+
+void SavedTakePanel::setRouteNote (const juce::String& note)
+{
+    routeNote.setText (note, juce::dontSendNotification);
+    routeNote.setVisible (note.isNotEmpty());
     resized();
 }
 
@@ -163,8 +194,11 @@ int SavedTakePanel::getContentHeight() const
     if (problemLabel.isVisible())
         height += 52 + 12;
 
+    if (routeNote.isVisible())
+        height += 52 + 12;
+
     if (mirrorValue.isVisible())
-        height += 10 + kRowHeight;
+        height += 10 + mirrorValueHeight;
 
     if (emptyWarning.isVisible())
         height += 10 + 34;
@@ -178,6 +212,12 @@ void SavedTakePanel::layOutContent (juce::Rectangle<int> area)
     if (problemLabel.isVisible())
     {
         problemLabel.setBounds (area.removeFromTop (52));
+        area.removeFromTop (12);
+    }
+
+    if (routeNote.isVisible())
+    {
+        routeNote.setBounds (area.removeFromTop (52));
         area.removeFromTop (12);
     }
 
@@ -204,7 +244,7 @@ void SavedTakePanel::layOutContent (juce::Rectangle<int> area)
     if (mirrorValue.isVisible())
     {
         area.removeFromTop (10);
-        mirrorValue.setBounds (area.removeFromTop (kRowHeight));
+        mirrorValue.setBounds (area.removeFromTop (mirrorValueHeight));
     }
 
     if (emptyWarning.isVisible())
@@ -217,6 +257,12 @@ void SavedTakePanel::layOutContent (juce::Rectangle<int> area)
     auto buttons = area.removeFromTop (kButtonHeight);
     doneButton.setBounds (buttons.removeFromLeft (90));
     openButton.setBounds (buttons.removeFromRight (juce::jmin (170, buttons.getWidth())));
+
+    if (copyAgainButton.isVisible())
+    {
+        buttons.removeFromRight (8);
+        copyAgainButton.setBounds (buttons.removeFromRight (juce::jmin (120, juce::jmax (0, buttons.getWidth() - 8))));
+    }
 }
 
 } // namespace mma

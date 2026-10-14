@@ -934,6 +934,104 @@ int main()
     }
 
 
+    // A take recorded on this computer for a card: the saved-take card carries
+    // the copy's sentence -- the longest one names the folder on this computer
+    // -- in place of the backup line, with Copy again beside Open the folder,
+    // and the save prompt says where the take is recorded first. Each line
+    // must be drawn whole, inside its card, with nothing on top of it.
+    {
+        std::printf ("\nThe copy to the card is readable on the saved-take card and the save prompt\n");
+
+        const juce::String copyLine ("The card isn't plugged in. This take is safe on this computer in "
+                                     "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/2026-10-12_2100_Late-Show, "
+                                     "and will be copied when the card is back.");
+        const juce::String routeLine ("This computer is nearly full, so this take is going straight to the "
+                                      "card. Delete old takes in /Users/me/RECORDINGS-MIRROR to make room.");
+
+        const auto drawnWhole = [] (juce::Label& label, const juce::String& text)
+        {
+            const auto font = label.getFont();
+            const auto area = label.getBorderSize().subtractedFrom (label.getLocalBounds());
+            const int allowed = juce::jmax (1, (int) ((float) area.getHeight() / font.getHeight()));
+            const float needed = font.getStringWidthFloat (text);
+            return needed < (float) area.getWidth()
+                || (float) allowed > (needed + 80.0f) / (float) area.getWidth();
+        };
+
+        for (const int width : { 1180, 707, 560, 420 })
+        {
+            mma::SavedTakePanel saved;
+            saved.setVisible (true);
+            saved.setTake ("/Users/me/RECORDINGS-MIRROR/2026-10-12_2100_Late-Show", {},
+                           { { "MIX.wav", 412000000 }, { "Mic 1 - Host.wav", 206000000 },
+                             { "Mic 2 - Guest.wav", 206000000 }, { "session.json", 4000 } },
+                           mma::TakeAudioVerdict::Recorded);
+            saved.setRouteNote (routeLine);
+            saved.setCardCopy (copyLine, true);
+            saved.setSize (width, saved.getRequiredHeight() + 32);
+
+            const int cardWidth = juce::jmin (480, juce::jmax (280, width - 32));
+            const auto cardBounds = juce::Rectangle<int> (cardWidth, saved.getRequiredHeight())
+                                        .withCentre (saved.getLocalBounds().getCentre());
+
+            bool ok = true;
+            juce::String detail;
+
+            for (const auto& text : { copyLine, routeLine })
+            {
+                auto* label = findLabel (saved, text);
+                const bool shown = label != nullptr && label->isVisible();
+                const bool whole = shown && drawnWhole (*label, text);
+                const bool inside = shown && cardBounds.contains (label->getBounds());
+                const bool front = shown && saved.getComponentAt (label->getBounds().getCentre()) == label;
+                ok = ok && whole && inside && front;
+                detail << (shown ? juce::String (label->getHeight()) + "px" : juce::String ("missing"))
+                       << (whole ? "" : " CUT OFF") << (inside ? "" : " OUTSIDE") << (front ? "" : " COVERED") << "; ";
+            }
+
+            std::vector<juce::Button*> buttons;
+            for (int i = 0; i < saved.getNumChildComponents(); ++i)
+                if (auto* b = dynamic_cast<juce::Button*> (saved.getChildComponent (i)); b != nullptr && b->isVisible())
+                    buttons.push_back (b);
+
+            bool copyAgainShown = false, overlap = false;
+            for (auto* b : buttons)
+            {
+                copyAgainShown = copyAgainShown || b->getButtonText() == "Copy again";
+                for (auto* other : buttons)
+                    overlap = overlap || (b != other && b->getBounds().intersects (other->getBounds()));
+                ok = ok && cardBounds.contains (b->getBounds()) && b->getWidth() > 40;
+            }
+
+            ok = ok && copyAgainShown && ! overlap;
+            detail << buttons.size() << " buttons" << (copyAgainShown ? "" : ", NO COPY AGAIN")
+                   << (overlap ? ", OVERLAPPING" : "");
+
+            std::printf ("  %s  %4dpx saved-take card: %s\n", ok ? "PASS" : "FAIL", width, detail.toRawUTF8());
+            failures += ok ? 0 : 1;
+
+            mma::SaveLocationPrompt prompt;
+            prompt.setVisible (true);
+            prompt.setPlan ("/Volumes/CARD/RECORDINGS", "2026-10-12_2200_Encore", {},
+                            { "MIX.wav", "Mic 1 - Host.wav", "Mic 2 - Guest.wav", "session.json" }, 0, 0, {},
+                            "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/2026-10-12_2200_Encore");
+            prompt.setSize (width, prompt.getRequiredHeight() + 32);
+
+            const juce::String promptLine ("Recorded on this computer first, then copied to the card when you "
+                                           "stop. This computer keeps its copy in "
+                                           "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/2026-10-12_2200_Encore.");
+            auto* line = findLabel (prompt, promptLine);
+            const bool promptOk = line != nullptr && line->isVisible() && drawnWhole (*line, promptLine)
+                               && prompt.getComponentAt (line->getBounds().getCentre()) == line;
+
+            std::printf ("  %s  %4dpx save prompt: %s\n", promptOk ? "PASS" : "FAIL", width,
+                         line == nullptr ? "line missing"
+                                         : (juce::String (line->getHeight()) + "px tall"
+                                            + (drawnWhole (*line, promptLine) ? "" : ", CUT OFF")).toRawUTF8());
+            failures += promptOk ? 0 : 1;
+        }
+    }
+
     // macOS camera previews are native NSViews stacked above everything JUCE
     // paints in the window, so a card or the take banner cannot be drawn over
     // them. They are hidden instead, for exactly as long as something covers

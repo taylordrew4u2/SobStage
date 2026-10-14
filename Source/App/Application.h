@@ -50,6 +50,8 @@
 #include "CameraController.h"
 #include "PodcastExport.h"
 #include "TakeCombiner.h"
+#include "CardCopier.h"
+#include "../Core/TakeCopy.h"
 #include "AlarmSpeaker.h"
 #include "../Platform/IAudioBackend.h"
 #include "../Platform/VirtualDeviceBackend.h"
@@ -140,8 +142,9 @@ public:
     bool prepareToQuit();
 
     /// The after-take work still running, in words for a quit prompt
-    /// ("the podcast copy", "the combined video", or both). Empty when none.
-    /// Quitting cancels it, so the user is asked before it is thrown away.
+    /// ("the podcast copy", "the combined video", "the copy to the card", or
+    /// several joined). Empty when none. Quitting cancels it, so the user is
+    /// asked before it is thrown away.
     juce::String unfinishedAfterTakeWork() const;
 
     /// What went wrong with the take that just stopped, in words for a quit
@@ -256,6 +259,13 @@ public:
         juce::String mirrorFolder;   // §6.3 second copy, empty when none will run
         juce::String mirrorNote;     // why there is no second copy, when that is known
         juce::StringArray fileNames; // "MIX.wav", "01_Alice.wav", ..., "session.json"
+
+        /// The take is recorded on this computer and copied to the card after
+        /// Stop (TakeRoute::ComputerThenCard); computerFolder is where it is
+        /// recorded. The backup line is left empty then: the take itself is
+        /// the copy on this computer.
+        bool recordsOnComputerFirst = false;
+        juce::String computerFolder;
     };
     PlannedSave planSave (const juce::String& proposedSessionName) const;
 
@@ -324,8 +334,34 @@ public:
         /// False when the folder did not answer in time, so `files` being
         /// empty means "unknown", not "nothing was written".
         bool filesListed = true;
+
+        /// Recorded on this computer and being copied to the card at
+        /// copyRoot; `folder` is the take on this computer.
+        bool copiesToCard = false;
+        juce::String copyRoot;
+        /// Why the take went where it did, when the user should hear it: this
+        /// computer was nearly full, so it went straight to the card.
+        juce::String routeNote;
     };
     bool consumeSavedTake (SavedTake& out);
+
+    /// The card copy of one take recorded on this computer, for the
+    /// saved-take card: one line, whether "Copy again" makes sense, and the
+    /// card folder once the copy is checked.
+    struct CardCopyView
+    {
+        juce::String line;
+        bool canCopyAgain = false;
+        juce::String cardFolderIfCopied;
+    };
+    CardCopyView getCardCopyView (const juce::String& localFolder) const;
+
+    /// For the status line between takes: the copy under way, or how many
+    /// takes are only on this computer. Empty when nothing is pending.
+    juce::String getCardCopySummary() const;
+
+    /// The saved-take card's "Copy again".
+    void copyAgain (const juce::String& localFolder);
 
     /// §4 per-microphone trim, -20..+20 dB in 0.5 dB steps. Persisted against
     /// the physical port so it follows the mic across a replug, and applied
@@ -491,6 +527,15 @@ public:
     bool isMirrorEnabledByUser() const { return mirrorPolicy.isEnabledByUser(); }
     bool isMirroring() const { return mirrorPolicy.isMirroring(); }
     MirrorState getMirrorState() const { return mirrorPolicy.getState(); }
+
+    /// Record on this computer, then copy to the card (see TakeRoute). On by
+    /// default; off records straight to the card exactly as before.
+    void setRecordOnComputerThenCopy (bool enabled);
+    bool isRecordOnComputerThenCopy() const noexcept { return recordOnComputerThenCopy; }
+
+    /// Whether the next take would be recorded on this computer and copied to
+    /// the card, from what the background probe already knows. Never waits.
+    bool wouldRecordOnComputer() const;
 
     /// Fired on the message thread whenever the capture coordinator's meters
     /// have been destroyed and rebuilt (rename, hot-plug, output change, rate
@@ -902,13 +947,59 @@ private:
     CameraController cameraController;
     TakeCombiner takeCombiner;
     PodcastExporter podcastExporter;
+    CardCopier cardCopier;
     std::function<void()> pendingStoppedTakeCompletion;
 
-    /// Holds the combined video while a take records or its movies are still
-    /// being finished (TakeCombiner::setHeldForRecording), and lets it go once
-    /// neither is true. Idempotent; called wherever a take starts or ends, and
-    /// every status tick as a backstop.
-    void syncCombineHold();
+    /// Holds the after-take work while a take records or its movies are still
+    /// being finished, and lets it go once neither is true: the combined video
+    /// (TakeCombiner::setHeldForRecording) and the copy to the card, which is
+    /// also held while a recovery scan is still running. Idempotent; called
+    /// wherever a take starts or ends, and every status tick as a backstop.
+    void syncAfterTakeHolds();
+
+    // Record on this computer, then copy to the card (TakeRoute).
+    bool recordOnComputerThenCopy = true;
+    /// Fixed at arm for the take in progress.
+    TakeRoute currentTakeRoute = TakeRoute::StraightToDestination;
+    /// The save location the take in progress is to be copied to.
+    juce::String currentCopyRoot;
+    bool lastTakeCopiesToCard = false;
+    juce::String lastCopyRoot;
+    /// "This computer is nearly full, so this take is going straight to the
+    /// card." for the take that last armed, or empty.
+    juce::String lastTakeRouteNote;
+    /// The launch's look for takes still marked to be copied has been made.
+    bool pendingCopiesResumed = false;
+    /// When "card missing" and "not finished yet" are next tried again.
+    double nextCopyRetryMs = 0.0;
+    /// Takes whose copy has been said to have stopped answering, so it is
+    /// said once per stall.
+    std::set<juce::String> stallReportedFor;
+
+    /// 1 when the destination is on the disk ~/RECORDINGS-MIRROR is on, 0
+    /// when it is known not to be, -1 when that cannot be told (a card that
+    /// is not plugged in). The probe's last answer; with `mayWait`, asked on a
+    /// disposable worker for up to 1.5 s when the probe has none.
+    int destinationOnThisComputer (bool mayWait) const;
+    /// Whether the probe has answered for the destination as it stands.
+    bool destinationPlacementKnown() const;
+    /// The probe's last firm answer (1 or 0) per destination. A card that has
+    /// stopped answering holds the probe inside its next look, and the copy to
+    /// it may be what it stopped during; the next take must still be able to
+    /// start on this computer, so the answer already given is kept.
+    mutable std::map<std::string, int> placementByDestination;
+    /// The route for the next take. `authoritative` (arm time only) asks the
+    /// disks themselves; otherwise only what the probe already knows.
+    TakeRoute plannedTakeRoute (bool authoritative) const;
+    /// Test builds' MMA_TREAT_AS_CARD=<prefix>: a destination under it counts
+    /// as a card, so the end-to-end gates can exercise the copy on one disk.
+    static bool treatAsCardForTesting (const std::string& destination);
+    /// Everything that refuses a take recorded straight to the destination:
+    /// a full drive, the speed check and its verdict, FAT32 with a camera.
+    juce::String directRecordingBlockedReason() const;
+    /// The status tick's part for the copy: results to the journal, retries,
+    /// the launch resume, and a copy that has stopped answering.
+    void tickCardCopies();
     bool combineVideoAndAudio = false;
     juce::String deliveryTarget;
 
@@ -1287,7 +1378,10 @@ private:
     juce::String resolveSessionFolderName (juce::Time now, const juce::String& name) const;
     /// §6.2 destination folder for a new take, created on disk. Empty on
     /// failure, with the reason in `problem`.
-    juce::String createSessionFolder (juce::Time now, juce::String& problem) const;
+    /// Made under `root`: the save location, or this computer's
+    /// RECORDINGS-MIRROR when `onThisComputer`.
+    juce::String createSessionFolder (juce::Time now, juce::String& problem,
+                                      const juce::String& root, bool onThisComputer) const;
     /// §6.3 local backup folder for a take, created on disk. Empty on failure.
     juce::String createMirrorFolder (const juce::String& sessionFolderName) const;
     /// §6.2 session.json, written at start and rewritten at stop.

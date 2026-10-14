@@ -210,6 +210,10 @@ MainComponent::MainComponent (Application& app)
         application.setMirrorEnabled (enabled);
     };
 
+    advancedPanel.onCopyToCardToggled = [this] (bool enabled) {
+        application.setRecordOnComputerThenCopy (enabled);
+    };
+
     advancedPanel.onDeliveryTargetChanged = [this] (juce::String name) {
         application.setDeliveryTarget (name);
         refreshAdvanced();
@@ -308,7 +312,22 @@ MainComponent::MainComponent (Application& app)
         // folder in the OS file browser rather than opening the files, which
         // is the difference between "here is your recording" and a media
         // player nobody asked for.
-        juce::File (savedTakeFolder).revealToUser();
+        //
+        // A take copied to the card opens on the card once the copy is
+        // checked -- that is where the user is taking it -- and on this
+        // computer until then.
+        juce::String folder = savedTakeFolder;
+
+        if (savedTakeCopiesToCard)
+            if (const auto copied = application.getCardCopyView (savedTakeFolder).cardFolderIfCopied;
+                copied.isNotEmpty())
+                folder = copied;
+
+        juce::File (folder).revealToUser();
+    };
+    savedTakePanel.onCopyAgain = [this] {
+        application.copyAgain (savedTakeFolder);
+        refreshSavedTakeCardCopy();
     };
     savedTakePanel.onDone = [this] {
         savedTakePanel.setVisible (false);
@@ -591,7 +610,8 @@ void MainComponent::showSaveLocationPrompt()
     saveLocationPrompt.setSessionName (mainScreen.getSessionName());
     saveLocationPrompt.setAskEveryTime (application.getAskWhereToSaveEveryTime());
     saveLocationPrompt.setPlan (plan.parentFolder, plan.folderName, plan.mirrorFolder, plan.fileNames,
-                                armedCameraCount, readyCameraCount, plan.mirrorNote);
+                                armedCameraCount, readyCameraCount, plan.mirrorNote,
+                                plan.recordsOnComputerFirst ? plan.computerFolder : juce::String());
 
     saveLocationPrompt.setBlockedReason (application.getRecordDisabledReason());
     // Room for the whole card BEFORE it is shown. ModalCard clamps itself to
@@ -875,12 +895,29 @@ void MainComponent::showSavedTake()
 
     savedTakePanel.setTake (take.folder, take.mirrorFolder, rows, take.verdict, take.filesListed,
                             take.mirrorNote);
+
+    // Recorded on this computer: the card copy's line where the backup line
+    // goes, and the reason a take for the card went straight there.
+    savedTakeCopiesToCard = take.copiesToCard;
+    savedTakePanel.setRouteNote (take.routeNote);
+    if (savedTakeCopiesToCard)
+        refreshSavedTakeCardCopy();
+
     growWindowToFit (savedTakePanel.getRequiredHeight() + 32);
 
     savedTakePanel.setBounds (getLocalBounds());
     savedTakePanel.setVisible (true);
     savedTakePanel.toFront (true);
     savedTakePanel.prepareToShow();
+}
+
+void MainComponent::refreshSavedTakeCardCopy()
+{
+    if (! savedTakeCopiesToCard)
+        return;
+
+    const auto view = application.getCardCopyView (savedTakeFolder);
+    savedTakePanel.setCardCopy (view.line, view.canCopyAgain);
 }
 
 void MainComponent::chooseDestinationFolder (std::function<void()> onChosen)
@@ -1107,7 +1144,10 @@ void MainComponent::refreshStatus()
 
         mainScreen.setSaveLocationText (isRecording
             ? "Saving into " + shortPath (application.getCurrentSessionFolder())
-            : "Saves to " + shortPath (application.getDestinationFolder()));
+            : application.wouldRecordOnComputer()
+                ? "Saves to " + shortPath (application.getDestinationFolder())
+                      + " (recorded on this computer first)"
+                : "Saves to " + shortPath (application.getDestinationFolder()));
 
         // §6.2/§10.6: the files themselves, growing. These are the worker's
         // sampled file sizes rather than names inferred from channel count, so
@@ -1129,9 +1169,15 @@ void MainComponent::refreshStatus()
         else
         {
             // Between takes the line is otherwise empty: a quit waiting for
-            // the combined video or podcast copy is said here.
-            savingLine = quitPendingNote;
+            // the combined video or podcast copy is said here, and otherwise
+            // a take still on its way to the card.
+            savingLine = quitPendingNote.isNotEmpty() ? quitPendingNote
+                                                      : application.getCardCopySummary();
         }
+
+        // The saved-take card follows its copy while it is open.
+        if (savedTakePanel.isVisible())
+            refreshSavedTakeCardCopy();
 
         if (savingLine != lastSavingLine)
         {
@@ -1283,6 +1329,7 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setCombineVideoState (application.getCombineVideoAndAudio(),
                                         application.getCombineUnavailableReason());
     advancedPanel.setMirrorEnabled (application.isMirrorEnabledByUser());
+    advancedPanel.setCopyToCardEnabled (application.isRecordOnComputerThenCopy());
     advancedPanel.setUpdateState (application.getCheckForUpdates(),
                                   application.getUpdateStatusText(),
                                   application.isUpdateAvailable(),

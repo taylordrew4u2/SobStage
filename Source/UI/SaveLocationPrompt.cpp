@@ -98,7 +98,8 @@ void SaveLocationPrompt::setPlan (const juce::String& parentFolder,
                                   const juce::StringArray& fileNames,
                                   int armedCameraCount,
                                   int readyCameraCount,
-                                  const juce::String& mirrorNote)
+                                  const juce::String& mirrorNote,
+                                  const juce::String& computerFolder)
 {
     folderValue.setText (parentFolder, juce::dontSendNotification);
     folderNameValue.setText (folderName, juce::dontSendNotification);
@@ -144,10 +145,20 @@ void SaveLocationPrompt::setPlan (const juce::String& parentFolder,
     // §6.3: a second copy nobody knows about is a second copy nobody finds.
     // And a backup that will not be made for a reason the user can act on
     // (it would share the recording's disk) is said in the same place.
-    mirrorValue.setVisible (mirrorFolder.isNotEmpty() || mirrorNote.isNotEmpty());
-    mirrorValue.setText (mirrorFolder.isNotEmpty() ? "A backup copy also goes to " + mirrorFolder
-                                                   : mirrorNote,
-                         juce::dontSendNotification);
+    mirrorValue.setVisible (mirrorFolder.isNotEmpty() || mirrorNote.isNotEmpty() || computerFolder.isNotEmpty());
+    mirrorValueHeight = computerFolder.isNotEmpty() ? 64 : 32;
+
+    // A take for a card is recorded here and copied when it stops: where it
+    // lands first is where to look if the card copy goes wrong, so it is said
+    // now, in place of the backup line -- the take itself is the copy here.
+    if (computerFolder.isNotEmpty())
+        mirrorValue.setText ("Recorded on this computer first, then copied to the card when you stop. "
+                             "This computer keeps its copy in " + computerFolder + ".",
+                             juce::dontSendNotification);
+    else
+        mirrorValue.setText (mirrorFolder.isNotEmpty() ? "A backup copy also goes to " + mirrorFolder
+                                                       : mirrorNote,
+                             juce::dontSendNotification);
 
     resized();
 }
@@ -205,7 +216,7 @@ int SaveLocationPrompt::getContentHeight() const
         height += 8 + 32;
 
     if (mirrorValue.isVisible())
-        height += 8 + 32;
+        height += 8 + mirrorValueHeight;
 
     if (blockedReason.isVisible())
         height += 8 + 32;
@@ -241,7 +252,7 @@ void SaveLocationPrompt::layOutContent (juce::Rectangle<int> area)
     if (mirrorValue.isVisible())
     {
         area.removeFromTop (8);
-        mirrorValue.setBounds (area.removeFromTop (32));
+        mirrorValue.setBounds (area.removeFromTop (mirrorValueHeight));
     }
 
     if (blockedReason.isVisible())

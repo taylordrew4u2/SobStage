@@ -275,3 +275,21 @@ TEST_CASE (VolumeCapacity_APathOnAMissingCardIsUnderAMissingMountPoint)
     REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("E:\\RECORDINGS", exists));
     REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("", exists));
 }
+
+#if ! defined (_WIN32)
+// The card at /Volumes/<name> is out: its path used to climb to /Volumes, on
+// the startup disk, and so read as "on this computer". Unknown is the true
+// answer -- it is not this computer, as far as anyone can say.
+TEST_CASE (VolumeCapacity_AMissingCardIsAnUnknownDiskNotTheStartupDisk)
+{
+    for (const char* missing : { "/Volumes/SOBSTAGE-NO-SUCH-CARD/RECORDINGS",
+                                 "/media/sobstage-no-such-user/CARD/RECORDINGS",
+                                 "/run/media/sobstage-no-such-user/CARD/RECORDINGS" })
+    {
+        const auto identity = volumeIdentityOf (missing);
+        REQUIRE (identity.device.empty());
+        REQUIRE (identity.physicalDisk.empty());
+        REQUIRE_FALSE (mirrorplacement::sharesDisk (identity, volumeIdentityOf ("/")));
+    }
+}
+#endif

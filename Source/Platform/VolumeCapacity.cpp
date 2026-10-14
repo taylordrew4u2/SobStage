@@ -191,6 +191,17 @@ VolumeIdentity volumeIdentityOf (const std::string& path) noexcept
         if (! root.empty())
             identity.device = "root:" + root;
        #else
+        // A card that is not plugged in is not the startup disk its mount
+        // point's parent (/Volumes, /media/<user>) is on. Climbing there
+        // called the card "on this computer", and a take meant for it went
+        // "straight" into a folder that could not be made.
+        if (volumecapacity::isUnderMissingMountPoint (utf8FromPath (p), [] (const std::string& candidate)
+            {
+                struct stat info {};
+                return ::stat (candidate.c_str(), &info) == 0;
+            }))
+            return identity;
+
         // The backup folder does not exist before its first take: walk up to
         // the nearest folder that does, which is where it will be created.
         for (int depth = 0; depth < 128 && ! p.empty(); ++depth)

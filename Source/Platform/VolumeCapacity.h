@@ -49,6 +49,8 @@ std::optional<uint64_t> availableBytesForRecording (const std::string& path) noe
 /// Which disk `path` (UTF-8) is on, for mirrorplacement::sharesDisk(). A path
 /// that does not exist yet -- the backup folder before its first take -- is
 /// answered for its nearest existing parent, which is where it will be made.
+/// A path on a removable volume that is not mounted (isUnderMissingMountPoint)
+/// is unknown: its mount point's parent is the startup disk, not the card.
 ///
 /// POSIX: st_dev, and on a Mac also the APFS container from statfs, so two
 /// volumes of one container count as one disk. Windows: the drive root.
