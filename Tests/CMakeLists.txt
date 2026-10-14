@@ -74,6 +74,20 @@ target_include_directories(mma_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_test(NAME mma_core_tests COMMAND mma_core_tests)
 
+# The TakeCopy cases again, with the card paths joined by '\' as Windows joins
+# them. Only the Windows runner compiled that spelling, so a case with a '/'
+# baked into an expected card path passed everywhere else and failed there.
+# TakeCopy.cpp is compiled into this binary with the Windows separator; the
+# copy inside mma_core is then never linked in.
+add_executable(mma_takecopy_backslash_tests
+    main.cpp
+    test_TakeCopy.cpp
+    ${PROJECT_SOURCE_DIR}/Source/Core/TakeCopy.cpp)
+target_compile_definitions(mma_takecopy_backslash_tests PRIVATE MMA_TAKECOPY_BACKSLASH_PATHS=1)
+target_link_libraries(mma_takecopy_backslash_tests PRIVATE mma_core mma_warnings)
+target_include_directories(mma_takecopy_backslash_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME mma_takecopy_backslash_tests COMMAND mma_takecopy_backslash_tests)
+
 # Release packaging checks written in Python (standard library only, so any
 # Python 3 runs them): the macOS disk-image window must never put an icon on
 # the first-launch command drawn on its background, the newest release

@@ -273,7 +273,9 @@ std::string joinPath (const std::string& folder, const std::string& name)
         if (isSeparator (folder[i - 1]))
             return folder + folder[i - 1] + name;
 
-   #if defined(_WIN32)
+    // MMA_TAKECOPY_BACKSLASH_PATHS is the Windows spelling compiled on another
+    // system, for mma_takecopy_backslash_tests.
+   #if defined(_WIN32) || defined(MMA_TAKECOPY_BACKSLASH_PATHS)
     return folder + "\\" + name;
    #else
     return folder + "/" + name;

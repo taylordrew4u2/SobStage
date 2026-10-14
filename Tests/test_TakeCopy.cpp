@@ -21,7 +21,9 @@ namespace {
 
 constexpr const char* kLocal = "/home/u/RECORDINGS-MIRROR/2026-10-14_2000_Show";
 constexpr const char* kRoot = "/cards/SD/RECORDINGS";
-constexpr const char* kCardTake = "/cards/SD/RECORDINGS/2026-10-14_2000_Show";
+// Joined as the copy joins it: with '\' on Windows. Spelled out with '/', every
+// case comparing a card path failed there (mma_takecopy_backslash_tests).
+const std::string kCardTake = joinPath (kRoot, "2026-10-14_2000_Show");
 
 constexpr const char* kFinishedRecord =
     "{ \"sessionName\": \"Show\", \"startTimestamp\": \"2026-10-14T20:00:00\", "
@@ -610,7 +612,7 @@ TEST_CASE (TakeCopy_AFailedAttemptForgetsWhatItChecked)
 
     Control control;
     std::set<std::string> verified;
-    verified.insert ("/cards/SD/RECORDINGS/Another_Take/MIX.wav|10");
+    verified.insert (joinPath (joinPath (kRoot, "Another_Take"), "MIX.wav") + "|10");
     control.verified = &verified;
 
     REQUIRE (run (fs, toTheCard(), &control).outcome == Outcome::CardWriteFailed);
@@ -1092,7 +1094,7 @@ TEST_CASE (TakeCopy_NameClashTakesNextFreeNameAndRemembersIt)
     REQUIRE (second.outcome == Outcome::Copied);
     REQUIRE (second.cardFolder == first.cardFolder);
     REQUIRE (fs.folders.count (std::string (kCardTake) + "_3") == 0);
-    REQUIRE (fs.files.count (first.cardFolder + "/MIX.wav") == 1);
+    REQUIRE (fs.files.count (joinPath (first.cardFolder, "MIX.wav")) == 1);
 }
 
 // Mutation: the marker removed before the last file is on the card.
