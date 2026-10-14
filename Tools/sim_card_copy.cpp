@@ -551,7 +551,10 @@ int main()
         const auto r = waitForResult (copier, 20s);
         check (r.has_value() && r->result.outcome == cardcopy::Outcome::Copied,
                "the copy follows the folder and finishes");
-        check (r.has_value() && r->folderNow == renamed.string(), "and names it by its new name");
+        // Compared as folders: a Mac answers with /private/var for /var.
+        std::error_code same;
+        check (r.has_value() && fs::equivalent (fs::path (r->folderNow), renamed, same),
+               "and names it by its new name");
         check (sameOnCard (renamed, f.card / "2026-10-14_2230_Renamed"), "every file reached the card");
        #else
         check (true, "(a folder with open files cannot be renamed on Windows)");
