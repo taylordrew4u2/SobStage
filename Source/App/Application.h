@@ -145,7 +145,7 @@ public:
     /// ("the podcast copy", "the combined video", "the copy to the card", or
     /// several joined). Empty when none. Quitting cancels it, so the user is
     /// asked before it is thrown away.
-    juce::String unfinishedAfterTakeWork() const;
+    juce::String unfinishedAfterTakeWork();
 
     /// What went wrong with the take that just stopped, in words for a quit
     /// question: the card stopped answering, the files hold no sound, a
@@ -975,6 +975,12 @@ private:
     /// Takes whose copy has been said to have stopped answering, so it is
     /// said once per stall.
     std::set<juce::String> stallReportedFor;
+    /// The copies held behind a card check that stopped answering have been
+    /// said to be, once per hold.
+    bool copiesHeldByCardReported = false;
+    /// Copies waiting only for the card's own check for interrupted takes,
+    /// and for longer than a copy is given before the card counts as stuck.
+    bool cardCheckIsHoldingCopies() const;
 
     /// 1 when the destination is on the disk ~/RECORDINGS-MIRROR is on, 0
     /// when it is known not to be, -1 when that cannot be told (a card that
@@ -997,6 +1003,9 @@ private:
     /// Everything that refuses a take recorded straight to the destination:
     /// a full drive, the speed check and its verdict, FAT32 with a camera.
     juce::String directRecordingBlockedReason() const;
+    /// Has every take waiting for its combined video or podcast copy copied
+    /// again, once neither is being made any more.
+    void releaseFinishedFollowUps();
     /// The status tick's part for the copy: results to the journal, retries,
     /// the launch resume, and a copy that has stopped answering.
     void tickCardCopies();

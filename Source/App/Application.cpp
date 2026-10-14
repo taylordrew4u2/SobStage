@@ -1495,7 +1495,7 @@ void Application::syncSleepInhibitor()
     // A copy to the card under way keeps the computer awake too: one cut off
     // by sleep starts its file again, and a lid closed straight after the
     // show is the usual moment.
-    sleepInhibitor.setHeld (isRecording() || cardCopier.isCopying());
+    sleepInhibitor.setHeld (isRecording() || cardCopier.hasWorkToFinish());
 }
 
 void Application::syncAfterTakeHolds()
@@ -3187,6 +3187,9 @@ void Application::toggleRecording()
         // controller's bounded fail-closed timeout) has been observed.
         auto completeStoppedTake = [this, takePeak, arrivedPeak]
         {
+        // A combined video or podcast copy started for this take: its copy to
+        // the card keeps its marker until that file has been copied too.
+        bool moreFilesComing = false;
 
         // The movies finished after the audio did, possibly seconds after. A
         // folder renamed or moved in that gap must not send session.json, the
@@ -3285,7 +3288,9 @@ void Application::toggleRecording()
             }
             else if (plan.hasWork())
             {
-                takeCombiner.start (juce::File (currentSessionFolder), plan, followTakeFolderAfterTheTake());
+                moreFilesComing = takeCombiner.start (juce::File (currentSessionFolder), plan,
+                                                      followTakeFolderAfterTheTake())
+                               || moreFilesComing;
             }
             else if (! plan.problem.empty())
             {
@@ -3314,9 +3319,11 @@ void Application::toggleRecording()
             if (takeCardUnresponsive)
                 noteActivity (ActivityLevel::Warning, "Podcast copy",
                               "No podcast-ready copy was made: the card stopped answering.");
-            else if (! podcastExporter.start (juce::File (currentSessionFolder), "MIX.wav",
-                                              deliveryTarget.toStdString(),
-                                              followTakeFolderAfterTheTake()))
+            else if (podcastExporter.start (juce::File (currentSessionFolder), "MIX.wav",
+                                            deliveryTarget.toStdString(),
+                                            followTakeFolderAfterTheTake()))
+                moreFilesComing = true;
+            else
                 noteActivity (ActivityLevel::Warning, "Podcast copy",
                               "No podcast-ready copy was made for " + deliveryTarget + ".");
         }
@@ -3403,7 +3410,8 @@ void Application::toggleRecording()
         if (lastTakeCopiesToCard)
             copyJob = CardCopier::Job { currentSessionFolder.toStdString(),
                                         { currentCopyRoot.toStdString(), {} },
-                                        followTakeFolderAfterTheTake() };
+                                        followTakeFolderAfterTheTake(),
+                                        moreFilesComing };
 
         recordingEngine.stop();
         recordingStartMs = 0.0;
@@ -3560,8 +3568,30 @@ void Application::tickCardCopies()
             cardCopier.retry ([] (const cardcopy::Result& r)
             {
                 return r.outcome == cardcopy::Outcome::CardMissing
-                    || r.outcome == cardcopy::Outcome::NotFinishedYet;
+                    || r.outcome == cardcopy::Outcome::NotFinishedYet
+                    || r.outcome == cardcopy::Outcome::ComputerReadFailed;
             });
+    }
+
+    // Held behind the card's check for interrupted takes, which the card has
+    // stopped answering: said once, as a stall is.
+    if (cardCheckIsHoldingCopies())
+    {
+        if (! copiesHeldByCardReported)
+        {
+            copiesHeldByCardReported = true;
+            const auto waiting = cardCopier.summary().waiting;
+
+            if (waiting > 0)
+                noteActivity (ActivityLevel::Warning, "Card copy",
+                              juce::String (cardcopy::notAnsweringLine (
+                                  waiting, backupRootFolder().getFullPathName().toStdString())),
+                              true);
+        }
+    }
+    else if (cardCopier.msHeld() <= 0.0)
+    {
+        copiesHeldByCardReported = false;
     }
 
     // Stuck inside one call to the card. Said once per stall; the copy carries
@@ -3625,8 +3655,23 @@ bool Application::prepareToQuit()
         && ! cameraController.isFinalizingRecording();
 }
 
-juce::String Application::unfinishedAfterTakeWork() const
+void Application::releaseFinishedFollowUps()
 {
+    // Once nothing more is being made, every take that was waiting for its
+    // combined video or podcast copy is copied again with it. Asked here as
+    // well as on the status tick, so a quit that comes between the two still
+    // finds that copy to wait for.
+    if (! takeCombiner.isRunning() && ! podcastExporter.isRunning())
+        cardCopier.followUpsFinished();
+}
+
+juce::String Application::unfinishedAfterTakeWork()
+{
+    // Not a plain getter: a combined video or podcast copy that has just
+    // finished starts its take's copy here, so the quit asks about that copy
+    // rather than quitting before the status tick has queued it.
+    releaseFinishedFollowUps();
+
     juce::StringArray work;
 
     if (podcastExporter.isRunning())
@@ -3635,9 +3680,10 @@ juce::String Application::unfinishedAfterTakeWork() const
     if (takeCombiner.isRunning())
         work.add ("the combined video");
 
-    // Only a copy actually under way. One waiting for a card that is out
-    // keeps its note on this computer and goes at the next launch anyway.
-    if (cardCopier.isCopying())
+    // A copy under way, held, or queued a moment ago at Stop -- not one
+    // waiting to retry a card that is out, which keeps its note on this
+    // computer and goes at the next launch anyway.
+    if (cardCopier.hasWorkToFinish())
         work.add ("the copy to the card");
 
     if (work.size() <= 1)
@@ -3926,7 +3972,8 @@ Application::CardCopyView Application::getCardCopyView (const juce::String& loca
     {
         case CardCopier::Phase::None:
         case CardCopier::Phase::Waiting:
-            out.line = "Waiting to copy to the card.";
+            out.line = cardCheckIsHoldingCopies() ? juce::String (cardcopy::stalledLine (where))
+                                                  : juce::String ("Waiting to copy to the card.");
             break;
 
         case CardCopier::Phase::Copying:
@@ -3949,6 +3996,17 @@ Application::CardCopyView Application::getCardCopyView (const juce::String& loca
     return out;
 }
 
+bool Application::cardCheckIsHoldingCopies() const
+{
+    // Held only by the card's own check for interrupted takes -- not by a
+    // take, or its movies being finished -- and for as long as a copy is
+    // given before the card is said to have stopped answering.
+    return ! isRecording() && pendingStoppedTakeCompletion == nullptr
+        && ! cameraController.isFinalizingRecording()
+        && destinationRecoveryTask.isRunning()
+        && cardCopier.msHeld() > CardCopier::kStalledAfterMs;
+}
+
 juce::String Application::getCardCopySummary() const
 {
     const auto s = cardCopier.summary();
@@ -3959,8 +4017,17 @@ juce::String Application::getCardCopySummary() const
             : "Copying " + juce::File (juce::String (s.copyingFolder)).getFileName() + " to the card: "
                   + juce::String (s.total > 0 ? std::min<uint64_t> (100, s.done * 100 / s.total) : 0) + "%.";
 
+    // Queued and not started: said, rather than an empty line that reads as
+    // "nothing left to copy".
+    if (s.waiting > 0)
+        return cardCheckIsHoldingCopies()
+            ? juce::String (cardcopy::notAnsweringLine (s.waiting, backupRootFolder().getFullPathName().toStdString()))
+            : juce::String (cardcopy::waitingLine (s.waiting));
+
     if (s.onlyOnComputer == 0)
-        return {};
+        return s.addedFilesWaiting == 0 ? juce::String()
+             : s.addedFilesWaiting == 1 ? juce::String ("1 take has a file still to copy to the card.")
+                                        : juce::String (s.addedFilesWaiting) + " takes have files still to copy to the card.";
 
     const auto count = s.onlyOnComputer == 1 ? juce::String ("1 take is")
                                               : juce::String (s.onlyOnComputer) + " takes are";
@@ -6018,14 +6085,9 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // the message thread, because the worker that made them may not touch the
     // journal -- and up here, above every early return, so a warning holding
     // the line cannot hold back the news that the copy was saved.
-    bool afterTakeFileAdded = false;
-
     for (const auto& exported : podcastExporter.collectFinished())
-    {
         noteActivity (exported.written ? ActivityLevel::Stopped : ActivityLevel::Warning,
                       "Podcast copy", exported.message, exported.written);
-        afterTakeFileAdded = afterTakeFileAdded || exported.written;
-    }
 
     // The combined videos, likewise, once their run has finished. Failures
     // have their own line further down; this is the news that the file the
@@ -6038,7 +6100,6 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         if (! combine.running && combine.run != 0 && combine.run != announcedCombineRun)
         {
             announcedCombineRun = combine.run;
-            afterTakeFileAdded = true;
 
             if (! combine.written.isEmpty())
                 noteActivity (ActivityLevel::Stopped, "Combined video",
@@ -6051,8 +6112,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
     // A podcast copy or combined video made after a take was copied to the
     // card goes to the card too. Only what is new is written or read back.
-    if (afterTakeFileAdded)
-        cardCopier.requeueCopied();
+    releaseFinishedFollowUps();
 
     tickCardCopies();
 

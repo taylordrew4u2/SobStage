@@ -39,6 +39,10 @@ public:
         /// The take's folder itself, so a copy follows it through a rename
         /// in Finder. Null for a take found at launch.
         std::shared_ptr<TakeFolderTracker> followedFolder;
+        /// A combined video or podcast copy is still being made in the folder.
+        /// The copy keeps the marker on this computer until followUpsFinished()
+        /// has had the take copied again with it.
+        bool moreFilesComing = false;
     };
 
     enum class Phase { None, Waiting, Copying, Copied, StillOnComputer };
@@ -97,6 +101,15 @@ public:
     /// A copy actually under way: in flight, and not held.
     bool isCopying() const;
 
+    /// Copying still to do that quitting would cut off: a copy in flight, held
+    /// or not, or a take queued that is not merely waiting to retry a failure
+    /// (a card that is out, full or locked). A take queued a moment ago at
+    /// Stop counts, before the worker has picked it up.
+    bool hasWorkToFinish() const;
+
+    /// How long copying has been held, or 0 when it is not.
+    double msHeld() const;
+
     /// How long the copy under way has gone without moving, or 0 when none is.
     double msSinceProgress() const;
 
@@ -109,12 +122,12 @@ public:
     /// knows, or it is already queued or under way.
     bool copyAgain (const std::string& localFolder);
 
-    /// Every take already copied goes again, for a combined video or podcast
-    /// copy that has since been added to its folder. Files already checked on
-    /// the card in this run are not read again, so a take with nothing new
-    /// costs no card access at all. A take still being copied goes again once
-    /// it finishes.
-    int requeueCopied();
+    /// The combined videos and podcast copies being made are all finished:
+    /// every take started with moreFilesComing goes again, to copy what was
+    /// added to its folder and let go of its marker. Only those takes; files
+    /// already checked on the card in this run are not read again. A take
+    /// still being copied goes again once it finishes.
+    int followUpsFinished();
 
     /// At launch: looks in `stagingRoot` (on the worker) for take folders
     /// still marked to be copied, and queues them, oldest first.
@@ -133,6 +146,9 @@ public:
         int onlyOnComputer = 0;
         /// How many of those failed because the card was not plugged in.
         int cardMissing = 0;
+        /// Takes already on the card whose added file (a combined video, a
+        /// podcast copy) could not be copied yet. Not counted above.
+        int addedFilesWaiting = 0;
     };
     Summary summary() const;
 
@@ -157,6 +173,14 @@ private:
         bool againWhenDone = false;
         /// A run made only to pick up something added after a finished copy.
         bool resync = false;
+        /// Its combined video or podcast copy is still being made.
+        bool awaitingFollowUps = false;
+        /// An attempt has copied it: anything that fails now is only what was
+        /// added to its folder since.
+        bool copiedBefore = false;
+        /// Gone again after following the folder through a rename: a bound,
+        /// so a folder renamed over and over cannot keep the worker busy.
+        int movedFolderRetries = 0;
     };
 
     struct State
@@ -172,6 +196,7 @@ private:
         bool running = false;
         std::atomic<bool> cancelling { false };
         std::atomic<bool> held { false };
+        std::chrono::steady_clock::time_point heldSince;
         std::chrono::steady_clock::time_point lastProgress;
         /// Worker only.
         std::set<std::string> verified;

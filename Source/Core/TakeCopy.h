@@ -171,6 +171,7 @@ enum class Outcome
     Copied,
     NotFinishedYet,      ///< session.json missing or has no stop time: still recording, or interrupted
     ComputerCopyMissing, ///< the take's folder on this computer is gone
+    ComputerReadFailed,  ///< a file on this computer could not be opened or read, its folder still there
     CardMissing,
     CardFull,
     CardLocked,
@@ -189,6 +190,11 @@ struct Control
     /// Polled before every chunk, written or read back.
     std::function<bool()> shouldYield;
     std::function<void (uint64_t done, uint64_t total)> progress;
+    /// A combined video or podcast copy is still being made in the take's
+    /// folder: a copy that finishes leaves the marker on this computer, so a
+    /// quit or a crash before that file is copied too picks it up at the next
+    /// launch.
+    bool keepMarker = false;
     /// "cardPath|size" of every file already checked on the card in this app
     /// run, so a re-run after a combined video or podcast copy is added reads
     /// back only what is new. Trusted only while the card's listing still
@@ -209,6 +215,9 @@ struct Result
     std::string filesystemType;
     uint64_t bytesCopied = 0;
     int filesCopied = 0;
+    /// An earlier attempt copied the take: this one was for a file added to
+    /// its folder since (a combined video, a podcast copy). Set by the caller.
+    bool addedFilesOnly = false;
 };
 
 /// Copies the finished take in `localFolder` to the card, checks every file
@@ -226,6 +235,13 @@ std::string copyingLine (uint64_t done, uint64_t total);
 
 /// After the card has not answered for a while.
 std::string stalledLine (const std::string& localFolder);
+
+/// "Waiting to copy 2 takes to the card."
+std::string waitingLine (int takes);
+
+/// Takes held back by a check of the card that has not finished: the card
+/// stopped answering before their copies could begin.
+std::string notAnsweringLine (int takes, const std::string& computerFolder);
 
 /// Whether an outcome is one of the copy's failures, reported to the user.
 bool isFailure (Outcome outcome) noexcept;

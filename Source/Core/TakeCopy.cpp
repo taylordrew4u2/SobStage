@@ -331,10 +331,19 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
         }
     }
 
+    // A file on this computer that could not be opened or read: the folder
+    // gone (deleted, or renamed in Finder -- the caller follows a rename), or
+    // a file busy for a moment with something else, which is tried again.
+    const auto computerSide = [&fs, &localFolder, &result] (const std::string& name, const FsResult& r)
+    {
+        return finish (result, fs.exists (localFolder) ? Outcome::ComputerReadFailed : Outcome::ComputerCopyMissing,
+                       name, r.osError);
+    };
+
     // 2. What goes.
     std::vector<Entry> localEntries;
     if (const auto r = fs.list (localFolder, localEntries); ! r.ok())
-        return finish (result, Outcome::ComputerCopyMissing, {}, r.osError);
+        return computerSide ({}, r);
 
     std::map<std::string, uint64_t> localSizes;
     std::vector<std::string> names;
@@ -362,7 +371,7 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
                return verified.count (verifiedKey (joinPath (marker.cardFolder, name), localSizes[name])) > 0;
            }))
     {
-        if (fs.exists (markerPath))
+        if (! control.keepMarker && fs.exists (markerPath))
             (void) fs.remove (markerPath);
 
         return finish (result, Outcome::Copied);
@@ -372,6 +381,23 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
     // the microphones' hub, and the take's own writes come first.
     if (const auto stop = stopRequested (control))
         return finish (result, *stop);
+
+    // Something new to copy for a take whose card folder is already chosen --
+    // a combined video added after the take was copied, which removed the
+    // marker. Remembered on this computer before the card is asked anything,
+    // so a card that is out now, or a quit, still has it copied at the next
+    // launch.
+    const auto rememberOnThisComputer = [&fs, &markerPath] (const Marker& wanted)
+    {
+        const auto text = markerToJson (wanted);
+        std::string onDisk;
+
+        if (! fs.readText (markerPath, onDisk).ok() || onDisk != text)
+            (void) fs.replaceText (markerPath, text);
+    };
+
+    if (! marker.cardFolder.empty())
+        rememberOnThisComputer (marker);
 
     // 3. The card. Its save folder is made if the card is there and the
     //    folder is not, one level only -- never a missing card's mount point
@@ -408,15 +434,8 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
 
     result.cardFolder = cardFolder;
 
-    {
-        const auto wanted = markerToJson ({ root, cardFolder });
-        std::string onDisk;
-
-        // Rewritten when missing too: a re-run for a combined video added
-        // after the copy finished must still be resumed after a crash.
-        if (! fs.readText (markerPath, onDisk).ok() || onDisk != wanted)
-            (void) fs.replaceText (markerPath, wanted);
-    }
+    if (cardFolder != marker.cardFolder)
+        rememberOnThisComputer ({ root, cardFolder });
 
     if (! fs.exists (cardFolder))
         if (const auto r = fs.makeFolder (cardFolder); ! r.ok())
@@ -541,7 +560,7 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
                     continue;
                 case Comparison::Cancelled:   return finish (result, Outcome::Cancelled);
                 case Comparison::Yielded:     return finish (result, Outcome::Yielded);
-                case Comparison::LocalFailed: return finish (result, Outcome::ComputerCopyMissing, name, same.error.osError);
+                case Comparison::LocalFailed: return computerSide (name, same.error);
                 case Comparison::CardFailed:
                     return refusedOnCard (outcomeForCardError (fs, root, same.error), name, same.error);
                 case Comparison::Differ:
@@ -564,7 +583,7 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
 
             auto source = fs.openRead (localPath, false, r);
             if (source == nullptr)
-                return finish (result, Outcome::ComputerCopyMissing, name, r.osError);
+                return computerSide (name, r);
 
             auto writer = fs.createNew (workingPath, r);
             if (writer == nullptr)
@@ -594,7 +613,7 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
                 if (const auto rr = readFully (*source, bufferA.data(), bufferA.size(), got); ! rr.ok())
                 {
                     abandon (writer);
-                    return finish (result, Outcome::ComputerCopyMissing, name, rr.osError);
+                    return computerSide (name, rr);
                 }
 
                 if (got == 0)
@@ -636,7 +655,7 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
                     return finish (result, Outcome::Yielded);
                 case Comparison::LocalFailed:
                     (void) fs.remove (workingPath);
-                    return finish (result, Outcome::ComputerCopyMissing, name, check.error.osError);
+                    return computerSide (name, check.error);
                 case Comparison::CardFailed:
                 {
                     const auto outcome = outcomeForCardError (fs, root, check.error);
@@ -679,8 +698,10 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
 
     // 8. Everything is on the card and checked. The marker going is all that
     //    changes on this computer; if it will not go, the next launch checks
-    //    the card again by comparing and tries once more.
-    (void) fs.remove (markerPath);
+    //    the card again by comparing and tries once more. Kept while a file
+    //    is still being made in the take's folder.
+    if (! control.keepMarker)
+        (void) fs.remove (markerPath);
 
     return finish (result, Outcome::Copied);
 }
@@ -694,10 +715,16 @@ Result copyTake (CopyFileSystem& fs, const std::string& localFolder, const Marke
 
     auto result = copyTakeOnce (fs, localFolder, marker, control, verified);
 
-    // A failed attempt is a card that cannot be trusted with what it held a
-    // moment ago: pulled, swapped, garbled or refusing. The next attempt
-    // checks every file of this take against the card again.
-    if (isFailure (result.outcome))
+    // A failed attempt on the card's side is a card that cannot be trusted
+    // with what it held a moment ago: pulled, swapped, garbled or refusing.
+    // The next attempt checks every file of this take against the card again.
+    // One that failed on this computer's side says nothing about the card.
+    const bool cardSide = isFailure (result.outcome)
+                       && result.outcome != Outcome::NotFinishedYet
+                       && result.outcome != Outcome::ComputerCopyMissing
+                       && result.outcome != Outcome::ComputerReadFailed;
+
+    if (cardSide)
     {
         for (const auto& folder : { marker.cardFolder, result.cardFolder })
         {
@@ -724,6 +751,22 @@ std::string stalledLine (const std::string& localFolder)
     return "The card stopped answering. This take is safe on this computer in " + localFolder + ".";
 }
 
+std::string waitingLine (int takes)
+{
+    return takes == 1 ? std::string ("Waiting to copy 1 take to the card.")
+                      : "Waiting to copy " + std::to_string (takes) + " takes to the card.";
+}
+
+std::string notAnsweringLine (int takes, const std::string& computerFolder)
+{
+    if (takes == 1)
+        return "The card isn't answering, so 1 take is waiting to be copied to it. It's safe on this "
+               "computer in " + computerFolder + ".";
+
+    return "The card isn't answering, so " + std::to_string (takes) + " takes are waiting to be copied "
+           "to it. They're safe on this computer in " + computerFolder + ".";
+}
+
 std::string copyingLine (uint64_t done, uint64_t total)
 {
     uint64_t percent = 0;
@@ -734,7 +777,9 @@ std::string copyingLine (uint64_t done, uint64_t total)
     return "Copying to the card: " + std::to_string (percent) + "%.";
 }
 
-std::string describe (const Result& result, const std::string& localFolder)
+namespace {
+
+std::string describeWholeTake (const Result& result, const std::string& localFolder)
 {
     const auto safe = " This take is safe on this computer in " + localFolder + ".";
     const auto kind = PreflightThroughputTest::filesystemKindFromTypeName (result.filesystemType);
@@ -748,6 +793,10 @@ std::string describe (const Result& result, const std::string& localFolder)
                    + safe;
         case Outcome::ComputerCopyMissing:
             return "This take's folder on this computer is gone, so it couldn't be copied to the card.";
+        case Outcome::ComputerReadFailed:
+            return (result.fileName.empty() ? std::string ("A file") : result.fileName)
+                   + " couldn't be read on this computer just now, so the copy to the card stopped. "
+                     "It will be tried again." + safe;
         case Outcome::CardMissing:
             return "The card isn't plugged in. This take is safe on this computer in " + localFolder
                    + ", and will be copied when the card is back.";
@@ -771,6 +820,26 @@ std::string describe (const Result& result, const std::string& localFolder)
         default:
             return {};
     }
+}
+
+} // namespace
+
+std::string describe (const Result& result, const std::string& localFolder)
+{
+    // The take itself already went: what is missing is only what was added
+    // to its folder since. "Only on this computer" would be untrue of it.
+    if (result.addedFilesOnly && isFailure (result.outcome))
+    {
+        if (result.outcome == Outcome::CardMissing)
+            return "This take is on the card, but a file added to it since isn't yet: the card isn't "
+                   "plugged in. It's safe on this computer in " + localFolder
+                   + ", and will be copied when the card is back.";
+
+        return "This take is on the card, but a file added to it since isn't yet. "
+               + describeWholeTake (result, localFolder);
+    }
+
+    return describeWholeTake (result, localFolder);
 }
 
 } // namespace cardcopy

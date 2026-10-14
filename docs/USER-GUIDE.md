@@ -395,9 +395,19 @@ copies it to the card when you press Stop.
   safe on this computer — "The card isn't plugged in. This take is safe on
   this computer in …, and will be copied when the card is back." A **Copy
   again** button tries once more.
-- **A card that is out is copied when it comes back**, by itself. A card that
-  is full or locked is tried again at the next Stop, or when you press **Copy
-  again**.
+- **A card that is out is copied when it comes back**, by itself. So is a
+  file this computer couldn't read for a moment. A card that is full or
+  locked is tried again at the next Stop, or when you press **Copy again**.
+- **The combined video and the podcast-ready copy go to the card too**, once
+  they are made. Until then the take stays marked to be copied, so if you
+  quit first they are copied at the next launch. If the card is out by then,
+  the take's line says the take is on the card and only the file added since
+  isn't yet.
+- **Renaming the take's folder in Finder or File Explorer while it copies is
+  fine.** The copy follows it.
+- **The line under the record button says what is still to go**: "Waiting to
+  copy 2 takes to the card." If the card stopped answering before a copy
+  could start, it says that instead, and where the takes are safe.
 - **A take started while another is still copying comes first.** The copy
   steps aside, and finishes after you stop.
 - **If this computer is nearly full** — less than 2 GB plus an hour of

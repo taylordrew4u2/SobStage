@@ -66,6 +66,8 @@ public:
 
     /// createNew fails for a path containing the key.
     std::map<std::string, Failure> failCreate;
+    /// openRead fails for a path containing the key: a file busy elsewhere.
+    std::map<std::string, Failure> failOpenRead;
     /// A write fails once the file whose name contains `writeFailPath` has
     /// had `writeFailAfterBytes` written to it.
     std::string writeFailPath;
@@ -233,6 +235,14 @@ public:
     std::unique_ptr<Reader> openRead (const std::string& path, bool bypassCache, FsResult& result) override
     {
         calls.push_back ({ "openRead", path, {}, bypassCache });
+
+        for (const auto& [key, failure] : failOpenRead)
+            if (path.find (key) != std::string::npos)
+            {
+                result = { failure.error, failure.osError };
+                return nullptr;
+            }
+
         const auto it = files.find (path);
         if (it == files.end())
         {
@@ -1145,6 +1155,120 @@ TEST_CASE (TakeCopy_CardPulledMidCopyIsCalledMissing)
     REQUIRE (r.outcome == Outcome::CardMissing);
 }
 
+// Mutation: keepMarker ignored. While a combined video or podcast copy is
+// still being made, a finished copy must leave the note for the next launch.
+TEST_CASE (TakeCopy_TheMarkerStaysWhileMoreFilesAreComing)
+{
+    FakeFs fs;
+    finishedTake (fs);
+    fs.files[local (kMarkerFileName)] = markerToJson (toTheCard());
+
+    Control control;
+    std::set<std::string> verified;
+    control.verified = &verified;
+    control.keepMarker = true;
+
+    const auto first = run (fs, toTheCard(), &control);
+    REQUIRE (first.outcome == Outcome::Copied);
+    REQUIRE (fs.files.count (local (kMarkerFileName)) == 1);
+    REQUIRE (markerFromJson (fs.files[local (kMarkerFileName)])->cardFolder == kCardTake);
+
+    // The last file arrives and goes; then the note goes.
+    fs.addFile (local ("V01_Cam_with-sound.mov"), bytes (5000, 7));
+    control.keepMarker = false;
+    REQUIRE (run (fs, { kRoot, kCardTake }, &control).outcome == Outcome::Copied);
+    REQUIRE (fs.files.count (local (kMarkerFileName)) == 0);
+}
+
+// Mutation: the note written back only after the card is found. A file added
+// after the copy finished, with the card out by then, must still be copied at
+// the next launch.
+TEST_CASE (TakeCopy_ARecopyRemembersTheTakeBeforeAskingTheCard)
+{
+    FakeFs fs;
+    finishedTake (fs);
+    fs.pullCard();
+    REQUIRE (fs.files.count (local (kMarkerFileName)) == 0); // removed by the first copy
+
+    const auto r = run (fs, { kRoot, kCardTake });
+    REQUIRE (r.outcome == Outcome::CardMissing);
+    REQUIRE (fs.files.count (local (kMarkerFileName)) == 1);
+
+    const auto remembered = markerFromJson (fs.files[local (kMarkerFileName)]);
+    REQUIRE (remembered.has_value());
+    REQUIRE (remembered->destinationRoot == kRoot);
+    REQUIRE (remembered->cardFolder == kCardTake);
+}
+
+// Mutation: every local read failure called "the folder is gone". A file busy
+// for a moment -- a combined video still being written, antivirus -- is tried
+// again; only a folder that is really gone is final.
+TEST_CASE (TakeCopy_AFileBusyOnThisComputerIsNotAFolderGone)
+{
+    FakeFs fs;
+    finishedTake (fs);
+    fs.failOpenRead[local ("MIX.wav")] = { FsError::Other, 32 };
+
+    Control control;
+    std::set<std::string> verified;
+    control.verified = &verified;
+
+    const auto r = run (fs, toTheCard(), &control);
+    REQUIRE (r.outcome == Outcome::ComputerReadFailed);
+    REQUIRE (r.fileName == "MIX.wav");
+    REQUIRE (isFailure (r.outcome));
+    REQUIRE (describe (r, kLocal).find ("MIX.wav couldn't be read") == 0);
+    REQUIRE (describe (r, kLocal).find ("tried again") != std::string::npos);
+    // Nothing about the card is in doubt: what it checked is kept.
+    REQUIRE (verified.size() == 2u);
+
+    fs.failOpenRead.clear();
+    REQUIRE (run (fs, { kRoot, r.cardFolder }, &control).outcome == Outcome::Copied);
+
+    // The folder itself gone mid-copy -- renamed or deleted -- is said as
+    // that: the caller follows a rename, and nothing else is worth retrying.
+    struct FolderMovesAway : FakeFs
+    {
+        std::unique_ptr<Reader> openRead (const std::string& path, bool bypassCache, FsResult& result) override
+        {
+            if (path == local ("MIX.wav"))
+            {
+                folders.erase (kLocal);
+                result = { FsError::NotFound, 2 };
+                return nullptr;
+            }
+            return FakeFs::openRead (path, bypassCache, result);
+        }
+    };
+
+    FolderMovesAway moved;
+    finishedTake (moved);
+    REQUIRE (run (moved).outcome == Outcome::ComputerCopyMissing);
+}
+
+// Mutation: a re-copy's failure worded as the whole take being only on this
+// computer, when the take is on the card and only the file added since is not.
+TEST_CASE (TakeCopyWording_AFileAddedLaterIsNotTheWholeTake)
+{
+    const std::string where = "/Users/sam/RECORDINGS-MIRROR/2026-10-14_2000_Show";
+
+    Result r;
+    r.outcome = Outcome::CardMissing;
+    r.addedFilesOnly = true;
+    const auto line = describe (r, where);
+    REQUIRE (line.find ("This take is on the card, but a file added to it since isn't yet") == 0);
+    REQUIRE (line.find ("will be copied when the card is back") != std::string::npos);
+    REQUIRE (line.find (where) != std::string::npos);
+
+    r.outcome = Outcome::CardFull;
+    REQUIRE (describe (r, where).find ("This take is on the card, but a file added to it since isn't yet. "
+                                       "The card is full.") == 0);
+
+    r.outcome = Outcome::Copied;
+    r.cardFolder = "/Volumes/SD/RECORDINGS/2026-10-14_2000_Show";
+    REQUIRE (describe (r, where) == "Copied to the card: /Volumes/SD/RECORDINGS/2026-10-14_2000_Show.");
+}
+
 TEST_CASE (TakeCopy_TheComputerCopyGoneIsSaid)
 {
     FakeFs fs;
@@ -1222,7 +1346,8 @@ TEST_CASE (TakeCopyWording_EveryFailureNamesWhereTheTakeIsInPlainWords)
     for (const auto outcome : { Outcome::NotFinishedYet, Outcome::CardMissing, Outcome::CardFull,
                                 Outcome::CardLocked, Outcome::NotAllowed, Outcome::FileTooBig,
                                 Outcome::NameTakenOnCard, Outcome::CopyDidNotMatch,
-                                Outcome::CardWriteFailed, Outcome::ComputerCopyMissing })
+                                Outcome::CardWriteFailed, Outcome::ComputerCopyMissing,
+                                Outcome::ComputerReadFailed })
     {
         Result r;
         r.outcome = outcome;

@@ -104,6 +104,7 @@ bool CardCopier::start (Job job)
         if (std::find (state->queued.begin(), state->queued.end(), key) != state->queued.end())
             return true;
 
+        record.awaitingFollowUps = job.moreFilesComing;
         record.job = std::move (job);
         record.resync = false;
         needed = enqueueLocked (*state, key);
@@ -123,6 +124,9 @@ void CardCopier::setHeld (bool held)
         // between its check and its wait.
         const std::lock_guard<std::mutex> lock (state->lock);
         state->held.store (held, std::memory_order_release);
+
+        if (held)
+            state->heldSince = Clock::now();
     }
 
     state->changed.notify_all();
@@ -146,6 +150,38 @@ bool CardCopier::isCopying() const
 {
     const std::lock_guard<std::mutex> lock (state->lock);
     return ! state->inFlight.empty() && ! state->held.load (std::memory_order_acquire);
+}
+
+bool CardCopier::hasWorkToFinish() const
+{
+    const std::lock_guard<std::mutex> lock (state->lock);
+
+    if (! state->inFlight.empty() || ! state->scanRoot.empty())
+        return true;
+
+    for (const auto& key : state->queued)
+    {
+        const auto found = state->records.find (key);
+
+        // A retry of a card that was out, full or locked is not work a quit
+        // cuts short: the marker keeps it for the next launch either way, and
+        // asking would hold every quit while the card stays out.
+        if (found == state->records.end() || ! found->second.last.has_value()
+            || ! cardcopy::isFailure (found->second.last->outcome))
+            return true;
+    }
+
+    return false;
+}
+
+double CardCopier::msHeld() const
+{
+    const std::lock_guard<std::mutex> lock (state->lock);
+
+    if (! state->held.load (std::memory_order_acquire))
+        return 0.0;
+
+    return std::chrono::duration<double, std::milli> (Clock::now() - state->heldSince).count();
 }
 
 double CardCopier::msSinceProgress() const
@@ -225,7 +261,7 @@ bool CardCopier::copyAgain (const std::string& localFolder)
     return true;
 }
 
-int CardCopier::requeueCopied()
+int CardCopier::followUpsFinished()
 {
     int queuedNow = 0;
     bool needed = false;
@@ -238,14 +274,25 @@ int CardCopier::requeueCopied()
 
         for (auto& [key, record] : state->records)
         {
+            // Only the takes something was being made for. Every other copied
+            // take is left alone: its folder may even have been deleted since,
+            // as the guide suggests once the card's copy is checked.
+            if (! record.awaitingFollowUps)
+                continue;
+
+            record.awaitingFollowUps = false;
+
             // Under way or waiting: it may already have listed its folder
-            // before the new file arrived, so it goes once more afterwards.
+            // before the new file arrived, so it goes once more afterwards,
+            // and lets go of the marker then.
             if (record.phase == Phase::Copying || record.phase == Phase::Waiting)
             {
                 record.againWhenDone = true;
                 continue;
             }
 
+            // A failed copy already kept its marker and is retried as before;
+            // the retry carries the new file with it.
             if (record.phase != Phase::Copied)
                 continue;
 
@@ -309,6 +356,12 @@ CardCopier::Summary CardCopier::summary() const
         else if (record.phase == Phase::StillOnComputer && record.last.has_value()
                  && record.last->outcome != cardcopy::Outcome::ComputerCopyMissing)
         {
+            if (record.last->addedFilesOnly)
+            {
+                ++s.addedFilesWaiting;
+                continue;
+            }
+
             ++s.onlyOnComputer;
 
             if (record.last->outcome == cardcopy::Outcome::CardMissing)
@@ -398,6 +451,8 @@ void CardCopier::run (std::shared_ptr<State> s)
         std::string key;
         Job job;
         std::string scanRoot;
+        bool keepMarker = false;
+        bool addedFilesOnly = false;
 
         {
             std::unique_lock<std::mutex> lock (s->lock);
@@ -431,6 +486,8 @@ void CardCopier::run (std::shared_ptr<State> s)
                 record.done = record.total = 0;
                 record.againWhenDone = false;
                 job = record.job;
+                keepMarker = record.awaitingFollowUps;
+                addedFilesOnly = record.copiedBefore;
                 s->inFlight = key;
                 s->lastProgress = Clock::now();
             }
@@ -442,13 +499,21 @@ void CardCopier::run (std::shared_ptr<State> s)
             continue;
         }
 
-        // Where the take is now, followed through a rename in Finder.
+        // Where the take is now, followed through a rename in Finder, and
+        // said from the start: the status line and the saved-take card name
+        // the folder as it is while the copy runs, not as it was at Stop.
         auto folder = job.localFolder;
         if (job.followedFolder != nullptr)
             if (const auto now = job.followedFolder->resolve(); ! now.empty())
                 folder = now;
 
+        {
+            const std::lock_guard<std::mutex> lock (s->lock);
+            s->records[key].folderNow = folder;
+        }
+
         cardcopy::Control control;
+        control.keepMarker = keepMarker;
         control.cancel = &s->cancelling;
         control.verified = &s->verified;
         control.shouldYield = [&s] { return s->held.load (std::memory_order_acquire); };
@@ -462,12 +527,36 @@ void CardCopier::run (std::shared_ptr<State> s)
         };
 
         auto result = cardcopy::copyTake (*fs, folder, job.marker, control);
+        result.addedFilesOnly = addedFilesOnly;
+
+        // A file on this computer that went missing mid-copy because the
+        // folder was renamed in Finder: the folder is followed, and the copy
+        // carries on from where it is now. What was checked on the card stays
+        // checked, so nothing is written twice.
+        std::string movedTo;
+        if ((result.outcome == cardcopy::Outcome::ComputerCopyMissing
+             || result.outcome == cardcopy::Outcome::ComputerReadFailed)
+            && job.followedFolder != nullptr)
+            if (const auto now = job.followedFolder->resolve(); ! now.empty() && now != folder)
+                movedTo = now;
 
         const std::lock_guard<std::mutex> lock (s->lock);
         s->inFlight.clear();
 
         auto& record = s->records[key];
-        record.folderNow = folder;
+
+        if (! movedTo.empty() && record.movedFolderRetries < 3
+            && ! s->cancelling.load (std::memory_order_acquire))
+        {
+            ++record.movedFolderRetries;
+            record.folderNow = movedTo;
+            if (! result.cardFolder.empty())
+                record.job.marker.cardFolder = result.cardFolder;
+            enqueueLocked (*s, key, true);
+            continue;
+        }
+
+        record.movedFolderRetries = 0;
 
         // The folder it chose on the card, kept for the next attempt so a take
         // is never copied twice into "_2" and "_3".
@@ -493,9 +582,21 @@ void CardCopier::run (std::shared_ptr<State> s)
         const bool repeat = sameAttempt (record.last, result);
         const bool quietResync = copied && record.resync && result.filesCopied == 0;
 
+        // A take already copied whose folder on this computer has since been
+        // deleted -- as the guide suggests once the card's copy is checked --
+        // is still copied. Nothing to say about it.
+        if (record.resync && result.outcome == cardcopy::Outcome::ComputerCopyMissing)
+        {
+            record.phase = Phase::Copied;
+            record.resync = false;
+            record.againWhenDone = false;
+            continue;
+        }
+
         record.phase = copied ? Phase::Copied : Phase::StillOnComputer;
         record.last = result;
         record.resync = false;
+        record.copiedBefore = record.copiedBefore || copied;
 
         if (! quietResync)
             s->finished.push_back ({ key, folder, result, repeat && ! copied });

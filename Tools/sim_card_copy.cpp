@@ -265,9 +265,10 @@ struct Fixture
         return [g] { return std::make_unique<CountingFs> (g); };
     }
 
-    CardCopier::Job job (const fs::path& folder)
+    CardCopier::Job job (const fs::path& folder, bool moreFilesComing = false,
+                         std::shared_ptr<TakeFolderTracker> followed = nullptr)
     {
-        return { folder.string(), { card.string(), {} }, nullptr };
+        return { folder.string(), { card.string(), {} }, std::move (followed), moreFilesComing };
     }
 };
 
@@ -324,9 +325,15 @@ int main()
         Fixture f;
         const auto local = f.take ("2026-10-14_2000_Show");
         const auto before = readAll (local / "MIX.wav");
+        // Another take, copied before, with nothing still being made for it.
+        const auto earlier = f.take ("2026-10-14_1930_Earlier");
 
         CardCopier copier (f.factory());
-        check (copier.start (f.job (local)), "the take is queued");
+        check (copier.start (f.job (earlier)), "an earlier take is queued");
+        check (waitForResult (copier, 15s).has_value(), "and copied");
+
+        // A combined video is still being made for this one.
+        check (copier.start (f.job (local, true)), "the take is queued");
         const auto r = waitForResult (copier, 15s);
 
         check (r.has_value() && r->result.outcome == cardcopy::Outcome::Copied, "the take is copied");
@@ -334,19 +341,25 @@ int main()
         check (r.has_value() && r->result.cardFolder == onCard.string(), "into a folder of the same name");
         check (sameOnCard (local, onCard), "every file on the card matches the computer's, byte for byte");
         check (! workingFilesOn (onCard), "no .sobcopy file is left on the card");
-        check (! fs::exists (local / cardcopy::kMarkerFileName), "the marker is gone from the computer");
+        check (fs::exists (local / cardcopy::kMarkerFileName),
+               "the marker stays on the computer while its combined video is being made");
         check (fs::exists (local / "MIX.wav") && readAll (local / "MIX.wav") == before,
                "the computer's copy is still there, unchanged");
-        check (f.gate->cardReadsPastCache == 4, "each of the 4 files was read back past the cache");
+        check (f.gate->cardReadsPastCache == 8, "each of the 4 files of both takes was read back past the cache");
         check (! copier.isRunning(), "nothing is left running");
+        check (! copier.hasWorkToFinish(), "and nothing a quit would cut off");
 
-        // 5. A combined video arrives after the copy: only it goes.
+        // 5. The combined video arrives after the copy: only it goes, and
+        //    only for the take it was made for.
         std::printf ("\n5. Another pass after a combined video is added\n");
         writeBytes (local / "V01_Cam_with-sound.mov", 1u << 20, 9);
+        fs::remove_all (earlier); // deleted from this computer once on the card
         f.gate->reset();
-        check (copier.requeueCopied() == 1, "the copied take goes again");
+        check (copier.followUpsFinished() == 1, "only the take it was made for goes again");
+        check (copier.hasWorkToFinish(), "which a quit now waits for");
         const auto again = waitForResult (copier, 15s);
-        check (again.has_value() && again->result.outcome == cardcopy::Outcome::Copied, "and is copied");
+        check (again.has_value() && again->result.outcome == cardcopy::Outcome::Copied
+                   && again->localFolder == local.string(), "and is copied");
         check (f.gate->created.size() == 1u
                    && f.gate->created.front().find ("V01_Cam_with-sound.mov") != std::string::npos,
                "only the new file is written");
@@ -354,6 +367,41 @@ int main()
                    && f.gate->readBack.front().find ("V01_Cam_with-sound.mov") != std::string::npos,
                "and the card is read 0 times for the files already checked");
         check (sameOnCard (local, onCard), "the card has the combined video too");
+        check (! fs::exists (local / cardcopy::kMarkerFileName), "and only now is the marker gone");
+        check (copier.collectFinished().empty(), "the deleted earlier take is not said to be missing");
+        check (copier.followUpsFinished() == 0, "and nothing goes twice");
+    }
+
+    std::printf ("\n5b. A combined video that finishes with the card out\n");
+    {
+        Fixture f;
+        const auto local = f.take ("2026-10-14_2015_Out");
+
+        CardCopier copier (f.factory());
+        copier.start (f.job (local, true));
+        check (waitForResult (copier, 15s).has_value(), "the take is copied");
+
+        writeBytes (local / "V01_Cam_with-sound.mov", 1u << 20, 9);
+        const auto cardRoot = f.card.parent_path();
+        fs::rename (cardRoot, f.base / "CARD-out");
+        copier.followUpsFinished();
+        const auto r = waitForResult (copier, 15s);
+
+        check (r.has_value() && r->result.outcome == cardcopy::Outcome::CardMissing, "the card is out");
+        check (r.has_value() && r->result.addedFilesOnly, "and it is said to be only the added file");
+        check (r.has_value() && cardcopy::describe (r->result, local.string()).find ("This take is on the card") == 0,
+               "in words that do not call the take only on this computer");
+        check (copier.summary().onlyOnComputer == 0 && copier.summary().addedFilesWaiting == 1,
+               "the status line counts it as a file still to copy");
+        check (fs::exists (local / cardcopy::kMarkerFileName), "the marker is there for the next launch");
+        check (! copier.hasWorkToFinish(), "a quit does not wait for a card that is out");
+
+        copier.setHeld (true);
+        check (copier.retry ([] (const cardcopy::Result&) { return true; }) == 1, "the retry is queued");
+        check (! copier.hasWorkToFinish(), "nor for a retry of it, queued and not yet tried");
+        copier.setHeld (false);
+        check (waitForResult (copier, 15s).has_value(), "the retry finds the card still out");
+        fs::rename (f.base / "CARD-out", cardRoot);
     }
 
     std::printf ("\n2. Held before it starts\n");
@@ -370,6 +418,9 @@ int main()
         check (f.gate->allCalls == 0, "and waits rather than trying again and again (no calls at all)");
         check (copier.isRunning(), "it is waiting");
         check (! copier.isCopying(), "and is not counted as copying");
+        check (copier.hasWorkToFinish(), "but a quit still counts it as copying to finish");
+        check (copier.summary().waiting == 1, "the status line counts it as waiting");
+        check (copier.msHeld() >= 400.0, "and how long it has been held is known");
         check (copier.view (local.string()).phase == CardCopier::Phase::Waiting, "its take reads as waiting");
 
         copier.setHeld (false);
@@ -423,6 +474,42 @@ int main()
         const auto r = waitForResult (copier, 20s);
         check (r.has_value() && r->result.outcome == cardcopy::Outcome::Copied, "released, it finishes");
         check (sameOnCard (local, onCard), "and the card matches, movie included");
+    }
+
+    std::printf ("\n3b. The take's folder renamed on this computer mid-copy\n");
+    {
+       #if defined(__linux__) || defined(__APPLE__)
+        Fixture f;
+        const auto local = f.take ("2026-10-14_2230_Renamed", 3 * cardcopy::kChunkBytes);
+        const auto renamed = f.staging / "Show - Kai";
+
+        auto tracker = std::make_shared<TakeFolderTracker>();
+        check (tracker->open (local.string()), "the folder is held");
+
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->blockWritesTo = "V01_Cam.mov";
+            f.gate->afterWrites = 1;
+            f.gate->open = false;
+        }
+
+        CardCopier copier (f.factory());
+        copier.start (f.job (local, false, tracker));
+        check (f.gate->waitUntilBlocked (15s), "the copy is part way through the movie");
+        check (copier.view (local.string()).folderNow == local.string(),
+               "while it runs, it names the folder where it is");
+
+        fs::rename (local, renamed);
+        f.gate->release();
+
+        const auto r = waitForResult (copier, 20s);
+        check (r.has_value() && r->result.outcome == cardcopy::Outcome::Copied,
+               "the copy follows the folder and finishes");
+        check (r.has_value() && r->folderNow == renamed.string(), "and names it by its new name");
+        check (sameOnCard (renamed, f.card / "2026-10-14_2230_Renamed"), "every file reached the card");
+       #else
+        check (true, "(a folder with open files cannot be renamed on Windows)");
+       #endif
     }
 
     std::printf ("\n4. Quitting while the card is stuck inside a write\n");
