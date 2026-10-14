@@ -115,6 +115,15 @@ struct EndpointSpec
     /// the bus between being listed and being opened, or E_ACCESSDENIED.
     long activateError = 0;
 
+    /// Non-zero: every IsFormatSupported answers this HRESULT -- for instance
+    /// AUDCLNT_E_DEVICE_INVALIDATED, a microphone that dropped off the bus
+    /// after Activate, while its formats were being asked about.
+    long formatQuestionError = 0;
+
+    /// With formatQuestionError: GetState reports the endpoint gone too once
+    /// a format has been asked about, as Windows does after a removal.
+    bool goneAfterFormatQuestion = false;
+
     /// When set, the first Initialize returns AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED
     /// and reports this size, which the backend must retry at.
     int alignedFrames = 0;

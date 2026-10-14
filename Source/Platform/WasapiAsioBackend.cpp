@@ -350,19 +350,33 @@ WAVEFORMATEXTENSIBLE makePcmFormat (double sampleRate, int channels, int contain
 }
 
 // Use the same layouts for capability discovery and stream opening.
+//
+// `invalidated`, when given, is set once the device answers that it has gone
+// (AUDCLNT_E_DEVICE_INVALIDATED): a microphone that dropped off the bus while
+// its formats were being asked about refused every one of them, and was taken
+// for one that only refuses the sample rate. Nothing more is asked of it.
 bool findExclusiveFormat (IAudioClient* client, double rate, int channels,
-                          WAVEFORMATEXTENSIBLE& format)
+                          WAVEFORMATEXTENSIBLE& format, bool* invalidated = nullptr)
 {
     const int layouts[][2] = { { 32, 0 }, { 32, 32 }, { 32, 24 }, { 24, 24 }, { 16, 16 } };
     for (const auto& layout : layouts)
     {
         const auto candidate = layout[1] == 0 ? makeFloat32Format (rate, channels)
                                              : makePcmFormat (rate, channels, layout[0], layout[1]);
-        if (client->IsFormatSupported (AUDCLNT_SHAREMODE_EXCLUSIVE,
-                                      &candidate.Format, nullptr) == S_OK)
+        const auto answer = client->IsFormatSupported (AUDCLNT_SHAREMODE_EXCLUSIVE, &candidate.Format, nullptr);
+
+        if (answer == S_OK)
         {
             format = candidate;
             return true;
+        }
+
+        if (answer == AUDCLNT_E_DEVICE_INVALIDATED)
+        {
+            if (invalidated != nullptr)
+                *invalidated = true;
+
+            return false;
         }
     }
     return false;
@@ -381,7 +395,7 @@ bool findExclusiveFormat (IAudioClient* client, double rate, int channels,
 /// incapable, and the user blamed a Windows setting, for hardware the open
 /// would have taken on its next candidate.
 bool findExclusiveFormatForAnyChannelCount (IAudioClient* client, double rate, bool isInput,
-                                            WAVEFORMATEXTENSIBLE& format)
+                                            WAVEFORMATEXTENSIBLE& format, bool* invalidated = nullptr)
 {
     int channelCandidates[3] = { isInput ? 1 : 2, isInput ? 2 : 1, 0 };
     int numChannelCandidates = 2;
@@ -400,9 +414,14 @@ bool findExclusiveFormatForAnyChannelCount (IAudioClient* client, double rate, b
         CoTaskMemFree (mixFormat);
     }
 
-    for (int c = 0; c < numChannelCandidates; ++c)
-        if (findExclusiveFormat (client, rate, channelCandidates[c], format))
+    bool gone = false;
+
+    for (int c = 0; c < numChannelCandidates && ! gone; ++c)
+        if (findExclusiveFormat (client, rate, channelCandidates[c], format, &gone))
             return true;
+
+    if (invalidated != nullptr)
+        *invalidated = gone;
 
     return false;
 }
@@ -1116,11 +1135,29 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
     // Try the engine's own format first, then descend through the fixed-point
     // layouts, and try the device's native channel count before giving up.
     WAVEFORMATEXTENSIBLE format {};
+    bool invalidatedWhileAsked = false;
     const bool formatFound =
-        findExclusiveFormatForAnyChannelCount (stream->client.Get(), sampleRate, isInput, format);
+        findExclusiveFormatForAnyChannelCount (stream->client.Get(), sampleRate, isInput, format,
+                                               &invalidatedWhileAsked);
 
     if (! formatFound)
     {
+        // §14.2: a microphone that dropped off the bus after Activate refuses
+        // every format too. Asked again before blaming the sample rate --
+        // which the power warning never counts, and which sent the user to a
+        // setting that had nothing to do with it -- as CoreAudio's open asks
+        // whether the device is alive after a refused rate.
+        DWORD stateNow = 0;
+        if (invalidatedWhileAsked || FAILED (device->GetState (&stateNow)) || stateNow != DEVICE_STATE_ACTIVE)
+        {
+            openError = isInput
+                ? "This microphone disconnected while SobStage was opening it. Plug it back in, "
+                  "then try again."
+                : "This sound output isn't there any more. Pick a different one in Advanced.";
+            refusal = OpenRefusal::gone;
+            return nullptr;
+        }
+
         openError = "This device won't accept a low-latency connection at " + std::to_string ((int) sampleRate)
                       + " Hz. Try a different sample rate, or a different device, in Advanced.";
         refusal = OpenRefusal::settingsRefused;

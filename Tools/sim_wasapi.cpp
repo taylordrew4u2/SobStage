@@ -339,6 +339,58 @@ void aMicrophoneThatDropsOffWhileOpeningCountsTowardThePowerWarning()
                "and the user is not sent to the privacy settings");
     }
 
+    // Activated, then gone while its formats are asked about: every
+    // IsFormatSupported answers "invalidated". It was called a refused sample
+    // rate -- settingsRefused, which the power warning never counts -- and the
+    // user was told to change a setting that had nothing to do with it.
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-format-gone", "Porch", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.formatQuestionError = static_cast<long> (AUDCLNT_E_DEVICE_INVALIDATED);
+        fakewasapi::addEndpoint (spec);
+
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream ("mic-format-gone", 48000.0, 256, capture.callback()),
+               "a microphone invalidated while its formats are asked about does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::gone,
+               "it is called gone, not a refused sample rate");
+        check (mma::countsAsPossiblePowerLoss (backend.getLastOpenRefusal()),
+               "and counts toward the power warning");
+        check (backend.getLastOpenError().find ("sample rate") == std::string::npos,
+               "and the user is not told to change the sample rate");
+    }
+
+    // The same, seen only in its state: the format questions are refused
+    // plainly, but the endpoint is no longer present once they are done.
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-format-left", "Porch", { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.formatQuestionError = static_cast<long> (AUDCLNT_E_UNSUPPORTED_FORMAT);
+        spec.goneAfterFormatQuestion = true;
+        fakewasapi::addEndpoint (spec);
+
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream ("mic-format-left", 48000.0, 256, capture.callback()),
+               "a microphone gone by the end of the format questions does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::gone, "it is called gone too");
+    }
+
+    // A real refusal of every format, the device still there: still the setting.
+    {
+        fakewasapi::reset();
+        auto spec = microphone ("mic-no-format", "Porch", { fakewasapi::Format::pcm (1, 24, 44100.0) });
+        fakewasapi::addEndpoint (spec);
+
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+        check (! backend.openInputStream ("mic-no-format", 48000.0, 256, capture.callback()),
+               "a microphone that takes no format at this rate does not open");
+        check (backend.getLastOpenRefusal() == mma::OpenRefusal::settingsRefused,
+               "and that is still the setting, not power");
+    }
+
     {
         fakewasapi::reset();
         auto spec = microphone ("mic-denied", "Stage", { fakewasapi::Format::pcm (1, 24, 48000.0) });

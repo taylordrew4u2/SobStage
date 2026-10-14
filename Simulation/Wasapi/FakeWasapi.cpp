@@ -402,6 +402,14 @@ struct FakeAudioClient : RefCounted<IAudioClient>
 
         const auto& extensible = *reinterpret_cast<const WAVEFORMATEXTENSIBLE*> (format);
 
+        if (endpoint->spec.formatQuestionError != 0)
+        {
+            if (endpoint->spec.goneAfterFormatQuestion)
+                endpoint->spec.deviceState = DEVICE_STATE_NOTPRESENT;
+
+            return static_cast<HRESULT> (endpoint->spec.formatQuestionError);
+        }
+
         for (const auto& f : endpoint->spec.exclusiveFormats)
             if (formatMatches (f, extensible))
                 return S_OK;
