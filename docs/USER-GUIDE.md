@@ -443,9 +443,10 @@ copies it to the card when you press Stop.
   the card instead, and the activity list says so. A take recorded here never
   stops for want of room where one recorded on the card would have carried on.
   To make room, delete takes in `RECORDINGS-MIRROR` that have already been
-  copied to the card. Keep any that haven't: the line under the record button
-  says how many are still to go, and for those this computer's copy may be the
-  only one.
+  copied to the card. Keep any that haven't: the note on the saved-take card
+  and in the activity list names each folder that isn't all on the card yet
+  ("Keep 2026-10-14_2015_Show: it isn't all on the card yet."), and for those
+  this computer's copy may be the only one.
 - **A card that stops answering doesn't hold up Record.** If SobStage can't
   tell where the save location is within two seconds, the take is recorded on
   this computer and copied later.

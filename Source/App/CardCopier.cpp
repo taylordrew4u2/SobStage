@@ -490,19 +490,25 @@ CardCopier::Summary CardCopier::summary() const
 
     for (const auto& [id, record] : state->records)
     {
+        const auto where = record.folderNow.empty() ? record.job.localFolder : record.folderNow;
+
         if (id == state->inFlight)
         {
-            s.copyingFolder = record.folderNow.empty() ? record.job.localFolder : record.folderNow;
+            s.copyingFolder = where;
             s.done = record.done;
             s.total = record.total;
+            s.foldersStillToCopy.push_back (where);
         }
         else if (record.phase == Phase::Waiting)
         {
             ++s.waiting;
+            s.foldersStillToCopy.push_back (where);
         }
         else if (record.phase == Phase::StillOnComputer && record.last.has_value()
                  && record.last->outcome != cardcopy::Outcome::ComputerCopyMissing)
         {
+            s.foldersStillToCopy.push_back (where);
+
             // Everything else checked on the card: the saved-take card says
             // "The rest of the take was", and this agrees.
             if (record.last->outcome == cardcopy::Outcome::FileTooBig)

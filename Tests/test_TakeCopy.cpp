@@ -2219,14 +2219,32 @@ TEST_CASE (TakeCopyWording_ComputerFullPointsOnlyAtCopiedTakes)
 {
     const std::string folder = "/Users/sam/RECORDINGS-MIRROR";
 
-    const auto none = computerFullNote (folder, 0);
+    const auto none = computerFullNote (folder, {});
     REQUIRE (none.find ("delete takes in " + folder + " that have already been copied to the card.")
              != std::string::npos);
     REQUIRE (none.find ("Delete old takes") == std::string::npos);
     REQUIRE (none.find ("Keep") == std::string::npos);
+}
 
-    REQUIRE (computerFullNote (folder, 1).find ("1 take there hasn't been copied yet. Keep it.") != std::string::npos);
-    REQUIRE (computerFullNote (folder, 3).find ("3 takes there haven't been copied yet. Keep them.")
+// The bug: "1 take there hasn't been copied yet. Keep it." -- but which? In
+// Finder the folder whose take is not on the card looks like every other,
+// and the user was asking to make room. Mutation: counted, not named.
+TEST_CASE (TakeCopyWording_ComputerFullNamesTheTakesToKeep)
+{
+    const std::string folder = "/Users/sam/RECORDINGS-MIRROR";
+
+    const auto one = computerFullNote (folder, { joinPath (folder, "2026-10-14_2015_Show") });
+    REQUIRE (one.find ("Keep 2026-10-14_2015_Show: it isn't all on the card yet.") != std::string::npos);
+
+    const auto three = computerFullNote (folder, { joinPath (folder, "2026-10-14_2015_Show"),
+                                                   joinPath (folder, "Night 1 - early"),
+                                                   joinPath (folder, "2026-10-14_2215_Encore") });
+    REQUIRE (three.find ("Keep 2026-10-14_2015_Show, Night 1 - early and 2026-10-14_2215_Encore: they aren't "
+                         "all on the card yet.")
+             != std::string::npos);
+
+    // One take named once, however many times it is listed.
+    REQUIRE (computerFullNote (folder, { joinPath (folder, "A"), joinPath (folder, "A") }).find ("Keep A: it")
              != std::string::npos);
 }
 

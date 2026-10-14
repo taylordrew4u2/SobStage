@@ -196,6 +196,11 @@ public:
         std::string copyingFolder;
         uint64_t done = 0, total = 0;
         int waiting = 0;
+        /// Where on this computer each take still to go to the card is now --
+        /// being copied, waiting, or kept here after a failed attempt, a file
+        /// too big or added since included -- oldest first. Its folder there
+        /// may hold the only copy of what is not on the card.
+        std::vector<std::string> foldersStillToCopy;
     };
     Summary summary() const;
 

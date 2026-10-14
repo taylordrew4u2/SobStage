@@ -2988,12 +2988,11 @@ void Application::toggleRecording()
                     // Only takes already on the card are safe to delete: the
                     // rest of that folder may be the only copy of a take whose
                     // copy is still to go.
-                    const auto copies = cardCopier.summary();
-                    const int stillToCopy = (copies.copyingFolder.empty() ? 0 : 1) + copies.waiting
-                                          + copies.onlyOnComputer + copies.partlyOnCard
-                                          + copies.addedFilesWaiting;
+                    // Named, not counted: in Finder the folder that is not on
+                    // the card looks like every one that is.
                     lastTakeRouteNote = juce::String (cardcopy::computerFullNote (
-                        backupRootFolder().getFullPathName().toStdString(), stillToCopy));
+                        backupRootFolder().getFullPathName().toStdString(),
+                        cardCopier.summary().foldersStillToCopy));
                 }
                 else
                 {

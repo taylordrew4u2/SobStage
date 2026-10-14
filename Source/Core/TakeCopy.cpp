@@ -1120,15 +1120,31 @@ void FailuresWhileQuitting::told() noexcept
         k.told = true;
 }
 
-std::string computerFullNote (const std::string& computerFolder, int takesStillToCopy)
+std::string computerFullNote (const std::string& computerFolder, const std::vector<std::string>& takesStillToCopy)
 {
     auto note = "This computer is nearly full, so this take is going straight to the card. To make room, "
                 "delete takes in " + computerFolder + " that have already been copied to the card.";
 
-    if (takesStillToCopy == 1)
-        note += " 1 take there hasn't been copied yet. Keep it.";
-    else if (takesStillToCopy > 1)
-        note += " " + std::to_string (takesStillToCopy) + " takes there haven't been copied yet. Keep them.";
+    // By name: a count told nobody which folder to keep, and in Finder the
+    // one not on the card looks like every other.
+    std::vector<std::string> names;
+    for (const auto& folder : takesStillToCopy)
+        if (const auto name = lastPartOf (folder); ! name.empty()
+            && std::find (names.begin(), names.end(), name) == names.end())
+            names.push_back (name);
+
+    if (names.size() == 1)
+    {
+        note += " Keep " + names.front() + ": it isn't all on the card yet.";
+    }
+    else if (names.size() > 1)
+    {
+        std::string list;
+        for (size_t i = 0; i < names.size(); ++i)
+            list += (i == 0 ? "" : i + 1 == names.size() ? " and " : ", ") + names[i];
+
+        note += " Keep " + list + ": they aren't all on the card yet.";
+    }
 
     return note;
 }

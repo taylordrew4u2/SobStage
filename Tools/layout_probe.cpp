@@ -1061,7 +1061,10 @@ int main()
                 }
 
         const juce::String routeLine (mma::cardcopy::computerFullNote (
-            "/Users/someone-with-a-long-name/RECORDINGS-MIRROR", 3));
+            "/Users/someone-with-a-long-name/RECORDINGS-MIRROR",
+            { "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/2026-10-12_2100_Late-Show",
+              "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/2026-10-12_2215_Late-Show-Encore",
+              "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/Night 1 - early" }));
 
         // Laid out exactly as the label draws it (LookAndFeel::drawLabel): every
         // character there, none replaced by "...", none below the label.

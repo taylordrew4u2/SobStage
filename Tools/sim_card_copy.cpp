@@ -1469,6 +1469,8 @@ int main()
                "neither reads as copied while it is not on this card");
         check (copier.summary().waiting == 1 && ! copier.summary().copyingFolder.empty(),
                "the line under Record counts them");
+        check (copier.summary().foldersStillToCopy == std::vector<std::string> { one.string(), two.string() },
+               "and names them as still to go to the card");
         check (copier.hasWorkToFinish() && copier.takesToFinish() == 2,
                "and a quit asks to wait for them");
         check (fs::exists (one / cardcopy::kMarkerFileName) && fs::exists (two / cardcopy::kMarkerFileName),
@@ -1506,6 +1508,8 @@ int main()
         copier.start (f.job (local));
         const auto full = waitForResult (copier, 15s);
         check (full.has_value() && full->result.outcome == cardcopy::Outcome::CardFull, "the card reached is full");
+        check (copier.summary().foldersStillToCopy == std::vector<std::string> { local.string() },
+               "and its folder is named as one still to go to the card, so it is never the one deleted");
 
         f.gate->cardFull = false;
         copier.retry ([] (const cardcopy::Result&) { return true; });

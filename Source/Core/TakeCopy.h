@@ -358,8 +358,10 @@ std::string notAnsweringLine (int takes, const std::string& computerFolder);
 
 /// Said when a take goes straight to the card because this computer is too
 /// full. Points only at takes already on the card: some in `computerFolder`
-/// may be the only copy of a take not copied yet (`takesStillToCopy`).
-std::string computerFullNote (const std::string& computerFolder, int takesStillToCopy);
+/// may be the only copy of a take not copied yet, and those are named
+/// (`takesStillToCopy`, their folders' names), because nothing a user sees in
+/// Finder or File Explorer tells them from the takes that are on the card.
+std::string computerFullNote (const std::string& computerFolder, const std::vector<std::string>& takesStillToCopy);
 
 /// Whether an outcome is one of the copy's failures, reported to the user.
 bool isFailure (Outcome outcome) noexcept;
