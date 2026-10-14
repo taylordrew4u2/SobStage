@@ -1181,12 +1181,37 @@ void Application::restartCapture()
             // from nowhere in the app, so "use a powered hub" could not be
             // reached however many microphones dropped off a shared port.
             //
-            // Gated on worthSaying with the message above, so a rebuild that
-            // changes nothing does not stack events into the five-minute
-            // window and invent a power problem out of one bad cable.
-            for (int i = 0; i < failedCount; ++i)
-                noteDeviceDropout();
+            // Only refusals that could be a device losing power. A mic another
+            // app holds, a refused rate, a denied permission or the app's own
+            // earlier open still finishing all counted, and all read as "needs
+            // more power". The detector also counts each device once until it
+            // opens again, so a rebuild that changes nothing cannot stack one
+            // bad cable into a power problem.
+            const auto& openFailures = capture->getOpenFailures();
+
+            for (size_t i = 0; i < openFailures.size(); ++i)
+            {
+                const auto& failure = openFailures[i];
+
+                // The first device's reason is in the line above. Every other
+                // one's was dropped, so the log named one cause for several
+                // mics that may each have had a different one.
+                if (i > 0)
+                    noteActivity (ActivityLevel::Warning, juce::String (failure.displayName),
+                                  juce::String (failure.displayName) + " couldn't be opened for recording."
+                                      + (failure.reason.empty() ? juce::String()
+                                                                : " " + juce::String (failure.reason)));
+
+                if (countsAsPossiblePowerLoss (failure.refusal))
+                    noteDeviceDropout (failure.deviceId, juce::String (failure.displayName));
+            }
         }
+
+        // A device that opened this time ends its failure episode, so a later
+        // failure of it counts again.
+        for (const auto& ch : channels)
+            if (std::find (failedToOpen.begin(), failedToOpen.end(), ch.deviceId) == failedToOpen.end())
+                noteDeviceHealthy (ch.deviceId);
     }
     else if (worthSaying)
     {
@@ -1810,7 +1835,7 @@ void Application::rescanDevices()
                 // edge-triggered by RecordingEngine, so one unplug counts once
                 // however many times the device list is re-read while it is
                 // gone.
-                noteDeviceDropout();
+                noteDeviceDropout (ch.deviceId, juce::String (ch.displayName));
             }
             else if (change == MidTakeMicChange::Reconnected)
             {
@@ -1819,6 +1844,7 @@ void Application::rescanDevices()
 
                 noteActivity (ActivityLevel::Recovered, juce::String (ch.displayName),
                               "Plugged back in. Its track is live again.");
+                noteDeviceHealthy (ch.deviceId);
             }
             else if (change == MidTakeMicChange::BackNextTake)
             {
@@ -2327,7 +2353,7 @@ bool Application::isMicLive (int index) const
     return ! recordingEngine.isWritingSilence (deviceId);
 }
 
-void Application::noteDeviceDropout()
+void Application::noteDeviceDropout (const std::string& deviceId, const juce::String& displayName)
 {
     // §14.2 is about three or more separate boxes drawing power from the bus,
     // so this counts DEVICES. It passed getIncludedMicCount(), which counts
@@ -2340,7 +2366,12 @@ void Application::noteDeviceDropout()
             ++attachedDevices;
 
     setupAdvisor.noteDeviceDropout (juce::Time::getMillisecondCounterHiRes() / 1000.0,
-                                    attachedDevices);
+                                    deviceId, displayName.toStdString(), attachedDevices);
+}
+
+void Application::noteDeviceHealthy (const std::string& deviceId)
+{
+    setupAdvisor.noteDeviceHealthy (deviceId);
 }
 
 void Application::updateSetupAdvisorLevels (const std::vector<float>& peaksDb, double blockSeconds)
@@ -5782,7 +5813,8 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
             // record; the rest of the advice is guidance and would only be
             // noise in a log.
             if (advice.issue != SetupIssue::SilentChannel
-                && advice.issue != SetupIssue::BusPowerExhausted)
+                && advice.issue != SetupIssue::BusPowerExhausted
+                && advice.issue != SetupIssue::DeviceKeepsDropping)
                 continue;
 
             const auto who = advice.channelIndex >= 0
@@ -6063,6 +6095,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
                     noteActivity (ActivityLevel::Recovered, subject,
                                   "Sending audio again. Its track is live again.");
+                    noteDeviceHealthy (failure.deviceId);
                 }
                 continue;
             }
@@ -6244,7 +6277,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                             midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
                                                          "Microphone stopped sending audio: writing silence "
                                                          "to its channel." });
-                            noteDeviceDropout();
+                            noteDeviceDropout (ch.deviceId, juce::String (ch.displayName));
                         }
                         break;
                     }

@@ -1294,7 +1294,15 @@ struct CoreAudioOpenResult
     bool streamSafeToDelete = true;
     bool cleanupSucceeded = true;
     bool bufferSizeWasRefused = false;
+    OpenRefusal refusal = OpenRefusal::unknown;
 };
+
+// The refusal's kind, for §14.2's power check, on a result built the usual way.
+CoreAudioOpenResult refusedBecause (OpenRefusal why, CoreAudioOpenResult result)
+{
+    result.refusal = why;
+    return result;
+}
 
 struct CoreAudioCleanupResult
 {
@@ -1386,10 +1394,11 @@ CoreAudioOpenResult createAndStartStream (CoreAudioStream& stream)
         if (stream.ioProcId != nullptr || stream.ownsHogMode)
             cleanup = destroyStreamAfterFailedOpen (stream);
 
-        return { false,
+        return refusedBecause (OpenRefusal::inUse, {
+                 false,
                  "macOS wouldn't let this app attach to this interface. Another app is usually "
                  "holding it -- close anything else recording or streaming from it, then try again.",
-                 cleanup.streamSafeToDelete, cleanup.cleanupSucceeded };
+                 cleanup.streamSafeToDelete, cleanup.cleanupSucceeded });
     }
 
     installStreamPropertyListeners (stream);
@@ -1407,23 +1416,26 @@ CoreAudioOpenResult createAndStartStream (CoreAudioStream& stream)
                              + formatRate (stream.expectedSampleRate)
                              + ". Set both to the same rate, then try again.";
             const auto cleanup = destroyStreamAfterFailedOpen (stream);
-            return { false, error, cleanup.streamSafeToDelete, cleanup.cleanupSucceeded };
+            return refusedBecause (OpenRefusal::settingsRefused,
+                                   { false, error, cleanup.streamSafeToDelete, cleanup.cleanupSucceeded });
         }
 
         const auto cleanup = destroyStreamAfterFailedOpen (stream);
-        return { false,
+        return refusedBecause (OpenRefusal::gone, {
+                 false,
                  "This interface disconnected while SobStage was opening it. Plug it back in, "
-                 "then try again.", cleanup.streamSafeToDelete, cleanup.cleanupSucceeded };
+                 "then try again.", cleanup.streamSafeToDelete, cleanup.cleanupSucceeded });
     }
 
     if (AudioDeviceStart (stream.deviceId, stream.ioProcId) != noErr)
     {
         const auto cleanup = destroyStreamAfterFailedOpen (stream);
-        return { false,
+        return refusedBecause (OpenRefusal::permission, {
+                 false,
                  "macOS wouldn't start this interface. Check that SobStage is allowed to use the "
                  "microphone in System Settings > Privacy & Security > Microphone, and that no "
                  "other app is recording from it.", cleanup.streamSafeToDelete,
-                 cleanup.cleanupSucceeded };
+                 cleanup.cleanupSucceeded });
     }
 
     stream.startedSeconds = hostClockSeconds();
@@ -1470,29 +1482,32 @@ CoreAudioOpenResult prepareAndStartStream (CoreAudioStream& stream,
 
     if (device == kAudioObjectUnknown)
     {
-        return { false,
+        return refusedBecause (OpenRefusal::gone, {
+                 false,
                  isOutput
                     ? "That sound output isn't there any more. Choose another one."
                     : "This microphone is no longer connected. Unplug it and plug it back in, "
-                      "then try again." };
+                      "then try again." });
     }
 
     stream.deviceId = device;
 
     if (! isOutput && ! isDirectlyAttachedInputTransport (readTransportType (device)))
     {
-        return { false,
+        return refusedBecause (OpenRefusal::notExternal, {
+                 false,
                  "SobStage only records from a directly connected external USB, FireWire, "
-                 "or Thunderbolt microphone or audio interface." };
+                 "or Thunderbolt microphone or audio interface." });
     }
 
     if (! readDeviceIsAlive (device))
     {
-        return { false,
+        return refusedBecause (OpenRefusal::gone, {
+                 false,
                  isOutput
                     ? "That sound output disconnected while SobStage was opening it. Choose another one."
                     : "This interface disconnected while SobStage was opening it. Plug it back in, "
-                      "then try again." };
+                      "then try again." });
     }
 
     if (! setNominalSampleRate (device, sampleRate))
@@ -1503,19 +1518,21 @@ CoreAudioOpenResult prepareAndStartStream (CoreAudioStream& stream,
         // back as 0, and the advice below became "Set the recording to 0 kHz".
         if (actual <= 0.0 || ! readDeviceIsAlive (device))
         {
-            return { false,
+            return refusedBecause (OpenRefusal::gone, {
+                     false,
                      isOutput
                         ? "That sound output disconnected while SobStage was opening it. Choose another one."
                         : "This interface disconnected while SobStage was opening it. Plug it back in, "
-                          "then try again." };
+                          "then try again." });
         }
 
-        return { false,
+        return refusedBecause (OpenRefusal::settingsRefused, {
+                 false,
                  "This interface is running at " + formatRate (actual)
                     + " and won't change to the " + formatRate (sampleRate)
                     + " this recording uses. Set the recording to " + formatRate (actual)
                     + " in Settings, or change the interface to " + formatRate (sampleRate)
-                    + " in Audio MIDI Setup." };
+                    + " in Audio MIDI Setup." });
     }
 
     const bool bufferSizeRefused = ! setBufferFrameSize (device, bufferSizeSamples);
@@ -1983,18 +2000,24 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     // Cleared here so a message from a previous failed open cannot be read back
     // as the reason this one failed -- or, worse, be shown beside a success.
     lastOpenError.clear();
+    lastOpenRefusal = OpenRefusal::unknown;
 
     if (! callback)
     {
         lastOpenError = "SobStage couldn't start this audio path because its audio callback was missing.";
+        lastOpenRefusal = OpenRefusal::appBusy;
         return false;
     }
 
+    // Behind a wedged open of another mic. Not that mic's power: one wedged
+    // device would otherwise make every mic queued after it count as a second
+    // device dropping out, and §14.2 would blame the hub.
     auto transactionToken = beginInputAttempt (pendingInputAttempts, deviceId);
     if (transactionToken == nullptr)
     {
         lastOpenError = "macOS is still finishing an earlier audio-rig operation. Wait a moment, "
                         "then unplug and reconnect the interface before trying again.";
+        lastOpenRefusal = OpenRefusal::appBusy;
         return false;
     }
 
@@ -2095,6 +2118,7 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     {
         lastOpenError = "macOS couldn't create the worker needed to open this audio interface "
                         "safely. Restart SobStage, then try again.";
+        lastOpenRefusal = OpenRefusal::appBusy;
         return false;
     }
 
@@ -2123,6 +2147,7 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
         lastOpenError = "macOS took too long to connect this interface, so SobStage stopped "
                         "waiting. Unplug it and plug it back in, and close any other app using "
                         "audio before trying again.";
+        lastOpenRefusal = OpenRefusal::timedOut;
         return false;
     }
 
@@ -2138,6 +2163,7 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     if (! result.succeeded)
     {
         lastOpenError = std::move (result.error);
+        lastOpenRefusal = result.refusal;
 
         if (! result.cleanupSucceeded)
             holdAudioTeardownQuarantine (pendingInputAttempts);
@@ -2500,6 +2526,7 @@ bool CoreAudioBackend::openExclusiveOutputStream (const std::string& outputDevic
         {
             lastOpenError = "macOS is still releasing the previous audio rig. Wait a moment, then "
                             "unplug and reconnect the interface before trying again.";
+            lastOpenRefusal = OpenRefusal::appBusy;
             return false;
         }
     }
@@ -2518,6 +2545,7 @@ bool CoreAudioBackend::openInputStream (const std::string& inputDeviceId, double
     // hog mode and sets its own reason on failure, and reporting that message
     // against a microphone would name the wrong device entirely.
     lastOpenError.clear();
+    lastOpenRefusal = OpenRefusal::unknown;
 
     return openStream (inputDeviceId, sampleRate, bufferSizeSamples, std::move (callback), false);
 }

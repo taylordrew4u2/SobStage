@@ -999,8 +999,11 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
                                                                       int bufferSizeSamples,
                                                                       bool isInput,
                                                                       AudioCallback callback,
-                                                                      std::string& openError)
+                                                                      std::string& openError,
+                                                                      OpenRefusal& refusal)
 {
+    refusal = OpenRefusal::unknown;
+
     if (! callback)
         return nullptr;
 
@@ -1016,6 +1019,7 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
             ? "This microphone is no longer connected. Unplug it and plug it back in, then try "
               "again."
             : "This sound output isn't there any more. Pick a different one in Advanced.";
+        refusal = OpenRefusal::gone;
         return nullptr;
     }
 
@@ -1036,6 +1040,7 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
             || ! isDirectlyAttachedExternalInput (device.Get(), eligibilityEnumerator.Get()))
         {
             openError = "SobStage only records from directly connected external audio hardware.";
+            refusal = OpenRefusal::notExternal;
             return nullptr;
         }
     }
@@ -1058,6 +1063,7 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
               "Microphone, then try again."
             : "Windows wouldn't let this app attach to this output. Close anything else using it, "
               "then try again.";
+        refusal = OpenRefusal::permission;
         return nullptr;
     }
 
@@ -1076,6 +1082,7 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
     {
         openError = "This device won't accept a low-latency connection at " + std::to_string ((int) sampleRate)
                       + " Hz. Try a different sample rate, or a different device, in Advanced.";
+        refusal = OpenRefusal::settingsRefused;
         return nullptr;
     }
 
@@ -1137,6 +1144,7 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
         openError = std::string (isInput ? "This microphone" : "These headphones")
                   + " can't run with a buffer of " + std::to_string (bufferSizeSamples)
                   + " samples. Pick a larger buffer size in Advanced.";
+        refusal = OpenRefusal::settingsRefused;
         return nullptr;
     }
 
@@ -1161,6 +1169,7 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
               "exclusive control\" is ticked for it in Sound settings."
             : "These headphones wouldn't give this app exclusive use, which live monitoring needs. "
               "Close anything else playing sound, or pick a different output in Advanced.";
+        refusal = OpenRefusal::inUse;
         return nullptr;
     }
 
@@ -1225,6 +1234,7 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
                                                   AudioCallback callback)
 {
     lastOpenError.clear();
+    lastOpenRefusal = OpenRefusal::unknown;
 
     // Every COM call below -- Activate, IsFormatSupported, Initialize -- runs
     // on an owned worker behind a deadline, for the reason CoreAudioBackend
@@ -1246,6 +1256,7 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
         bool finished = false;
         bool abandoned = false;
         std::string error;
+        OpenRefusal refusal = OpenRefusal::unknown;
         std::unique_ptr<WasapiStream> stream;
     };
 
@@ -1265,8 +1276,9 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
         {
             const ScopedMtaMembership com;
             std::string error;
+            OpenRefusal refusal = OpenRefusal::unknown;
             auto built = buildExclusiveStream (deviceId, sampleRate, bufferSizeSamples, isInput,
-                                               std::move (callback), error);
+                                               std::move (callback), error, refusal);
 
             // Announced before the result is published and on every exit, so a
             // caller that stopped waiting still learns when the driver let go.
@@ -1293,6 +1305,7 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
 
             attempt->stream = std::move (built);
             attempt->error = std::move (error);
+            attempt->refusal = refusal;
             attempt->finished = true;
             attempt->changed.notify_one();
         });
@@ -1307,6 +1320,7 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
 
         lastOpenError = "Windows couldn't create the worker needed to open this audio device "
                         "safely. Restart SobStage, then try again.";
+        lastOpenRefusal = OpenRefusal::appBusy;
         return false;
     }
 
@@ -1325,11 +1339,13 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
               "again."
             : "Windows took too long to connect this sound output, so SobStage stopped waiting. "
               "Choose another output or reconnect it.";
+        lastOpenRefusal = OpenRefusal::timedOut;
         return false;
     }
 
     auto stream = std::move (attempt->stream);
     lastOpenError = std::move (attempt->error);
+    lastOpenRefusal = attempt->refusal;
     lock.unlock();
     worker.join();
 

@@ -555,9 +555,11 @@ public:
                                         bool& seeded,
                                         const std::set<std::string>& saidElsewhere) const;
 
-        /// §14.2: report an enumeration failure or a device dropping off the bus,
-    /// which is how bus-power exhaustion actually presents.
-    void noteDeviceDropout();
+    /// §14.2: report an enumeration failure or a device dropping off the bus,
+    /// which is how bus-power exhaustion actually presents. Once per failure
+    /// episode of that device: noteDeviceHealthy() ends the episode.
+    void noteDeviceDropout (const std::string& deviceId, const juce::String& displayName);
+    void noteDeviceHealthy (const std::string& deviceId);
 
     /// §8.1: per-block channel peaks, so silent channels are noticed.
     void updateSetupAdvisorLevels (const std::vector<float>& peaksDb, double blockSeconds);

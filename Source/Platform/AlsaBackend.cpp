@@ -847,6 +847,7 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
     const auto direction = isInput ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK;
 
     lastOpenError.clear();
+    lastOpenRefusal = OpenRefusal::unknown;
 
     bool openTimedOut = false;
 
@@ -862,6 +863,7 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
                   "Unplug it and plug it back in, then pick it again."
                 : "This sound output took too long to connect, so SobStage carried on without it. "
                   "Pick it again in Advanced, or choose a different one.";
+            lastOpenRefusal = OpenRefusal::timedOut;
             return false;
         }
 
@@ -869,6 +871,7 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
         // answers: something else is holding the device, or the device is not
         // there any more. snd_strerror is not shown to the user -- it is a
         // developer string -- so the message says what to do instead.
+        lastOpenRefusal = err == -EBUSY ? OpenRefusal::inUse : OpenRefusal::gone;
         lastOpenError = err == -EBUSY
             ? (isInput ? "Another app is using this microphone. Close anything else recording or "
                          "streaming from it, then try again."
@@ -997,6 +1000,7 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
               "port, or a different microphone."
             : "These headphones won't accept audio in any format this app can use. Pick a "
               "different output in Advanced.";
+        lastOpenRefusal = OpenRefusal::settingsRefused;
         return false;
     }
 
@@ -1249,6 +1253,7 @@ bool AlsaBackend::openInputStream (const std::string& inputDeviceId, double samp
                       { return candidate.usbLocationId == inputDeviceId; }))
     {
         lastOpenError = "SobStage only records from directly connected external audio hardware.";
+        lastOpenRefusal = OpenRefusal::notExternal;
         return false;
     }
 

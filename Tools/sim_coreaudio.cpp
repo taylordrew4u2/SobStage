@@ -2218,6 +2218,9 @@ void aSlowMicDoesNotRefuseTheNextHealthyMic()
     mma::CoreAudioBackend wedgedBackend;
     check (! wedgedBackend.openInputStream (wedgedSpec.uid, 48000.0, 256, slowCapture.callback()),
            "the wedged mic times out");
+    // §14.2: the wedged mic is one device that may have lost power...
+    check (wedgedBackend.getLastOpenRefusal() == mma::OpenRefusal::timedOut,
+           "the wedged mic's refusal is a timeout, which counts toward the power check");
 
     const auto wedgedBegan = std::chrono::steady_clock::now();
     const bool nextOpened = wedgedBackend.openInputStream ("uid-healthy-mic-c", 48000.0, 256,
@@ -2227,6 +2230,12 @@ void aSlowMicDoesNotRefuseTheNextHealthyMic()
            "the refusal behind a wedged HAL is bounded");
     check (wedgedBackend.getLastOpenError().find ("still finishing") != std::string::npos,
            "the refusal says an earlier operation is still finishing");
+    // ...and the mic queued behind it is not a second one. Counted, the pair
+    // read as two mics losing power and the advice blamed the hub.
+    check (wedgedBackend.getLastOpenRefusal() == mma::OpenRefusal::appBusy,
+           "the queued mic's refusal is the app being busy, which the power check ignores");
+    check (! mma::countsAsPossiblePowerLoss (wedgedBackend.getLastOpenRefusal()),
+           "so the power check does not count it");
     check (wedgedBackend.waitForPendingInputAttemptsForTesting (kWorkerSettleMilliseconds),
            "the wedged worker eventually settles");
 }

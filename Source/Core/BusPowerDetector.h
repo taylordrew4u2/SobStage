@@ -1,36 +1,77 @@
 #pragma once
 #include <cstdint>
 #include <deque>
+#include <set>
+#include <string>
+#include <vector>
 
 namespace mma {
 
 /// §14.2: bus power exhaustion doesn't produce a clean error; it shows up as
-/// enumeration failures and device drops. Heuristic: 2+ enumeration failures
-/// or device drops within 5 minutes, while 3+ mics are attached, means "get a
-/// powered hub."
+/// enumeration failures and device drops. Heuristic: two or more DIFFERENT
+/// devices failing or dropping within 5 minutes, while 3+ devices are
+/// attached, means "get a powered hub."
+///
+/// Different devices, because one device failing twice is that device: a bad
+/// cable or port, which a powered hub does not fix. It used to count events,
+/// so one mic that would not open counted again every time another was
+/// plugged in, and a mic dying mid-take counted once for the death and again
+/// for the reopen at Stop -- two events, "needs more power", from one cable.
 class BusPowerDetector
 {
 public:
-    static constexpr int kEventThreshold = 2;
+    static constexpr int kDistinctDevicesThreshold = 2;
     static constexpr double kWindowSeconds = 5.0 * 60.0;
     static constexpr int kMinMicsForConcern = 3;
 
-    /// Record an enumeration failure or unexpected device drop at time nowSeconds
-    /// (monotonic, app-relative clock), with the number of mics currently attached.
-    void recordEvent (double nowSeconds, int micsAttached);
+    /// Record an enumeration failure or unexpected drop of `deviceId` at
+    /// `nowSeconds` (monotonic, app-relative clock), with the number of
+    /// devices attached. Ignored while that device is still failing from an
+    /// earlier event: one failure episode counts once, until noteHealthy().
+    /// Returns whether it was counted.
+    bool recordEvent (double nowSeconds, const std::string& deviceId, const std::string& name,
+                      int devicesAttached);
+
+    /// The device opened or came back: a later failure is a new episode.
+    void noteHealthy (const std::string& deviceId);
 
     /// True if the sustained-power-exhaustion condition currently holds.
     bool isBusPowerExhausted (double nowSeconds) const;
+
+    /// The names of the devices with an event in the window, each once, in
+    /// the order they first failed.
+    std::vector<std::string> namesInWindow (double nowSeconds) const;
+
+    /// The name of the one device that has failed twice or more in the
+    /// window when no other device has failed in it; empty otherwise.
+    std::string repeatingDevice (double nowSeconds) const;
 
     /// Forgets every recorded event. SetupAdvisor::reset() cleared its other
     /// detectors and not this one, so events from a rig that has since been
     /// unplugged could still produce "use a powered hub" for five minutes
     /// against hardware that does not need one.
-    void reset() { events.clear(); }
+    void reset()
+    {
+        events.clear();
+        failingNow.clear();
+    }
 
 private:
-    struct Event { double timestamp; int micsAttached; };
+    struct Event
+    {
+        double timestamp;
+        std::string deviceId;
+        std::string name;
+        int devicesAttached;
+    };
+
     std::deque<Event> events;
+    std::set<std::string> failingNow;
+
+    bool inWindow (const Event& e, double nowSeconds) const noexcept
+    {
+        return (nowSeconds - e.timestamp) <= kWindowSeconds;
+    }
 
     void prune (double nowSeconds);
 };

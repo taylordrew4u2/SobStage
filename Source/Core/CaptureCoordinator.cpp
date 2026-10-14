@@ -62,6 +62,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     channels = chans;
     monitorProblem.clear();
     devicesThatFailedToOpen.clear();
+    openFailures.clear();
 
     // A new output stream is the clock again until told otherwise. Cleared
     // before anything opens, so its first callback pulls.
@@ -403,6 +404,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     // four times; on macOS the second open is refused and the take dies with a
     // message naming a microphone that is plugged in and working.
     std::vector<std::string> failedDevices;
+    std::vector<DeviceOpenFailure> failures;
     std::string firstFailure;
 
     for (const auto& [deviceId, channelIndices] : byDevice)
@@ -425,6 +427,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
             // another app holding the device. The monitor path above has always
             // reported the cause; the microphone path is no different.
             const auto reason = backend.getLastOpenError();
+            const auto refusal = backend.getLastOpenRefusal();
 
             // One microphone's failure is not every microphone's failure.
             //
@@ -442,6 +445,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
             // keep the ones that did not as a named warning, and refuse only
             // when NOTHING opened.
             failedDevices.push_back (deviceId);
+            failures.push_back ({ deviceId, channels[channelIndices.front()].displayName, refusal, reason });
 
             if (firstFailure.empty())
                 firstFailure = channels[channelIndices.front()].displayName
@@ -551,6 +555,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     // why that stem is silent instead of leaving it to be discovered in the
     // files afterwards.
     devicesThatFailedToOpen.clear();
+    openFailures = std::move (failures);
 
     for (const auto& deviceId : failedDevices)
     {

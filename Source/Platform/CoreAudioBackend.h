@@ -55,6 +55,7 @@ public:
     void closeAllStreams() override;
 
     std::string getLastOpenError() const override { return lastOpenError; }
+    OpenRefusal getLastOpenRefusal() const override { return lastOpenRefusal; }
 
     std::string getHotplugProblem() const override { return hotplugProblem; }
 
@@ -100,6 +101,7 @@ private:
     std::vector<OutputRouteListener> outputRouteListeners;
 
     std::string lastOpenError;
+    OpenRefusal lastOpenRefusal = OpenRefusal::unknown;
 
     std::string hotplugProblem;
 

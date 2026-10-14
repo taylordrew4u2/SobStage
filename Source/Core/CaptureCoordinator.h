@@ -250,6 +250,26 @@ public:
         return devicesThatFailedToOpen;
     }
 
+    /// One device that refused to open, with the backend's account of why.
+    struct DeviceOpenFailure
+    {
+        std::string deviceId;
+        /// The name its first channel goes by, for the activity log.
+        std::string displayName;
+        OpenRefusal refusal = OpenRefusal::unknown;
+        /// The backend's own sentence, or empty when it gave none.
+        std::string reason;
+    };
+
+    /// The same devices as getDevicesThatFailedToOpen(), each with its own
+    /// reason and refusal kind. Only the first device's reason used to reach
+    /// the activity log, and §14.2's power check counted every refusal alike,
+    /// whatever the cause.
+    const std::vector<DeviceOpenFailure>& getOpenFailures() const noexcept
+    {
+        return openFailures;
+    }
+
     /// §6: begins writing. Monitoring continues untouched -- §5.1 makes the two
     /// independent, and §6.1 keeps a monitor mute from silencing the recording.
     /// mirrorFolder is §6.3's local copy; empty means card-only.
@@ -881,6 +901,7 @@ private:
     int channelIndexForDevice (const std::string& deviceId) const noexcept;
 
     std::vector<std::string> devicesThatFailedToOpen;
+    std::vector<DeviceOpenFailure> openFailures;
     std::string recordingProblem;
     std::atomic<uint64_t> framesMissedByLayout { 0 };
 
