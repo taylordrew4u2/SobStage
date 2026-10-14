@@ -1440,6 +1440,104 @@ TEST_CASE (TakeCopy_OnlyAnAddedFileIsSaidOfTheCardInTheReaderNow)
     REQUIRE_FALSE (run (never, toTheCard(), &fresh).addedFilesOnly);
 }
 
+// The bug: the take copied to card A, then -- with card B in the reader for
+// the next show -- its combined video went too, and was refused as another
+// card. The saved-take card said "This take is on the card, but a file added
+// to it since isn't yet. The card in now isn't the one this take is for...":
+// card B in hand, "the card" holding the take read as that one. Mutation:
+// DifferentCard with an added file worded as any other added-file failure.
+TEST_CASE (TakeCopyWording_AnAddedFileRefusedByAnotherCardNamesTheTakesOwnCard)
+{
+    FakeFs fs;
+    finishedTake (fs);
+    fs.cardId = "uuid:CARD";
+    Control control;
+    std::set<std::string> verified;
+    control.verified = &verified;
+    control.keepMarker = true;
+
+    const auto first = run (fs, toTheCard(), &control);
+    REQUIRE (first.outcome == Outcome::Copied);
+    REQUIRE (first.cardIdentity == "uuid:CARD");
+
+    const auto copiedBefore = first.filesOnCard;
+    control.copiedBefore = &copiedBefore;
+    fs.addFile (local ("V01_Cam_with-sound.mov"), bytes (100000, 9));
+    fs.cardId = "uuid:OTHER";
+
+    const auto refused = run (fs, { kRoot, first.cardFolder, first.cardIdentity }, &control);
+    REQUIRE (refused.outcome == Outcome::DifferentCard);
+
+    const auto line = describe (refused, kLocal);
+    REQUIRE (line.find ("This take is on the card") == std::string::npos);
+    REQUIRE (line.find ("This take is on its own card, not the one in now.") == 0);
+    REQUIRE (line.find ("will be copied when that card is back") != std::string::npos);
+    REQUIRE (line.find ("safe on this computer in " + std::string (kLocal)) != std::string::npos);
+
+    const auto atQuit = describe (refused, kLocal, kThisSystemsWording, Moment::Quitting);
+    REQUIRE (atQuit.find ("the next time you open SobStage with that card in") != std::string::npos);
+    REQUIRE (atQuit.find ("Copy again") == std::string::npos);
+}
+
+// The bug: a take stopped because this computer's disk filled could not have
+// its stop-time record written, so every copy of it in that run ended "not
+// finished yet" -- the take was never copied to the card until a relaunch,
+// and was said not to have finished recording. Mutation: takeIsFinished
+// ignored.
+TEST_CASE (TakeCopy_ATakeStoppedInThisRunIsCopiedWithoutItsStopTime)
+{
+    FakeFs fs;
+    finishedTake (fs);
+    fs.files[local ("session.json")] = kUnfinishedRecord;
+
+    Control stoppedHere;
+    stoppedHere.takeIsFinished = true;
+    const auto r = run (fs, toTheCard(), &stoppedHere);
+    REQUIRE (r.outcome == Outcome::Copied);
+    REQUIRE (fs.files.at (card ("MIX.wav")) == fs.files.at (local ("MIX.wav")));
+    // What is on the card is the record as it is: never rewritten.
+    REQUIRE (fs.files.at (card ("session.json")) == kUnfinishedRecord);
+
+    // Found at launch, it may be one a crash cut off: not copied yet.
+    FakeFs found;
+    finishedTake (found);
+    found.files[local ("session.json")] = kUnfinishedRecord;
+    REQUIRE (run (found).outcome == Outcome::NotFinishedYet);
+}
+
+// The bug: a take recorded on this computer for a card counted as "on the
+// card" for its own folder (no backup folder is kept for it), so a stall on
+// this computer's disk skipped its stop-time record, and Stop told the user
+// to check the card it never touched. Mutation: the route ignored.
+TEST_CASE (TakeCopy_ATakeRecordedHereIsNotOnTheCard)
+{
+    const std::string take = "/Users/me/RECORDINGS-MIRROR/2026-10-14_2000_Show";
+    const std::string onCard = "/Volumes/SD/RECORDINGS/2026-10-14_2000_Show";
+    const std::string backup = "/Users/me/RECORDINGS-MIRROR/2026-10-14_2000_Show";
+
+    REQUIRE_FALSE (isOnTheSaveLocationWhileRecording (take + "/session.json", TakeRoute::ComputerThenCard, {}));
+    REQUIRE_FALSE (isOnTheSaveLocationWhileRecording (take, TakeRoute::ComputerThenCard, {}));
+
+    REQUIRE (isOnTheSaveLocationWhileRecording (onCard + "/session.json", TakeRoute::StraightToDestination, {}));
+    REQUIRE (isOnTheSaveLocationWhileRecording (onCard + "/session.json", TakeRoute::StraightToCardComputerFull,
+                                                backup));
+    REQUIRE_FALSE (isOnTheSaveLocationWhileRecording (backup + "/session.json", TakeRoute::StraightToDestination,
+                                                      backup));
+    REQUIRE_FALSE (isOnTheSaveLocationWhileRecording (backup, TakeRoute::StraightToDestination, backup + "/"));
+    // A sibling whose name only starts the same is not inside it.
+    REQUIRE (isOnTheSaveLocationWhileRecording (backup + "_2/MIX.wav", TakeRoute::StraightToDestination, backup));
+
+    const auto here = stoppedAnsweringAtStop (true, take, {});
+    REQUIRE (here.find ("This computer's drive stopped answering") == 0);
+    REQUIRE (here.find (take) != std::string::npos);
+    REQUIRE (here.find ("card") == std::string::npos);
+
+    REQUIRE (stoppedAnsweringAtStop (false, onCard, {}).find ("Check the card before recording again.")
+             != std::string::npos);
+    REQUIRE (stoppedAnsweringAtStop (false, onCard, backup).find ("may be missing the same part: " + backup)
+             != std::string::npos);
+}
+
 // Mutation: a take whose file was too big for the card counted as only on
 // this computer, while its saved-take card says the rest of it was copied.
 TEST_CASE (TakeCopyWording_TheLineUnderRecordAgreesWithTheSavedTakeCard)
@@ -1469,6 +1567,30 @@ TEST_CASE (TakeCopyWording_TheLineUnderRecordAgreesWithTheSavedTakeCard)
     Tally added;
     added.addedFilesWaiting = 1;
     REQUIRE (tallyLine (added) == "1 take has a file still to copy to the card.");
+}
+
+// The bug: a take waiting for its own card, with another card in its place,
+// read "It will be copied to the card when it is back" -- of a card the user
+// could see was in. After following the FAT32 advice to reformat, it was
+// never coming. Mutation: another card counted as the card being out.
+TEST_CASE (TakeCopyWording_AnotherCardInPlaceIsNotTheCardBeingOut)
+{
+    Tally other;
+    other.onlyOnComputer = other.differentCard = 1;
+    const auto line = tallyLine (other);
+    REQUIRE (line.find ("when it is back") == std::string::npos);
+    REQUIRE (line == "1 take is only on this computer: the card in now isn't the one it's for. "
+                     "It will be copied when its own card is back.");
+
+    other.onlyOnComputer = other.differentCard = 2;
+    REQUIRE (tallyLine (other).find ("2 takes are only on this computer: the card in now isn't the one they're for.")
+             == 0);
+
+    // One out, one for another card: neither promise fits both.
+    Tally mixed;
+    mixed.onlyOnComputer = 2;
+    mixed.cardMissing = mixed.differentCard = 1;
+    REQUIRE (tallyLine (mixed) == "2 takes are only on this computer for now.");
 }
 
 // Asked before quitting when the copy a quit waited for failed: says the copy

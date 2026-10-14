@@ -1017,8 +1017,9 @@ int main()
         check (fs::exists (local / cardcopy::kMarkerFileName), "it stays marked to be copied");
         check (r.has_value() && cardcopy::describe (r->result, local.string()).find ("Copied") == std::string::npos,
                "and is not called copied");
-        check (copier.summary().onlyOnComputer == 1 && copier.summary().cardMissing == 1,
-               "the line under Record says it will be copied when its card is back");
+        check (copier.summary().onlyOnComputer == 1 && copier.summary().differentCard == 1
+                   && copier.summary().cardMissing == 0,
+               "the line under Record says it waits for its own card, not for the card in now to come back");
 
         // Its own card is back: the retry the app makes every 10 s copies it.
         {
@@ -1105,6 +1106,149 @@ int main()
         check (copier.retryWithCardIn (f.card.string(), "uuid:CARD-A", true) == 1, "card A seen back sends it");
         const auto own = waitForResult (copier, 15s);
         check (own.has_value() && own->result.outcome == cardcopy::Outcome::Copied, "and it reaches card A");
+    }
+
+    // A take stopped because this computer's disk filled: its stop-time
+    // record could not be written, and every copy of it in that run ended
+    // "not finished yet" until a relaunch.
+    std::printf ("\n15. A take stopped in this run without its stop time\n");
+    {
+        Fixture f;
+        const auto local = f.take ("2026-10-15_0030_DiskFull");
+        std::ofstream (local / "session.json", std::ios::trunc)
+            << "{ \"sessionName\": \"Show\", \"startTimestamp\": \"2026-10-15T00:30:00\" }";
+
+        CardCopier copier (f.factory());
+        auto job = f.job (local);
+        job.stoppedHere = true;
+        copier.start (job);
+        const auto r = waitForResult (copier, 15s);
+        check (r.has_value() && r->result.outcome == cardcopy::Outcome::Copied,
+               "the take this run stopped is copied, its record as it is");
+        check (sameOnCard (local, f.card / "2026-10-15_0030_DiskFull"), "every file is on the card");
+
+        // The same folder found at launch may be one a crash cut off.
+        const auto found = f.take ("2026-10-15_0040_Crashed");
+        std::ofstream (found / "session.json", std::ios::trunc)
+            << "{ \"sessionName\": \"Show\", \"startTimestamp\": \"2026-10-15T00:40:00\" }";
+        copier.resumePendingIn (f.staging.string());
+        const auto later = waitForResult (copier, 15s);
+        check (later.has_value() && later->result.outcome == cardcopy::Outcome::NotFinishedYet,
+               "one found at launch without its stop time waits for the recovery card");
+    }
+
+    // A take the launch found still to be copied, renamed in Finder while it
+    // copies: the guide says the copy follows it. It was said to be "gone"
+    // and dropped from the line under Record until the next launch.
+    std::printf ("\n16. A take found at launch, renamed while it copies\n");
+    {
+       #if defined(__linux__) || defined(__APPLE__)
+        Fixture f;
+        const auto local = f.take ("2026-10-15_0050_Found");
+        const auto renamed = f.staging / "Act 3 - Cy";
+
+        // The first card write waits until the folder has been renamed.
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->blockWritesTo = "01_Alice.wav";
+            f.gate->afterWrites = 0;
+            f.gate->open = false;
+        }
+
+        CardCopier copier (f.factory());
+        copier.resumePendingIn (f.staging.string());
+        check (f.gate->waitUntilBlocked (15s), "the take found at launch is being copied");
+        fs::rename (local, renamed);
+        f.gate->release();
+
+        const auto r = waitForResult (copier, 20s);
+        check (r.has_value() && r->result.outcome == cardcopy::Outcome::Copied,
+               "the copy follows the folder to its new name");
+        check (r.has_value() && fs::path (r->folderNow) == renamed, "and says where it is now");
+        check (sameOnCard (renamed, f.card / "2026-10-15_0050_Found"), "every file is on the card");
+        check (copier.summary().onlyOnComputer == 0, "nothing is left only on this computer");
+       #else
+        check (true, "(Windows: no folder tracker; a folder with open files cannot be renamed there)");
+       #endif
+    }
+
+    // A take recorded now, in a run whose launch look for marked takes is
+    // held behind it: that look found the take's own marker first and copied
+    // it as "an earlier take" -- twice onto the card, the second into "_2".
+    std::printf ("\n17. The take recording now is not an earlier take\n");
+    {
+        Fixture f;
+        const auto local = f.take ("2026-10-15_0100_Now");
+
+        CardCopier copier (f.factory());
+        copier.expect (local.string());
+        copier.resumePendingIn (f.staging.string());
+
+        std::optional<int> resumed;
+        for (int i = 0; i < 500 && ! resumed.has_value(); ++i)
+        {
+            resumed = copier.takeResumedCount();
+            std::this_thread::sleep_for (10ms);
+        }
+        check (resumed == std::optional<int> (0), "the launch's look leaves the take recording now alone");
+
+        auto job = f.job (local);
+        job.stoppedHere = true;
+        copier.start (job);
+        const auto done = collectResults (copier, 1, 15s);
+        check (done.size() == 1u && done.front().result.outcome == cardcopy::Outcome::Copied,
+               "at its Stop it is copied, once");
+        check (! fs::exists (f.card / "2026-10-15_0100_Now_2"), "and nothing goes to the card a second time");
+    }
+
+    // The FAT32 advice followed: "reformat the card as ExFAT (this erases it)
+    // or use another card". Either is a card with another identity, and the
+    // take was refused it as "not the one this take is for" for ever.
+    std::printf ("\n18. The card reformatted after a file too big for it\n");
+    {
+       #if ! defined(_WIN32)
+        Fixture f;
+        const auto local = f.take ("2026-10-15_0110_Movie");
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:FAT32-CARD";
+        }
+
+        rlimit old {};
+        getrlimit (RLIMIT_FSIZE, &old);
+        rlimit small = old;
+        small.rlim_cur = 1u << 20; // MIX.wav and the stem are bigger than this
+
+        CardCopier copier (f.factory());
+        auto job = f.job (local);
+        job.marker.cardIdentity = "uuid:FAT32-CARD";
+        job.stoppedHere = true;
+        setrlimit (RLIMIT_FSIZE, &small);
+        copier.start (job);
+        const auto tooBig = waitForResult (copier, 15s);
+        setrlimit (RLIMIT_FSIZE, &old);
+        check (tooBig.has_value() && tooBig->result.outcome == cardcopy::Outcome::FileTooBig,
+               "a file is too big for the card");
+
+        // Reformatted as ExFAT: erased, and a new identity.
+        fs::remove_all (f.card);
+        fs::create_directories (f.card);
+        {
+            const std::lock_guard<std::mutex> l (f.gate->lock);
+            f.gate->cardId = "uuid:EXFAT-CARD";
+        }
+
+        // The next Stop's retry.
+        copier.retry ([] (const cardcopy::Result& r) { return cardcopy::isFailure (r.outcome); });
+        const auto again = waitForResult (copier, 15s);
+        check (again.has_value() && again->result.outcome == cardcopy::Outcome::Copied,
+               "the reformatted card is taken as the take's, and the whole take goes to it");
+        check (sameOnCard (local, f.card / "2026-10-15_0110_Movie"), "every file is on it");
+        check (copier.summary().onlyOnComputer == 0 && copier.summary().partlyOnCard == 0,
+               "and nothing is left waiting");
+       #else
+        check (true, "(RLIMIT_FSIZE is POSIX)");
+       #endif
     }
 
     std::printf ("\n%s (%d checks, %d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILED", checks, failures);

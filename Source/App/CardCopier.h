@@ -43,6 +43,10 @@ public:
         /// The copy keeps the marker on this computer until followUpsFinished()
         /// has had the take copied again with it.
         bool moreFilesComing = false;
+        /// Stopped in this run, every file closed: finished, whatever its
+        /// session.json says (cardcopy::Control::takeIsFinished). False for a
+        /// take found at launch, which may be one a crash cut off.
+        bool stoppedHere = false;
     };
 
     enum class Phase { None, Waiting, Copying, Copied, StillOnComputer };
@@ -81,6 +85,12 @@ public:
 
     CardCopier (const CardCopier&) = delete;
     CardCopier& operator= (const CardCopier&) = delete;
+
+    /// A take of this run is recording into `localFolder` (marked to be copied
+    /// already), and start() queues it at its Stop. Until then the launch's
+    /// look for marked takes leaves that folder alone: it is not an earlier
+    /// take, and found by both it would be copied twice.
+    void expect (const std::string& localFolder);
 
     /// Queues one take, at its Stop. Every call is a take of its own, even at
     /// a folder an earlier take of this run had: take folders are named by
@@ -213,6 +223,12 @@ private:
         /// Queued again because its card was seen back in: work a quit would
         /// cut off, though its last attempt failed. Until that attempt ends.
         bool countsAsWork = false;
+        /// A file was too big for the take's card, and the user was told to
+        /// reformat it as ExFAT or use another card: either is a card with
+        /// another identity, and the next card the copy reaches is taken as
+        /// the take's -- not refused as "not the one this take is for", for
+        /// ever. Until an attempt reaches a card.
+        bool takeNextCard = false;
     };
 
     /// Under the lock: whether a queued take is work a quit would cut off.
@@ -230,6 +246,7 @@ private:
         std::vector<Finished> finished;
         TakeId inFlight = 0;                // 0: none
         std::string scanRoot;               // a resumePendingIn() still to do
+        std::set<std::string> expected;     // expect(): takes of this run not yet started
         std::optional<int> resumedCount;
         bool running = false;
         std::atomic<bool> cancelling { false };

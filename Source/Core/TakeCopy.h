@@ -267,6 +267,12 @@ struct Control
     /// The user's "Copy again": the card in the reader now is the one wanted,
     /// whichever card the take was for. It becomes the take's card.
     bool anyCard = false;
+    /// The take was stopped in this run of the app, its files all closed: it
+    /// is finished whatever its session.json says. A stop-time record that
+    /// could not be written -- this computer's disk full, the reason the take
+    /// stopped -- is not a take still recording, and must not keep it from
+    /// the card until the next launch.
+    bool takeIsFinished = false;
 };
 
 struct Result
@@ -405,6 +411,8 @@ struct Tally
     int onlyOnComputer = 0;
     /// How many of those because the card was not plugged in.
     int cardMissing = 0;
+    /// How many of those because another card is in the take's card's place.
+    int differentCard = 0;
     /// On the card but for a file too big for the card's format (FAT32's
     /// 4 GB), which stays on this computer. Not counted above.
     int partlyOnCard = 0;
@@ -417,6 +425,21 @@ struct Tally
 /// take is on the card. Never says a take is only on this computer when the
 /// rest of it is on the card, which its saved-take card says.
 std::string tallyLine (const Tally& tally);
+
+/// Whether `path` is on the save location for the take recording now, by
+/// path arithmetic only: asking the disk is the very call that hangs on a
+/// dead card. A take recorded on this computer for a card (`route`
+/// ComputerThenCard) has nothing on the card until it is copied; one recorded
+/// straight to the save location has everything there but its backup copy in
+/// `backupFolder` (empty when none is kept).
+bool isOnTheSaveLocationWhileRecording (const std::string& path, TakeRoute route, const std::string& backupFolder);
+
+/// Said at Stop when the drive the take was being finished on stopped
+/// answering. `recordedHere`: the take was recorded on this computer for a
+/// card, which it has not touched -- so it is this computer's drive, and its
+/// files are named (`takeFolder`), never "check the card". Otherwise the card,
+/// with its backup copy on this computer (`backupFolder`, when one was kept).
+std::string stoppedAnsweringAtStop (bool recordedHere, const std::string& takeFolder, const std::string& backupFolder);
 
 } // namespace cardcopy
 } // namespace mma

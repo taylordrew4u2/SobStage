@@ -2965,6 +2965,11 @@ void Application::toggleRecording()
                 // copy is checked pick it up at the next launch. Nothing is
                 // refused over it -- a take that records with no note is
                 // still copied when this one stops.
+                // Not an earlier take to the launch's look for marked ones,
+                // which may still be held behind this take.
+                if (onComputer)
+                    cardCopier.expect (folder.toStdString());
+
                 if (onComputer
                     && ! replaceWithTextChecked (juce::File (folder).getChildFile (cardcopy::kMarkerFileName),
                                                  juce::String (cardcopy::markerToJson (
@@ -3270,9 +3275,12 @@ void Application::toggleRecording()
 
             if (! lastSessionFilesListed && lastSessionFolder.isNotEmpty())
                 noteActivity (ActivityLevel::Failed, "Recording",
-                              "The card stopped answering after the take, so the files in "
-                              + juce::File (lastSessionFolder).getFileName()
-                              + " couldn't be checked. Check the card is plugged in.");
+                              currentTakeRoute == TakeRoute::ComputerThenCard
+                                  ? "This computer's drive stopped answering after the take, so the files in "
+                                        + juce::File (lastSessionFolder).getFileName() + " couldn't be checked."
+                                  : "The card stopped answering after the take, so the files in "
+                                        + juce::File (lastSessionFolder).getFileName()
+                                        + " couldn't be checked. Check the card is plugged in.");
 
             std::vector<TakeFile> written;
             for (const auto& f : lastSessionFiles)
@@ -3393,15 +3401,16 @@ void Application::toggleRecording()
         // The same account goes on the saved-take card, beside the backup's
         // path -- which is offered as a place to look, not as a complete copy,
         // because the backup is written by the same stalled writer.
+        // A take recorded on this computer for a card never touched the card:
+        // it is this computer's drive that stopped, and "check the card" would
+        // send the user to the one thing that was fine.
+        const bool recordedHere = currentTakeRoute == TakeRoute::ComputerThenCard;
+
         if (takeCardUnresponsive && currentSessionFolder.isNotEmpty())
         {
             CardRemovalNotice stalled;
-            stalled.message = "The card stopped answering while this take was being finished, so "
-                              "the end of the recording may be missing from it.";
-            stalled.message += currentMirrorFolder.isNotEmpty()
-                ? " The backup copy on this computer may be missing the same part: "
-                      + currentMirrorFolder.toStdString()
-                : std::string (" Check the card before recording again.");
+            stalled.message = cardcopy::stoppedAnsweringAtStop (recordedHere, currentSessionFolder.toStdString(),
+                                                                currentMirrorFolder.toStdString());
             cardRemovalNotice = stalled;
             cardRemovalPending = true;
         }
@@ -3410,7 +3419,8 @@ void Application::toggleRecording()
                           ? ActivityLevel::Failed : ActivityLevel::Stopped,
                       "Recording",
                       takeCardUnresponsive
-                          ? endedBy + because + " The card stopped answering, so the end of "
+                          ? endedBy + because + (recordedHere ? " This computer's drive" : " The card")
+                                + " stopped answering, so the end of "
                                 + juce::File (lastSessionFolder).getFileName()
                                 + " may be missing."
                       : lastTakeHeldNoAudio
@@ -3446,20 +3456,19 @@ void Application::toggleRecording()
                             && currentSessionFolder.isNotEmpty();
         lastCopyRoot = lastTakeCopiesToCard ? currentCopyRoot : juce::String();
 
+        // Stopped here, every file closed: finished, even if its stop-time
+        // record could not be written -- a full disk, the reason it stopped.
         if (lastTakeCopiesToCard)
             copyJob = CardCopier::Job { currentSessionFolder.toStdString(),
                                         { currentCopyRoot.toStdString(), {}, currentCopyCardIdentity },
                                         followTakeFolderAfterTheTake(),
-                                        moreFilesComing };
+                                        moreFilesComing,
+                                        true };
 
         recordingEngine.stop();
         recordingStartMs = 0.0;
         bufferLadder.setRecording (false);
         syncSleepInhibitor();
-
-        // Every movie is finished and the take's combine is queued: whatever
-        // combining is waiting can have the card now.
-        syncAfterTakeHolds();
 
         currentSessionFolder.clear();
         currentMirrorFolder.clear();
@@ -3479,6 +3488,13 @@ void Application::toggleRecording()
                 return cardcopy::isFailure (r.outcome) && r.outcome != cardcopy::Outcome::ComputerCopyMissing;
             });
         }
+
+        // Every movie is finished and the take's combine is queued: whatever
+        // combining is waiting can have the card now. After the copy is
+        // queued, not before: a launch's look for marked takes held behind
+        // this take would otherwise find it first, under whatever name its
+        // folder has now, and copy it a second time as "an earlier take".
+        syncAfterTakeHolds();
 
         // A destination the user chose mid-take, applied now that applying it
         // cannot move a running take's files out from under it.
@@ -5938,10 +5954,12 @@ void Application::followTakeFolderMovedAfterAudioStopped()
 bool Application::isOnCard (const juce::File& file) const
 {
     // Path arithmetic only: asking the filesystem would be the very call that
-    // hangs on a dead card.
-    return currentMirrorFolder.isEmpty()
-        || (file != juce::File (currentMirrorFolder)
-            && ! file.isAChildOf (juce::File (currentMirrorFolder)));
+    // hangs on a dead card. A take recorded on this computer for a card has
+    // nothing on the card: a "card" that stopped answering is no reason to
+    // skip its stop-time record, which its copy to the card waits for.
+    return cardcopy::isOnTheSaveLocationWhileRecording (file.getFullPathName().toStdString(), currentTakeRoute,
+                                                        currentMirrorFolder.isEmpty() ? std::string()
+                                                            : juce::File (currentMirrorFolder).getFullPathName().toStdString());
 }
 
 bool Application::writeTakeText (const juce::File& file, const juce::String& text) const

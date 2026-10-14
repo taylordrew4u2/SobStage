@@ -344,10 +344,12 @@ Result copyTakeOnce (CopyFileSystem& fs, const std::string& localFolder, const M
 
     // 1. The take must be finished. A session.json without a stop time is the
     //    take recording now, or one a crash cut off: the recovery card stamps
-    //    its stop time, and the copy is tried again after that.
+    //    its stop time, and the copy is tried again after that. A take this
+    //    run stopped is finished, whatever its record says.
     if (! fs.exists (localFolder))
         return finish (result, Outcome::ComputerCopyMissing);
 
+    if (! control.takeIsFinished)
     {
         std::string text;
 
@@ -900,6 +902,14 @@ std::string tallyLine (const Tally& tally)
             return takes (tally.onlyOnComputer, "is", "are") + " only on this computer. "
                  + (tally.onlyOnComputer == 1 ? "It" : "They") + " will be copied to the card when it is back.";
 
+        // The card in is not theirs: "when it is back" would read as this one.
+        if (tally.differentCard == tally.onlyOnComputer)
+            return tally.onlyOnComputer == 1
+                ? std::string ("1 take is only on this computer: the card in now isn't the one it's for. "
+                               "It will be copied when its own card is back.")
+                : std::to_string (tally.onlyOnComputer) + " takes are only on this computer: the card in now "
+                  "isn't the one they're for. They will be copied when their own card is back.";
+
         return takes (tally.onlyOnComputer, "is", "are") + " only on this computer for now.";
     }
 
@@ -911,6 +921,48 @@ std::string tallyLine (const Tally& tally)
         return takes (tally.addedFilesWaiting, "has a file", "have files") + " still to copy to the card.";
 
     return {};
+}
+
+namespace {
+
+bool isSeparatorChar (char c) noexcept
+{
+    return c == '/' || c == '\\';
+}
+
+/// `path` is `folder` or inside it, by spelling.
+bool isSameOrInside (const std::string& path, const std::string& folder)
+{
+    auto base = folder;
+    while (base.size() > 1 && isSeparatorChar (base.back()))
+        base.pop_back();
+
+    if (base.empty() || path.compare (0, base.size(), base) != 0)
+        return false;
+
+    return path.size() == base.size() || isSeparatorChar (path[base.size()]) || isSeparatorChar (base.back());
+}
+
+} // namespace
+
+bool isOnTheSaveLocationWhileRecording (const std::string& path, TakeRoute route, const std::string& backupFolder)
+{
+    if (route == TakeRoute::ComputerThenCard)
+        return false;
+
+    return backupFolder.empty() || ! isSameOrInside (path, backupFolder);
+}
+
+std::string stoppedAnsweringAtStop (bool recordedHere, const std::string& takeFolder, const std::string& backupFolder)
+{
+    if (recordedHere)
+        return "This computer's drive stopped answering while this take was being finished, so the end of the "
+               "recording may be missing from it. Its files are in " + takeFolder + ".";
+
+    return "The card stopped answering while this take was being finished, so the end of the recording may be "
+           "missing from it."
+         + (! backupFolder.empty() ? " The backup copy on this computer may be missing the same part: " + backupFolder
+                                   : std::string (" Check the card before recording again."));
 }
 
 std::string copyFailedBeforeQuitting (const std::vector<std::pair<Result, std::string>>& failures, Wording wording)
@@ -1125,6 +1177,17 @@ std::string describe (const Result& result, const std::string& localFolder, Word
     // to its folder since. "Only on this computer" would be untrue of it.
     if (result.addedFilesOnly && isFailure (result.outcome))
     {
+        // Gone to its own card, and another is in the reader now: "This take
+        // is on the card" would be read of the one in hand, which holds none
+        // of it.
+        if (result.outcome == Outcome::DifferentCard)
+            return "This take is on its own card, not the one in now. A file added to it since will be copied "
+                   + std::string (quitting ? "the next time you open SobStage with that card in."
+                                           : "when that card is back.")
+                   + " It's safe on this computer in " + localFolder + "."
+                   + (quitting ? std::string() : std::string (" To copy the whole take to the card that's in "
+                                                              "now, choose Copy again."));
+
         if (result.outcome == Outcome::CardMissing)
             return "This take is on the card, but a file added to it since isn't yet: the card isn't "
                    "plugged in. It's safe on this computer in " + localFolder

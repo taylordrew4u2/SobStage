@@ -108,6 +108,14 @@ void CardCopier::startWorkerIfNeeded (bool needed)
     }
 }
 
+void CardCopier::expect (const std::string& localFolder)
+{
+    const std::lock_guard<std::mutex> lock (state->lock);
+
+    if (! localFolder.empty())
+        state->expected.insert (localFolder);
+}
+
 bool CardCopier::start (Job job)
 {
     bool needed = false;
@@ -117,6 +125,8 @@ bool CardCopier::start (Job job)
 
         if (state->cancelling.load (std::memory_order_acquire))
             return false;
+
+        state->expected.erase (job.localFolder);
 
         // A record of its own, even at a folder an earlier take had: that one
         // keeps its own job, which follows its folder wherever it went.
@@ -476,10 +486,12 @@ CardCopier::Summary CardCopier::summary() const
 
             ++s.onlyOnComputer;
 
-            // Both wait for the take's own card to be put in.
-            if (record.last->outcome == cardcopy::Outcome::CardMissing
-                || record.last->outcome == cardcopy::Outcome::DifferentCard)
+            // Both wait for the take's own card to be put in, but "when it is
+            // back" of another card in its place would read as that one.
+            if (record.last->outcome == cardcopy::Outcome::CardMissing)
                 ++s.cardMissing;
+            else if (record.last->outcome == cardcopy::Outcome::DifferentCard)
+                ++s.differentCard;
         }
     }
 
@@ -527,16 +539,35 @@ void CardCopier::scan (State& s, cardcopy::CopyFileSystem& fs, const std::string
     std::sort (found.begin(), found.end(),
                [] (const auto& a, const auto& b) { return a.first < b.first; });
 
+    // Each folder held, as a take stopped in this run's is, so a rename in
+    // Finder while it copies is followed rather than called a folder gone.
+    // Here, on the worker: the folders are on this computer, but still disk
+    // calls. A platform that cannot follow one holds nothing (null).
+    std::vector<std::shared_ptr<TakeFolderTracker>> followed;
+
+    for (const auto& [folder, marker] : found)
+    {
+        auto tracker = std::make_shared<TakeFolderTracker>();
+        followed.push_back (tracker->open (folder) ? std::move (tracker) : nullptr);
+    }
+
     const std::lock_guard<std::mutex> lock (s.lock);
     int added = 0;
 
-    for (auto& [folder, marker] : found)
+    for (size_t i = 0; i < found.size(); ++i)
     {
-        // This run already knows it: started at a Stop, or found before.
-        if (s.newestAt.count (folder) > 0)
+        auto& [folder, marker] = found[i];
+
+        // This run already knows it: started at a Stop, found before, or a
+        // take of this run still to be started at its Stop.
+        if (s.newestAt.count (folder) > 0 || s.expected.count (folder) > 0)
             continue;
 
-        enqueueLocked (s, addTakeLocked (s, { folder, std::move (marker), nullptr }));
+        Job job;
+        job.localFolder = folder;
+        job.marker = std::move (marker);
+        job.followedFolder = std::move (followed[i]);
+        enqueueLocked (s, addTakeLocked (s, std::move (job)));
         ++added;
     }
 
@@ -600,7 +631,7 @@ void CardCopier::run (std::shared_ptr<State> s)
                 job = record.job;
                 keepMarker = record.awaitingFollowUps;
                 copiedBefore = record.copiedFiles;
-                anyCard = record.anyCard;
+                anyCard = record.anyCard || record.takeNextCard;
                 s->inFlight = key;
                 s->lastProgress = Clock::now();
             }
@@ -635,6 +666,7 @@ void CardCopier::run (std::shared_ptr<State> s)
 
         cardcopy::Control control;
         control.keepMarker = keepMarker;
+        control.takeIsFinished = job.stoppedHere;
         control.cancel = &s->cancelling;
         control.verified = &s->verified;
         control.copiedBefore = &copiedBefore;
@@ -712,6 +744,17 @@ void CardCopier::run (std::shared_ptr<State> s)
             record.anyCard = false;
             record.countsAsWork = false;
         }
+
+        // Told to reformat the card or use another: the next card reached is
+        // the take's. Kept through attempts that reach no card at all.
+        if (result.outcome == cardcopy::Outcome::FileTooBig)
+            record.takeNextCard = true;
+        else if (result.outcome != cardcopy::Outcome::Yielded && result.outcome != cardcopy::Outcome::Cancelled
+                 && result.outcome != cardcopy::Outcome::CardMissing
+                 && result.outcome != cardcopy::Outcome::NotFinishedYet
+                 && result.outcome != cardcopy::Outcome::ComputerCopyMissing
+                 && result.outcome != cardcopy::Outcome::ComputerReadFailed)
+            record.takeNextCard = false;
 
         if (result.outcome == cardcopy::Outcome::Yielded)
         {
