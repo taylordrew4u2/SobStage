@@ -42,10 +42,11 @@ bool isAbandonedSafeWriteTemp (const std::string& fileName,
 
 /// True for a file this app writes into a take folder only while making
 /// something after the take, and renames away once that is finished: the
-/// combined movie's hidden working file (".V01_Cam_with-sound.mov") and the
-/// podcast-ready copy's "MIX - Apple Podcasts.wav.part". Found at launch, one
-/// is what a crash, force-quit or power cut left of an unfinished export --
-/// never a recording, and never something the user can play.
+/// combined movie's hidden working file (".V01_Cam_with-sound.mov"), the
+/// podcast-ready copy's "MIX - Apple Podcasts.wav.part", and a file being
+/// copied to the card and not yet checked (".MIX.wav.sobcopy"). Found at
+/// launch, one is what a crash, force-quit or power cut left of an unfinished
+/// export or copy -- never a recording, and never something the user can play.
 bool isAbandonedTakeWorkingFile (const std::string& fileName);
 
 /// True when a finished take produced files but no audio worth the name.

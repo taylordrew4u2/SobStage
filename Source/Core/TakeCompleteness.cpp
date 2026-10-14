@@ -93,6 +93,13 @@ bool isAbandonedTakeWorkingFile (const std::string& fileName)
             if (endsWith (container) && fileName.size() > 1 + std::string (container).size())
                 return true;
 
+    // A file on its way to the card, written as ".<name>.sobcopy" and renamed
+    // to its real name only once it has been read back and matched. The real
+    // file it stands for is still in the take's folder on this computer.
+    if (fileName.size() > 1 + std::string (".sobcopy").size() && fileName.front() == '.'
+        && endsWith (".sobcopy"))
+        return true;
+
     // The podcast-ready copy: "<mix> - <service>.wav", written as ".part".
     if (endsWith (".wav.part") && fileName.find (" - ") != std::string::npos && fileName.front() != '.')
         return true;

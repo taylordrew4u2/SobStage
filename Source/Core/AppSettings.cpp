@@ -64,6 +64,7 @@ JsonValue AppSettings::toJson() const
     root["confirmedSaveLocation"] = JsonValue (confirmedSaveLocation);
     root["askWhereToSaveEveryTime"] = JsonValue (askWhereToSaveEveryTime);
     root["mirrorEnabled"] = JsonValue (mirrorEnabled);
+    root["recordOnComputerThenCopy"] = JsonValue (recordOnComputerThenCopy);
     root["aggregateName"] = JsonValue (aggregateName);
     root["masterVolume"] = JsonValue (masterVolume);
     root["rememberedOutputDeviceId"] = JsonValue (rememberedOutputDeviceId);
@@ -167,6 +168,7 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
     if (auto* p = v.find ("confirmedSaveLocation")) s.confirmedSaveLocation = p->asString();
     if (auto* p = v.find ("askWhereToSaveEveryTime")) s.askWhereToSaveEveryTime = p->asBool (false);
     if (auto* p = v.find ("mirrorEnabled")) s.mirrorEnabled = p->asBool (true);
+    if (auto* p = v.find ("recordOnComputerThenCopy")) s.recordOnComputerThenCopy = p->asBool (true);
     if (auto* p = v.find ("aggregateName")) s.aggregateName = p->asString (s.aggregateName);
     if (auto* p = v.find ("masterVolume")) s.masterVolume = p->asDouble (s.masterVolume);
     if (auto* p = v.find ("rememberedOutputDeviceId")) s.rememberedOutputDeviceId = p->asString();

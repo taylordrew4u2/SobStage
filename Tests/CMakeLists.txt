@@ -33,6 +33,7 @@ add_executable(mma_core_tests
     test_MirrorPolicy.cpp
     test_SetupAdvisor.cpp
     test_BusPowerDetector.cpp
+    test_TakeCopy.cpp
     test_SampleFormat.cpp
     test_WritePipeline.cpp
     test_StemAligner.cpp

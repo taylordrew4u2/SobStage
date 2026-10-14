@@ -529,3 +529,23 @@ TEST_CASE (AppSettings_AKnownSettingIsNeverMistakenForAnUnknownOne)
     REQUIRE (read.unknownPortFields.empty());
     REQUIRE (read.unknownCameraFields.empty());
 }
+
+// Recording on this computer and copying to the card is on unless someone
+// turns it off, and a file from before it existed reads as on.
+TEST_CASE (AppSettings_RecordOnComputerThenCopyDefaultsOnAndRoundTrips)
+{
+    REQUIRE (AppSettings().recordOnComputerThenCopy);
+
+    AppSettings off;
+    off.recordOnComputerThenCopy = false;
+    REQUIRE_FALSE (AppSettings::fromJsonString (off.toJsonString()).recordOnComputerThenCopy);
+
+    AppSettings on;
+    REQUIRE (AppSettings::fromJsonString (on.toJsonString()).recordOnComputerThenCopy);
+
+    REQUIRE (AppSettings::fromJsonString ("{ \"mirrorEnabled\": false }").recordOnComputerThenCopy);
+
+    // Written as a member of its own, not folded into something an older
+    // version would drop: an older copy keeps it through its unknown members.
+    REQUIRE (off.toJsonString().find ("\"recordOnComputerThenCopy\": false") != std::string::npos);
+}

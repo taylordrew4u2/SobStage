@@ -49,6 +49,12 @@ struct AppSettings
     bool askWhereToSaveEveryTime = false;
 
     bool mirrorEnabled = true;                          // §6.3, default on
+
+    /// A take meant for an SD card or USB stick is recorded on this
+    /// computer's own drive and copied to the card after Stop (see
+    /// TakeRoute). On by default; off records straight to the card, exactly
+    /// as before this existed.
+    bool recordOnComputerThenCopy = true;
     std::string aggregateName = "SobStage"; // §7, what other apps see
     double masterVolume = 70.0;                         // §5.1 default
     /// Stable id of the monitor output the user explicitly chose. §5.3 makes

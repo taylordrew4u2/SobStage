@@ -2,6 +2,8 @@
 #include "Platform/VolumeCapacity.h"
 
 #include <filesystem>
+#include <set>
+#include <string>
 
 using namespace mma;
 
@@ -244,3 +246,32 @@ TEST_CASE (VolumeFingerprint_AnotherFilesystemIsAnotherVolume)
     REQUIRE (proc.fsType == "40864");
 }
 #endif
+
+// With the card out, its path climbed to /Volumes -- on the startup disk -- so
+// a missing card read as "on this computer" and the take went "straight" into
+// a folder that could not be made.
+TEST_CASE (VolumeCapacity_APathOnAMissingCardIsUnderAMissingMountPoint)
+{
+    const std::set<std::string> present { "/Volumes", "/Volumes/Macintosh HD", "/media", "/media/sam",
+                                          "/media/sam/CARD", "/run", "/run/media", "/run/media/sam" };
+    const auto exists = [&present] (const std::string& p) { return present.count (p) > 0; };
+
+    REQUIRE (volumecapacity::isUnderMissingMountPoint ("/Volumes/SD/RECORDINGS", exists));
+    REQUIRE (volumecapacity::isUnderMissingMountPoint ("/Volumes/SD", exists));
+    REQUIRE (volumecapacity::isUnderMissingMountPoint ("/Volumes/SD/", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("/Volumes/Macintosh HD/Users/sam", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("/Volumes", exists));
+
+    REQUIRE (volumecapacity::isUnderMissingMountPoint ("/media/sam/OTHER/RECORDINGS", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("/media/sam/CARD/RECORDINGS", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("/media/sam", exists));
+
+    REQUIRE (volumecapacity::isUnderMissingMountPoint ("/run/media/sam/CARD/RECORDINGS", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("/run/media/sam", exists));
+
+    // Anywhere else is not a removable mount point, and Windows paths never are.
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("/Users/sam/RECORDINGS", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("/home/sam/Volumes/x", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("E:\\RECORDINGS", exists));
+    REQUIRE_FALSE (volumecapacity::isUnderMissingMountPoint ("", exists));
+}

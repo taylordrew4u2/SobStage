@@ -202,3 +202,21 @@ TEST_CASE (TakeCompleteness_AnUnfinishedExportsWorkingFileIsRecognisedAndNothing
     REQUIRE_FALSE (isAbandonedTakeWorkingFile ("._MIX - Apple Podcasts.wav.part"));
     REQUIRE_FALSE (isAbandonedTakeWorkingFile ("session.json"));
 }
+
+// A file on its way to the card is copied under ".<name>.sobcopy" and renamed
+// once it is checked. One left by a crash or a pulled card is never the take:
+// the take is still on this computer, so the card's recovery sweep clears it.
+TEST_CASE (TakeCompleteness_ACardCopyWorkingFileIsAbandonedWork)
+{
+    REQUIRE (isAbandonedTakeWorkingFile (".MIX.wav.sobcopy"));
+    REQUIRE (isAbandonedTakeWorkingFile (".01_Alice.wav.sobcopy"));
+    REQUIRE (isAbandonedTakeWorkingFile (".session.json.sobcopy"));
+
+    // Not hidden: not a name this app writes, so not this app's to clear.
+    REQUIRE_FALSE (isAbandonedTakeWorkingFile ("MIX.wav.sobcopy"));
+    REQUIRE_FALSE (isAbandonedTakeWorkingFile (".sobcopy"));
+
+    // The marker that says a take still has to be copied is not abandoned.
+    REQUIRE_FALSE (isAbandonedTakeWorkingFile (".sobstage-card-copy.json"));
+    REQUIRE_FALSE (isAbandonedTakeWorkingFile ("MIX.wav"));
+}

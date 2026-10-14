@@ -4,6 +4,7 @@
 #include <cctype>
 #include <filesystem>
 #include <system_error>
+#include <vector>
 
 #if ! defined(_WIN32)
  #include <cerrno>
@@ -35,6 +36,48 @@ uint64_t choose (uint64_t basicAvailable, std::optional<int64_t> importantUsage)
         return static_cast<uint64_t> (*importantUsage);
 
     return basicAvailable;
+}
+
+bool isUnderMissingMountPoint (const std::string& path,
+                               const std::function<bool (const std::string&)>& exists)
+{
+    if (path.empty() || path.front() != '/')
+        return false;
+
+    std::vector<std::string> parts;
+    std::string part;
+
+    for (size_t i = 1; i <= path.size(); ++i)
+    {
+        if (i == path.size() || path[i] == '/')
+        {
+            if (! part.empty())
+                parts.push_back (part);
+            part.clear();
+        }
+        else
+        {
+            part += path[i];
+        }
+    }
+
+    // How many leading parts name the mount point itself.
+    size_t depth = 0;
+
+    if (parts.size() >= 2 && parts[0] == "Volumes")
+        depth = 2;
+    else if (parts.size() >= 3 && parts[0] == "media")
+        depth = 3;
+    else if (parts.size() >= 4 && parts[0] == "run" && parts[1] == "media")
+        depth = 4;
+    else
+        return false;
+
+    std::string mountPoint;
+    for (size_t i = 0; i < depth; ++i)
+        mountPoint += "/" + parts[i];
+
+    return ! exists (mountPoint);
 }
 
 } // namespace volumecapacity

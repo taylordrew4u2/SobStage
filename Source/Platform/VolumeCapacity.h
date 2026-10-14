@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 
@@ -21,6 +22,17 @@ namespace volumecapacity {
 /// important usage" capacity, which counts that space; it is used when the
 /// system gave one (present and non-zero), and the basic figure otherwise.
 uint64_t choose (uint64_t basicAvailable, std::optional<int64_t> importantUsage) noexcept;
+
+/// True when `path` (UTF-8) is on a removable volume that is not mounted: a
+/// Mac's /Volumes/<X>/..., or Linux's /media/<user>/<X>/... or
+/// /run/media/<user>/<X>/..., where that <X> folder is not there.
+///
+/// With the card out, its path climbs to /Volumes, which is on the startup
+/// disk -- so the card read as "on this computer". `exists` is asked about
+/// the mount point alone. Windows paths never match: a missing E:\ is
+/// already a different drive from C:\.
+bool isUnderMissingMountPoint (const std::string& path,
+                               const std::function<bool (const std::string&)>& exists);
 
 } // namespace volumecapacity
 

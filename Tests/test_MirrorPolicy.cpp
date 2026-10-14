@@ -333,3 +333,29 @@ TEST_CASE (MirrorPlacement_ABackupOnTheSameDiskCountsAgainstRemainingTime)
     // Nothing being written has no remaining time to give.
     REQUIRE (mirrorplacement::remainingSeconds (available, 0.0, 0.0, true) < 0.0);
 }
+
+// A take recorded on this computer and copied to the card afterwards IS the
+// copy on this computer. It has no live backup, and must not be told it was
+// skipped for sharing a disk -- that sentence is about a different setup.
+TEST_CASE (MirrorPolicy_ATakeRecordedOnThisComputerNeedsNoBackup)
+{
+    MirrorPolicy p;
+    p.noteTakeRecordedOnComputer();
+
+    REQUIRE (p.getState() == MirrorState::NotNeededTakeOnComputer);
+    REQUIRE_FALSE (p.isMirroring());
+    REQUIRE_FALSE (p.wasSkippedForSameDisk());
+    REQUIRE_FALSE (p.wasStoppedForSpace());
+    REQUIRE_FALSE (p.noteWriteFailure());
+    REQUIRE (p.evaluateDuringRecording (10 * kGB) == MirrorState::NotNeededTakeOnComputer);
+
+    // The next take decides again.
+    p.reset();
+    REQUIRE (p.getState() == MirrorState::Active);
+    REQUIRE (p.evaluateAtArm (500 * kGB, 1 * kGB) == MirrorState::Active);
+
+    MirrorPolicy unticked;
+    unticked.noteTakeRecordedOnComputer();
+    unticked.setEnabledByUser (false);
+    REQUIRE (unticked.getState() == MirrorState::DisabledByUser);
+}
