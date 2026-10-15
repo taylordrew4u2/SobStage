@@ -1,6 +1,7 @@
 #include "MainScreen.h"
 #include "AppLookAndFeel.h"
 #include <array>
+#include <cmath>
 
 namespace mma {
 
@@ -182,6 +183,9 @@ MainScreen::MainScreen()
     addAndMakeVisible (advancedButton);
 
     camerasButton.onClick = [this] { if (onCamerasClicked) onCamerasClicked(); };
+    // Spoken as "Cameras" whatever the count on it says, so the door has one
+    // name to a screen reader and to anyone looking for it by name.
+    camerasButton.setTitle ("Cameras");
     addAndMakeVisible (camerasButton);
 
     helpButton.onClick = [this] { if (onHelpClicked) onHelpClicked(); };
@@ -189,7 +193,7 @@ MainScreen::MainScreen()
 
     // While a drawer is open its button stays lit, in a lifted grey rather
     // than the accent, which is reserved for the one button that records.
-    for (auto* b : { &advancedButton, &helpButton })
+    for (auto* b : { &advancedButton, &camerasButton, &helpButton })
     {
         b->setColour (juce::TextButton::buttonOnColourId, AppLookAndFeel::surfaceHigh.brighter (0.7f));
         b->setColour (juce::TextButton::textColourOnId, AppLookAndFeel::bone);
@@ -227,18 +231,6 @@ MainScreen::MainScreen()
     cameraSectionLabel.setText ("C A M E R A", juce::dontSendNotification);
     micSectionLabel.setText ("M I C R O P H O N E S", juce::dontSendNotification);
     micSectionLabel.setVisible (true);
-
-    fullPreviewToggle.onClick = [this]
-    { if (onFullPreviewToggled) onFullPreviewToggled (fullPreviewToggle.getToggleState()); };
-    addChildComponent (fullPreviewToggle);
-
-    // The door to the camera panel, on the row it belongs to. The old
-    // "Cameras" button at the foot of the screen stays for the rig that has
-    // none switched on yet -- with no pictures there is no row for this to sit
-    // on, and a user with no camera still has to be able to find the panel.
-    addCameraButton.setColour (juce::TextButton::buttonColourId, AppLookAndFeel::surfaceHigh);
-    addCameraButton.onClick = [this] { if (onCamerasClicked) onCamerasClicked(); };
-    addChildComponent (addCameraButton);
 }
 
 void MainScreen::setVersionText (const juce::String& text)
@@ -663,24 +655,6 @@ void MainScreen::refreshCameraCaption (CameraView& view)
                                              : AppLookAndFeel::secondary);
 }
 
-void MainScreen::releaseCameraViews()
-{
-    if (cameraViews.empty())
-        return;
-
-    cameraViews.clear();
-
-    // Cleared too, so the next setCameraTiles() rebuilds rather than deciding
-    // nothing has changed and leaving the row empty.
-    lastTileIds.clear();
-    lastTileDisplayNames.clear();
-    lastTileViewerRevisions.clear();
-    lastTileSignalStatusTexts.clear();
-    lastTileRecordingStates.clear();
-    lastTileStartingStates.clear();
-    resized();
-}
-
 void MainScreen::setVisibleHeight (int height)
 {
     if (height == visibleHeight)
@@ -928,20 +902,21 @@ void MainScreen::paint (juce::Graphics& g)
     }
 }
 
-void MainScreen::setDoorsOpen (bool settingsOpen, bool helpOpen)
+void MainScreen::setDoorsOpen (bool settingsOpen, bool helpOpen, bool camerasOpen)
 {
     advancedButton.setToggleState (settingsOpen, juce::dontSendNotification);
     helpButton.setToggleState (helpOpen, juce::dontSendNotification);
+    camerasButton.setToggleState (camerasOpen, juce::dontSendNotification);
 }
 
 void MainScreen::resized()
 {
     auto area = getLocalBounds().reduced (16);
 
-    // The masthead: the mark, the name, the tagline, and the one door out.
-    // Settings moved up here from the foot of the screen because it is a
-    // destination rather than a control -- it belongs with the title, not in
-    // the row where the levels are being set.
+    // The masthead: the mark, the name, the tagline, and the doors out --
+    // Help, Cameras, Settings. They are up here rather than at the foot of the
+    // screen because each is a destination rather than a control: they belong
+    // with the title, not in the row where the levels are being set.
     {
         auto header = area.removeFromTop (40);
 
@@ -949,17 +924,35 @@ void MainScreen::resized()
         header.removeFromLeft (10);
 
         // Full-height targets. Reduced to 30px they were the smallest buttons
-        // on the screen, and they are the two most people go looking for.
+        // on the screen, and they are the ones most people go looking for.
         advancedButton.setBounds (header.removeFromRight (112).reduced (0, 2));
+        header.removeFromRight (8);
+        camerasButton.setBounds (header.removeFromRight (104).reduced (0, 2));
         header.removeFromRight (8);
         helpButton.setBounds (header.removeFromRight (80).reduced (0, 2));
         header.removeFromRight (8);
-        versionLabel.setBounds (header.removeFromRight (56));
-        header.removeFromRight (8);
 
-        brandLabel.setBounds (header.removeFromLeft (juce::jmin (128, header.getWidth())));
+        // What gives way in a narrow window, in order: the tagline, then the
+        // version. The wordmark never goes below its own width -- squeezed, it
+        // was drawn over by the version beside it.
+        const auto brandBorder = brandLabel.getBorderSize().getLeftAndRight();
+        const int brandWidth = (int) std::ceil (brandLabel.getFont().getStringWidthFloat (brandLabel.getText()))
+                             + brandBorder;
+        constexpr int kVersionWidth = 56;
+        const bool versionFits = header.getWidth() >= brandWidth + 8 + kVersionWidth;
+
+        versionLabel.setVisible (versionFits);
+        versionLabel.setBounds (versionFits ? header.removeFromRight (kVersionWidth) : juce::Rectangle<int>());
+
+        if (versionFits)
+            header.removeFromRight (8);
+
+        brandLabel.setBounds (header.removeFromLeft (brandWidth));
         header.removeFromLeft (10);
-        taglineLabel.setBounds (header);
+
+        const bool taglineFits = header.getWidth() >= 60;
+        taglineLabel.setVisible (taglineFits);
+        taglineLabel.setBounds (taglineFits ? header : juce::Rectangle<int>());
 
         area.removeFromTop (18);
     }
@@ -973,24 +966,18 @@ void MainScreen::resized()
     cameraSmallerButton.setVisible (haveCameras);
     cameraLargerButton.setVisible (haveCameras);
     cameraSectionLabel.setVisible (haveCameras);
-    fullPreviewToggle.setVisible (haveCameras);
-    addCameraButton.setVisible (haveCameras);
 
     if (haveCameras)
     {
         auto cameraArea = area.removeFromTop (cameraRowHeight() - kCameraRowGap);
 
-        // One row carrying the heading and everything that acts on the
-        // pictures: what they are, how big, how good the preview is, and how to
-        // add another. Grouped here rather than scattered down the screen,
-        // because they are one job.
+        // One row carrying the heading and how big the pictures are drawn.
+        // Everything else about a camera -- whether it records, its name, its
+        // picture size -- is on the Cameras page, through the door in the
+        // masthead, which opens beside this screen so the picture stays in view.
         auto controls = cameraArea.removeFromTop (kCameraControlHeight);
         cameraSectionLabel.setBounds (controls.removeFromLeft (110));
 
-        addCameraButton.setBounds (controls.removeFromRight (108).reduced (0, 1));
-        controls.removeFromRight (10);
-        fullPreviewToggle.setBounds (controls.removeFromRight (108));
-        controls.removeFromRight (10);
         cameraLargerButton.setBounds (controls.removeFromRight (28).reduced (1));
         controls.removeFromRight (4);
         cameraSmallerButton.setBounds (controls.removeFromRight (28).reduced (1));
@@ -1185,19 +1172,6 @@ void MainScreen::resized()
 
     muteButton.setBounds (bottomRow.removeFromRight (92));
     bottomRow.removeFromRight (8);
-
-    // The door to the cameras only earns a place down here when there is no
-    // camera row carrying "+ Add camera" -- otherwise the same door appears
-    // twice on one screen.
-    if (! haveCameras)
-    {
-        camerasButton.setBounds (bottomRow.removeFromRight (124));
-        bottomRow.removeFromRight (10);
-    }
-    else
-    {
-        camerasButton.setBounds ({});
-    }
 
     // What the text wants: the capacity figure, and the elapsed time beside it
     // during a take. Fixed rather than measured, so the row does not shuffle

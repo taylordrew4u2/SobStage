@@ -249,6 +249,44 @@ private:
         return false;
     }
 
+    /// The Cameras door in the masthead. Found by its spoken name: the words
+    /// on it carry a count once a camera is on ("Cameras (2)").
+    juce::Button* camerasDoor() const
+    {
+        for (auto* c : showing())
+            if (auto* b = dynamic_cast<juce::Button*> (c); b != nullptr && b->isEnabled() && b->getTitle() == "Cameras"
+                                                            && b->findParentComponentOfClass<MainScreen>() != nullptr)
+                return b;
+        return nullptr;
+    }
+
+    bool clickCamerasDoor()
+    {
+        if (auto* b = camerasDoor())
+        {
+            exercised.insert (b->getButtonText());
+            b->triggerClick();
+            return true;
+        }
+        return false;
+    }
+
+    /// The Cameras page is up beside the main screen, not in its place: the
+    /// main screen is showing, and it ends where the page begins.
+    bool camerasBesideMainScreen() const
+    {
+        auto* page = find<CameraPanel>();
+        auto* ms = find<MainScreen>();
+        auto* mc = mainComponent();
+        if (page == nullptr || ms == nullptr || mc == nullptr)
+            return false;
+
+        const auto pageArea = mc->getLocalArea (page, page->getLocalBounds());
+        const auto screenArea = mc->getLocalArea (ms, ms->getLocalBounds());
+        return screenArea.getX() < pageArea.getX() && screenArea.getRight() <= pageArea.getX() + 1
+            && pageArea.getRight() <= mc->getWidth() + 1;
+    }
+
     /// The monitor mute button reads "Mute" or "Unmute" depending on state.
     juce::Button* muteButton() const
     {
@@ -609,6 +647,14 @@ private:
             {
                 auto* guide = find<SetupGuidePanel>();
                 return ! isUp<AdvancedPanel>() && guide != nullptr && guide->getPage().step == SetupGuideStep::TestTake;
+            });
+            add ("Cameras puts the guide aside", [this] { clickCamerasDoor(); },
+                 [this] { return isUp<CameraPanel>() && ! isUp<SetupGuidePanel>(); });
+            add ("and closing Cameras brings it back on the same page",
+                 [this] { click<CameraPanel> ("Close"); }, [this]
+            {
+                auto* guide = find<SetupGuidePanel>();
+                return ! isUp<CameraPanel>() && guide != nullptr && guide->getPage().step == SetupGuideStep::TestTake;
             });
             add ("Done closes the guide", [this] { click<SetupGuidePanel> ("Done"); },
                  [this] { return ! isUp<SetupGuidePanel>(); });
@@ -1270,10 +1316,52 @@ private:
         add ("and its Skip closes it", [this] { click<SetupGuidePanel> ("Skip"); },
              [this] { return ! isUp<SetupGuidePanel>(); });
 
-        // Cameras.
-        add ("Cameras opens", [this] { click<MainScreen> ("Cameras"); }, [this] { return isUp<CameraPanel>(); });
-        add ("every control on the Cameras screen", [this] { insertNext (exerciseControlsIn<CameraPanel> ("Cameras")); }, [] { return true; });
-        add ("Cameras' Done goes back", [this] { click<CameraPanel> ("< Done"); }, [this] { return ! isUp<CameraPanel>(); });
+        // Cameras: a page of its own, opened from the masthead and beside the
+        // main screen like Settings, so the pictures stay in view.
+        check ("Cameras is in the masthead", [this]
+        {
+            auto* door = camerasDoor();
+            auto* ms = find<MainScreen>();
+            return door != nullptr && ms != nullptr
+                && ms->getLocalArea (door, door->getLocalBounds()).getBottom() <= 60;
+        });
+        add ("Cameras opens beside the main screen", [this] { clickCamerasDoor(); },
+             [this] { return isUp<CameraPanel>() && camerasBesideMainScreen(); });
+        add ({}, [this] { snapshot ("cameras-page"); }, [] { return true; });
+        add ("every control on the Cameras page", [this] { insertNext (exerciseControlsIn<CameraPanel> ("Cameras")); }, [] { return true; });
+        check ("the Cameras page says how much room recording takes", [this]
+        {
+            if (auto* page = find<CameraPanel>())
+                for (auto* c : showing())
+                    if (auto* label = dynamic_cast<juce::Label*> (c); label != nullptr && label->getText().contains ("an hour")
+                                                                      && label->findParentComponentOfClass<CameraPanel>() == page)
+                        return true;
+            return false;
+        });
+        add ("Settings closes Cameras", [this] { click<MainScreen> ("Settings"); },
+             [this] { return isUp<AdvancedPanel>() && ! isUp<CameraPanel>(); });
+        add ("Cameras closes Settings", [this] { clickCamerasDoor(); },
+             [this] { return isUp<CameraPanel>() && ! isUp<AdvancedPanel>() && camerasBesideMainScreen(); });
+        add ("with Cameras open, the window cannot be dragged narrower than the main screen needs", [this]
+        {
+            if (auto* window = mainWindow())
+            {
+                windowBoundsBefore = window->getBounds();
+                window->setBoundsConstrained (windowBoundsBefore.withWidth (560));
+            }
+        }, [this]
+        {
+            auto* ms = find<MainScreen>();
+            return ms != nullptr && ms->getWidth() >= 600 && camerasBesideMainScreen();
+        });
+        add ("  (window size put back)", [this]
+        {
+            if (auto* window = mainWindow())
+                window->setBounds (windowBoundsBefore);
+        }, [this] { auto* window = mainWindow(); return window != nullptr && window->getBounds() == windowBoundsBefore; });
+        add ("Cameras' Close closes it", [this] { click<CameraPanel> ("Close"); }, [this] { return ! isUp<CameraPanel>(); });
+        add ("Escape closes Cameras", [this] { clickCamerasDoor(); }, [this] { return isUp<CameraPanel>(); });
+        add ("  (Escape)", [this] { pressKey (juce::KeyPress::escapeKey); }, [this] { return ! isUp<CameraPanel>(); });
 
         // A take.
         add ("recording starts", [this]
@@ -1337,6 +1425,15 @@ private:
         add ("the take is still running after that too", [] {}, [this] { return recording(); });
         add ("Settings closes during a take", [this] { pressKey (juce::KeyPress::escapeKey); },
              [this] { return ! isUp<AdvancedPanel>(); });
+        add ("Cameras opens during a take", [this] { clickCamerasDoor(); },
+             [this] { return isUp<CameraPanel>() && camerasBesideMainScreen(); });
+        settle (1000);
+        add ("and the take is still recording", [] {}, [this]
+        {
+            return recording() && button<MainScreen> ("Recording. Tap to stop.") != nullptr;
+        });
+        add ("Escape closes it", [this] { pressKey (juce::KeyPress::escapeKey); },
+             [this] { return ! isUp<CameraPanel>() && recording(); });
         settle (2000);
 
         // Renaming during a take: this take's files keep the name they started

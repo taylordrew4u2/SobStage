@@ -20,8 +20,9 @@ namespace mma {
 
 class Application; // App/Application.h
 
-/// Top-level component: hosts MainScreen always, and slides in AdvancedPanel
-/// on demand (§10.3: "one door, one click").
+/// Top-level component: hosts MainScreen always, and opens Settings, Help,
+/// the setup guide or the Cameras page beside it on demand, one at a time
+/// (§10.3: "one door, one click").
 class MainComponent : public juce::Component,
                       private juce::Timer
 {
@@ -68,6 +69,9 @@ private:
     bool advancedVisible = false;
     bool cameraVisible = false;
 
+    /// Whether a drawer is taking the right-hand side of the window.
+    bool anyDrawerOpen() const { return advancedVisible || helpVisible || guideVisible || cameraVisible; }
+
     // The third door, beside Settings: the answers to "why is it silent?",
     // in the app rather than in a README. Same viewport arrangement as the
     // other two, and like them only one is open at a time.
@@ -83,9 +87,9 @@ private:
     // launch, and from Settings or Help after that.
     juce::Viewport guideViewport;
     bool guideVisible = false;
-    /// Put aside while another drawer or the Cameras screen is up -- the guide
-    /// itself sends people to Settings -- and brought back when that closes,
-    /// on the page they were on.
+    /// Put aside while another drawer is up -- the guide itself sends people
+    /// to Settings and Cameras -- and brought back when that closes, on the
+    /// page they were on.
     bool guideSuspended = false;
     bool guideAutoOpenConsidered = false;
     /// A take has started, and then a take has finished, since the guide was
@@ -197,8 +201,8 @@ private:
 
     void toggleAdvanced();
     void toggleCameras();
-    /// The camera list and its live views. Refreshed when the panel is open,
-    /// and rebuilt only when the set of cameras or their state has moved.
+    /// The main screen's camera tiles, always, and the Cameras page while it
+    /// is open. Each rebuilds only what has actually moved.
     void refreshCameras();
     CameraPanel cameraPanel;
 

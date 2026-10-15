@@ -1,105 +1,165 @@
 #include "CameraPanel.h"
 #include "AppLookAndFeel.h"
+#include <cmath>
 
 namespace mma {
 
 namespace {
-    constexpr int kMargin = 16;
-    constexpr int kRowHeight = 30;
-    constexpr int kViewGap = 10;
+    // The same measures as Settings, so the two drawers read as one design.
+    constexpr int kMargin       = 12;
+    constexpr int kCloseRow     = 36;
+    constexpr int kAfterClose   = 14;
+    constexpr int kHeadingRow   = 28;
+    constexpr int kAfterHeading = 4;
+    constexpr int kSection      = 14 + 3 + 1 + 9; // heading, gap, rule, gap
+    constexpr int kRowHeight    = 32;
+    constexpr int kToggleRow    = 28;
+    constexpr int kValueWidth   = 300;
+    constexpr int kGapAfter     = 16;  // after a block, before the next heading or camera
+    constexpr int kLineGap      = 4;
+    constexpr int kNoteIndent   = 20;  // a note under a switch, as in Settings
+
+    juce::Label& styled (juce::Label& label, float size, juce::Colour colour,
+                         bool bold = false)
+    {
+        label.setFont (juce::Font (size, bold ? juce::Font::bold : juce::Font::plain));
+        label.setColour (juce::Label::textColourId, colour);
+        label.setJustificationType (juce::Justification::topLeft);
+
+        // Wrap, never squash: a label narrower than its sentence otherwise
+        // shrinks the type sideways until it is unreadable.
+        label.setMinimumHorizontalScale (1.0f);
+        return label;
+    }
+
+    std::unique_ptr<juce::Label> makeLabel (float size, juce::Colour colour)
+    {
+        auto label = std::make_unique<juce::Label>();
+        styled (*label, size, colour);
+        return label;
+    }
 }
 
 CameraPanel::CameraPanel()
 {
-    heading.setText ("Cameras", juce::dontSendNotification);
-    heading.setFont (juce::Font (20.0f, juce::Font::bold));
-    heading.setColour (juce::Label::textColourId, AppLookAndFeel::bone);
-    addAndMakeVisible (heading);
-
-    // The whole shape of the feature in one sentence, in the plain language
-    // §10.2 requires: no codecs, no containers, no bitrates.
-    explanation.setText ("Every camera that's plugged in shows live here and records with the "
-                         "sound, each to its own file. The video files have no sound of their "
-                         "own, so your microphone tracks stay untouched. Switch off any camera "
-                         "you don't want.",
-                         juce::dontSendNotification);
-    explanation.setFont (juce::Font (13.0f));
-    explanation.setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
-    explanation.setMinimumHorizontalScale (1.0f);
-    addAndMakeVisible (explanation);
-
-    fullPreviewToggle.onClick = [this] {
-        const auto quality = fullPreviewToggle.getToggleState() ? PreviewQuality::Full
-                                                                : PreviewQuality::Low;
-        setPreviewQuality (quality);
-
-        if (onPreviewQualityChanged)
-            onPreviewQualityChanged (quality);
-    };
-    addAndMakeVisible (fullPreviewToggle);
-
-    // Said out loud, because it is the question this toggle raises and the
-    // wrong answer would make someone record a worse take to save some CPU.
-    qualityNote.setText ("This only changes the picture on this screen. How much each "
-                         "camera records is its Quality setting below.", juce::dontSendNotification);
-    qualityNote.setFont (juce::Font (12.0f));
-    qualityNote.setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
-    qualityNote.setMinimumHorizontalScale (1.0f);
-    addAndMakeVisible (qualityNote);
-
-    problemLabel.setFont (juce::Font (13.0f));
-    problemLabel.setColour (juce::Label::textColourId, AppLookAndFeel::warning);
-    problemLabel.setMinimumHorizontalScale (1.0f);
-    addChildComponent (problemLabel);
-
-    unavailableLabel.setFont (juce::Font (13.0f));
-    unavailableLabel.setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
-    unavailableLabel.setMinimumHorizontalScale (1.0f);
-    addChildComponent (unavailableLabel);
-
     closeButton.onClick = [this] { if (onCloseClicked) onCloseClicked(); };
     addAndMakeVisible (closeButton);
+
+    styled (heading, 20.0f, AppLookAndFeel::bone, true);
+    heading.setText ("Cameras", juce::dontSendNotification);
+    addAndMakeVisible (heading);
+
+    styled (problemLabel, 13.0f, AppLookAndFeel::warning);
+    addChildComponent (problemLabel);
+
+    // The whole shape of the feature in plain words, as §10.2 asks: no
+    // codecs, no containers, no bitrates.
+    styled (explanation, 13.0f, AppLookAndFeel::secondary);
+    explanation.setText ("Every camera that's plugged in records with the sound, each to its own "
+                         "video file. Their pictures show on the main screen. Switch off any "
+                         "camera you don't want.",
+                         juce::dontSendNotification);
+    addAndMakeVisible (explanation);
+
+    styled (unavailableLabel, 13.0f, AppLookAndFeel::secondary);
+    addChildComponent (unavailableLabel);
+
+    const std::pair<juce::Label*, const char*> sections[] = {
+        { &camerasSection,   "YOUR CAMERAS" },
+        { &afterTakeSection, "AFTER EACH TAKE" },
+        { &spaceSection,     "SPACE" },
+    };
+
+    for (auto& [label, text] : sections)
+    {
+        styled (*label, 10.0f, AppLookAndFeel::tertiary, true);
+        label->setText (text, juce::dontSendNotification);
+        addAndMakeVisible (*label);
+    }
+
+    // Said, rather than an empty space under the heading, which reads as
+    // broken.
+    styled (noCamerasLabel, 13.0f, AppLookAndFeel::secondary);
+    noCamerasLabel.setText ("No camera is plugged in. Plug one in and it shows up here, "
+                            "ready to record.", juce::dontSendNotification);
+    addAndMakeVisible (noCamerasLabel);
+
+    // Off by default: it costs disk and minutes of CPU after every take, and
+    // the picture and the sound are already both saved and already aligned by
+    // the session origin. Here rather than in Settings because it is a
+    // question about the cameras' files, asked where the cameras are.
+    combineVideoToggle.setToggleState (false, juce::dontSendNotification);
+    combineVideoToggle.onClick = [this]
+    { if (onCombineVideoToggled) onCombineVideoToggled (combineVideoToggle.getToggleState()); };
+    addAndMakeVisible (combineVideoToggle);
+
+    // Named under the switch rather than in an alert, because the answer is
+    // "install a thing", and an alert after the take is the wrong moment to
+    // learn that.
+    styled (combineVideoNote, 12.0f, AppLookAndFeel::secondary);
+    addChildComponent (combineVideoNote);
+
+    styled (spaceLabel, 13.0f, AppLookAndFeel::secondary);
+    addAndMakeVisible (spaceLabel);
+
+    styled (roomNoteLabel, 12.0f, AppLookAndFeel::secondary);
+    addChildComponent (roomNoteLabel);
 }
 
 CameraPanel::~CameraPanel() = default;
 
+// --- what each row says ------------------------------------------------------
+
+juce::String CameraPanel::fileLine (const CameraRow& camera, bool recordingNow)
+{
+    // A camera that was recording this take and is no longer available has
+    // been unplugged mid-take, and its movie is certainly truncated -- no
+    // signal-status text required, and none was ever supplied for those
+    // rows, so this warning could not reach the one case that actually cuts
+    // a file short.
+    return recordingNow && camera.recordingThisTake
+               && (camera.signalStatusText.isNotEmpty() || ! camera.available)
+               ? "Video signal lost. This file may be incomplete."
+         : recordingNow && camera.recordingThisTake ? "Recording to " + camera.fileName
+         : recordingNow && camera.startingThisTake ? "Starting video. Waiting for the camera to confirm."
+         : recordingNow ? "Not recording video in this take"
+         : camera.discoveryPending ? "Checking the system for this camera..."
+         : ! camera.available ? "Unavailable. Not in the next recording."
+         : camera.enabled && camera.signalStatusText.isNotEmpty()
+               ? "Waiting for a live picture. Not ready to record."
+         : camera.enabled ? "Writes " + camera.fileName
+                          : "Not in the recording";
+}
+
+juce::String CameraPanel::hintLine (const CameraRow& camera, bool recordingNow)
+{
+    // What to do about a camera that is not live. The picture is on the main
+    // screen, so a live camera needs no words here at all.
+    if (camera.discoveryPending)
+        return "Still checking for this camera. Sound can record now; video waits for the next take.";
+
+    if (! camera.available)
+        return recordingNow ? "Out for this take. SobStage will check and reopen it for the next take."
+                            : "Not available to the system. Reconnect it; SobStage will rescan automatically.";
+
+    if (! camera.enabled)
+        return "Switched off. Turn it on to see it on the main screen.";
+
+    return camera.signalStatusText;
+}
+
 juce::String CameraPanel::formatLine (const CameraRow& camera, bool recordingNow)
 {
-    if (! camera.enabled || ! camera.available)
+    // Only what the camera itself reports. Where it does not (Windows), no
+    // line at all: a guess would be a promise the file might not keep.
+    if (! camera.enabled || ! camera.available || camera.activeFormatText.isEmpty())
         return {};
 
-    if (camera.activeFormatText.isNotEmpty())
-        return (recordingNow ? "Recording at " : "Running at ") + camera.activeFormatText;
-
-    return camera.signalStatusText.isEmpty() ? juce::String() : juce::String ("Not running yet");
+    return (recordingNow && camera.recordingThisTake ? "Recording at " : "Running at ")
+         + camera.activeFormatText;
 }
 
-int CameraPanel::viewHeight() const
-{
-    return CameraSelection::previewSettingsFor (previewQuality).maxViewHeight;
-}
-
-void CameraPanel::setPreviewQuality (PreviewQuality quality)
-{
-    if (previewQuality == quality)
-        return;
-
-    previewQuality = quality;
-    fullPreviewToggle.setToggleState (quality == PreviewQuality::Full, juce::dontSendNotification);
-    resized();
-}
-
-void CameraPanel::setCameraPreviewsHidden (bool hidden)
-{
-    if (hidden == previewsHidden)
-        return;
-
-    previewsHidden = hidden;
-
-    for (auto& row : rows)
-        if (row.viewer != nullptr)
-            row.viewer->setVisible (! hidden);
-}
+// --- state -------------------------------------------------------------------
 
 void CameraPanel::setRecording (bool isRecording)
 {
@@ -108,58 +168,44 @@ void CameraPanel::setRecording (bool isRecording)
 
     recording = isRecording;
 
-    // Recording state changes the unavailable-row copy below. Force the next
-    // setCameras() call in the owner's same refresh pass to rebuild those rows
-    // even when their ids/topology have not changed.
-    lastCameraIds.clear();
-
     // §9.3: never colour alone. The heading says it as well as showing it.
     updateRecordingHeading();
     heading.setColour (juce::Label::textColourId,
                        recording ? AppLookAndFeel::danger : AppLookAndFeel::bone);
 
-    // The camera roster and filenames are frozen when the take begins. Keep
-    // the live pictures visible, but do not offer controls which would imply a
-    // camera can be added, removed, or renamed halfway through its movie.
-    for (auto& row : rows)
-    {
-        row.enabledToggle->setEnabled (! recording);
-        row.nameEditor->setEnabled (! recording);
-    }
+    // The camera roster, names and picture sizes are fixed when the take
+    // begins: a control that seems to change one halfway through its movie
+    // would be a promise the take cannot keep.
+    applyRowsInPlace();
 }
 
 void CameraPanel::updateRecordingHeading()
 {
-    if (! recording)
+    int recordingCount = 0, startingCount = 0;
+
+    for (const auto& camera : lastCameras)
     {
-        heading.setText ("Cameras", juce::dontSendNotification);
-        return;
+        recordingCount += camera.recordingThisTake ? 1 : 0;
+        startingCount += camera.startingThisTake ? 1 : 0;
     }
 
-    if (recordingCameraCount > 0)
-        heading.setText ("Cameras: " + juce::String (recordingCameraCount) + " recording",
-                         juce::dontSendNotification);
-    else if (startingCameraCount > 0)
-        heading.setText ("Cameras: starting video", juce::dontSendNotification);
-    else
-        heading.setText ("Cameras: no video recording", juce::dontSendNotification);
+    heading.setText (! recording ? juce::String ("Cameras")
+                     : recordingCount > 0 ? "Cameras: " + juce::String (recordingCount) + " recording"
+                     : startingCount > 0 ? juce::String ("Cameras: starting video")
+                                         : juce::String ("Cameras: no video recording"),
+                     juce::dontSendNotification);
 }
 
 void CameraPanel::setUnavailableReason (const juce::String& reason)
 {
-    const bool unavailable = reason.isNotEmpty();
-
-    if (unavailable == unavailableLabel.isVisible() && unavailableLabel.getText() == reason)
+    if (unavailableLabel.getText() == reason)
         return;
 
     unavailableLabel.setText (reason, juce::dontSendNotification);
-    unavailableLabel.setVisible (unavailable);
 
-    // The controls are not disabled, they are gone: a row of dead toggles
+    // The controls are not disabled, they are gone: a row of dead switches
     // invites someone to keep clicking them looking for the one that works.
-    fullPreviewToggle.setVisible (! unavailable);
-    qualityNote.setVisible (! unavailable);
-
+    applyRowsInPlace();
     resized();
 }
 
@@ -169,323 +215,450 @@ void CameraPanel::setProblemText (const juce::String& text)
         return;
 
     problemLabel.setText (text, juce::dontSendNotification);
-    problemLabel.setVisible (text.isNotEmpty());
+    applyRowsInPlace();
+    resized();
+}
+
+void CameraPanel::setCombineVideoState (bool on, const juce::String& unavailableReason)
+{
+    combineVideoToggle.setToggleState (on, juce::dontSendNotification);
+
+    // §10.6: what is missing and what to do about it, under the control it
+    // affects. The switch stays usable either way -- switching it on just
+    // before installing ffmpeg is a reasonable thing to do, and a disabled
+    // control with an explanation nobody can act on is worse than an enabled
+    // one that says what it needs.
+    if (combineVideoNote.getText() == unavailableReason)
+        return;
+
+    combineVideoNote.setText (unavailableReason, juce::dontSendNotification);
+    applyRowsInPlace();
+    resized();
+}
+
+void CameraPanel::setSpaceText (const juce::String& perHour, const juce::String& roomNote)
+{
+    if (spaceLabel.getText() == perHour && roomNoteLabel.getText() == roomNote)
+        return;
+
+    spaceLabel.setText (perHour, juce::dontSendNotification);
+    roomNoteLabel.setText (roomNote, juce::dontSendNotification);
+    applyRowsInPlace();
     resized();
 }
 
 void CameraPanel::setCameras (const std::vector<CameraRow>& cameras)
 {
-    // Rebuilding tears down every live view, which is a visible flicker and a
-    // real cost, so it happens only when the set or its state has moved.
-    std::vector<std::string> ids;
-    std::vector<char> enabled;
-    std::vector<char> available;
-    std::vector<char> discoveryPending;
-    std::vector<char> recordingThisTake;
-    std::vector<char> startingThisTake;
-    juce::StringArray fileNames;
-    std::vector<uint64_t> viewerRevisions;
-    juce::StringArray signalStatusTexts;
-    std::vector<int> qualities;
-    juce::StringArray formatTexts;
+    bool sameSet = cameras.size() == rows.size();
 
-    for (const auto& camera : cameras)
-    {
-        qualities.push_back (static_cast<int> (camera.quality));
-        formatTexts.add (camera.activeFormatText);
-        ids.push_back (camera.id);
-        enabled.push_back (camera.enabled ? 1 : 0);
-        available.push_back (camera.available ? 1 : 0);
-        discoveryPending.push_back (camera.discoveryPending ? 1 : 0);
-        recordingThisTake.push_back (camera.recordingThisTake ? 1 : 0);
-        startingThisTake.push_back (camera.startingThisTake ? 1 : 0);
-        fileNames.add (camera.fileName);
-        viewerRevisions.push_back (camera.viewerRevision);
-        signalStatusTexts.add (camera.signalStatusText);
-    }
+    for (size_t i = 0; sameSet && i < cameras.size(); ++i)
+        sameSet = cameras[i].id == rows[i].id;
 
-    if (ids == lastCameraIds && enabled == lastEnabled && available == lastAvailable
-        && discoveryPending == lastDiscoveryPending
-        && recordingThisTake == lastRecordingThisTake
-        && startingThisTake == lastStartingThisTake
-        && fileNames == lastFileNames
-        && viewerRevisions == lastViewerRevisions
-        && signalStatusTexts == lastSignalStatusTexts
-        && qualities == lastQualities)
-    {
-        // What the camera reports arrives a moment after it opens. Say it in
-        // place: a rebuild would reparent the live preview for one label.
-        if (formatTexts != lastFormatTexts && rows.size() == cameras.size())
-            for (size_t i = 0; i < rows.size(); ++i)
-                if (rows[i].formatLabel != nullptr)
-                    rows[i].formatLabel->setText (formatLine (cameras[i], recording),
-                                                  juce::dontSendNotification);
-
-        lastFormatTexts = std::move (formatTexts);
-        return;
-    }
-
-    lastQualities = std::move (qualities);
-    lastFormatTexts = std::move (formatTexts);
-
-    lastCameraIds = std::move (ids);
-    lastEnabled = std::move (enabled);
-    lastAvailable = std::move (available);
-    lastDiscoveryPending = std::move (discoveryPending);
-    lastRecordingThisTake = std::move (recordingThisTake);
-    lastStartingThisTake = std::move (startingThisTake);
-    lastFileNames = std::move (fileNames);
-    lastViewerRevisions = std::move (viewerRevisions);
-    lastSignalStatusTexts = std::move (signalStatusTexts);
-    recordingCameraCount = 0;
-    startingCameraCount = 0;
-    for (const auto& camera : cameras)
-    {
-        recordingCameraCount += camera.recordingThisTake ? 1 : 0;
-        startingCameraCount += camera.startingThisTake ? 1 : 0;
-    }
+    lastCameras = cameras;
     updateRecordingHeading();
-    rebuildRows (cameras);
+
+    // Rebuilt only when cameras come or go. Everything else -- a switch, a
+    // name, a signal message, a take starting -- is said in place, so a name
+    // box being typed in is never pulled out from under the typing.
+    if (sameSet)
+        applyRowsInPlace();
+    else
+        rebuildRows();
 }
 
-void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
+void CameraPanel::rebuildRows()
 {
     rows.clear();
 
-    for (const auto& camera : cameras)
+    // Each change is handed on after the click or keystroke that made it has
+    // finished. The owner re-reads the cameras in reply, and a camera leaving
+    // the list rebuilds these rows -- destroying a control from inside its
+    // own callback is a crash JUCE gives no warning about.
+    const auto later = [this] (std::function<void (CameraPanel&)> call)
+    {
+        juce::Component::SafePointer<CameraPanel> safe (this);
+        juce::MessageManager::callAsync ([safe, call = std::move (call)]
+        {
+            if (safe != nullptr)
+                call (*safe);
+        });
+    };
+
+    for (const auto& camera : lastCameras)
     {
         Row row;
         row.id = camera.id;
 
-        row.enabledToggle = std::make_unique<juce::ToggleButton> ("Record this camera");
         // Every row's box says "Record this camera", which is all VoiceOver
         // read out -- the same words for each camera, with nothing to say
         // which one would be switched. The name is in the spoken title.
-        row.enabledToggle->setTitle ("Record " + camera.displayName);
-        row.enabledToggle->setToggleState (camera.enabled, juce::dontSendNotification);
-        row.enabledToggle->setEnabled (! recording);
-        row.enabledToggle->onClick = [this, id = camera.id, button = row.enabledToggle.get()] {
-            if (onCameraEnabledChanged)
-                onCameraEnabledChanged (id, button->getToggleState());
+        row.enabledToggle = std::make_unique<juce::ToggleButton> ("Record this camera");
+        row.enabledToggle->onClick = [later, id = camera.id, button = row.enabledToggle.get()]
+        {
+            const bool on = button->getToggleState();
+            later ([id, on] (CameraPanel& panel)
+            {
+                if (panel.onCameraEnabledChanged)
+                    panel.onCameraEnabledChanged (id, on);
+            });
         };
-        addAndMakeVisible (*row.enabledToggle);
+        addChildComponent (*row.enabledToggle);
 
         // §14.6 for cameras: the name goes on the file, so "which one is the
         // wide shot" is answerable from a file browser a week later.
         row.nameEditor = std::make_unique<juce::TextEditor>();
         row.nameEditor->setText (camera.displayName, juce::dontSendNotification);
         row.nameEditor->setTextToShowWhenEmpty ("Name this camera", AppLookAndFeel::tertiary);
-        row.nameEditor->setTitle ("Name " + camera.displayName);
+        row.nameEditor->setJustification (juce::Justification::centredLeft);
         row.nameEditor->setDescription ("This name is used in the camera recording's filename.");
-        row.nameEditor->setEnabled (! recording);
-        row.nameEditor->onFocusLost = [this, id = camera.id, editor = row.nameEditor.get()] {
-            if (onCameraRenamed)
-                onCameraRenamed (id, editor->getText());
+        row.nameEditor->onFocusLost = [later, id = camera.id, editor = row.nameEditor.get()]
+        {
+            later ([id, name = editor->getText()] (CameraPanel& panel)
+            {
+                if (panel.onCameraRenamed)
+                    panel.onCameraRenamed (id, name);
+            });
         };
-        row.nameEditor->onReturnKey = [this, id = camera.id, editor = row.nameEditor.get()] {
-            if (onCameraRenamed)
-                onCameraRenamed (id, editor->getText());
-        };
-        addAndMakeVisible (*row.nameEditor);
+        row.nameEditor->onReturnKey = [this, later, id = camera.id, editor = row.nameEditor.get()]
+        {
+            later ([id, name = editor->getText()] (CameraPanel& panel)
+            {
+                if (panel.onCameraRenamed)
+                    panel.onCameraRenamed (id, name);
+            });
 
-        // The file this camera is going to write, said here rather than only in
-        // the card before a take: renaming a camera is the moment someone
-        // wants to see what the name does, and this is where renaming happens.
-        row.fileName = std::make_unique<juce::Label>();
+            // Return is "done". The main screen is live beside this page, and
+            // the next Space is the room's mute, not a space in the name.
+            if (auto* window = getTopLevelComponent(); window != nullptr && window != this)
+                window->grabKeyboardFocus();
+        };
+        addChildComponent (*row.nameEditor);
+
+        // The file this camera is going to write, said here because renaming
+        // is the moment someone wants to see what the name does.
+        row.fileName = makeLabel (12.0f, AppLookAndFeel::tertiary);
         row.fileName->setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain));
-        row.fileName->setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
-        // A camera that was recording this take and is no longer available has
-        // been unplugged mid-take, and its movie is certainly truncated -- no
-        // signal-status text required, and none was ever supplied for those
-        // rows, so this warning could not reach the one case that actually
-        // cuts a file short. The row read "Recording to V01_....mov" for a
-        // camera that had been pulled out of the machine.
-        row.fileName->setText (recording && camera.recordingThisTake
-                                  && (camera.signalStatusText.isNotEmpty() || ! camera.available)
-                                  ? "Video signal lost. This file may be incomplete."
-                              : recording && camera.recordingThisTake
-                                  ? "Recording to " + camera.fileName
-                              : recording && camera.startingThisTake
-                                  ? "Starting video. Waiting for the camera to confirm."
-                              : recording ? "Not recording video in this take"
-                              : camera.discoveryPending ? "Checking the system for this camera..."
-                              : ! camera.available ? "Unavailable. Not in the next recording."
-                              : camera.enabled && camera.signalStatusText.isNotEmpty()
-                                  ? "Waiting for a live picture. Not ready to record."
-                              : camera.enabled ? "Writes " + camera.fileName
-                                               : "Not in the recording",
-                               juce::dontSendNotification);
-        addAndMakeVisible (*row.fileName);
+        addChildComponent (*row.fileName);
+
+        row.hint = makeLabel (12.0f, AppLookAndFeel::tertiary);
+        addChildComponent (*row.hint);
 
         // How much picture to ask this camera for. Best is whatever it can do
         // smoothly up to 4K; the caps are for a slow card, a full one, or a
         // busy machine. Fixed for the take, like everything else about it.
-        row.qualityLabel = std::make_unique<juce::Label>();
-        row.qualityLabel->setText ("Quality", juce::dontSendNotification);
-        row.qualityLabel->setFont (juce::Font (13.0f));
-        row.qualityLabel->setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
-        addAndMakeVisible (*row.qualityLabel);
+        row.qualityLabel = makeLabel (13.0f, AppLookAndFeel::secondary);
+        row.qualityLabel->setText ("Picture size", juce::dontSendNotification);
+        row.qualityLabel->setJustificationType (juce::Justification::centredLeft);
+        addChildComponent (*row.qualityLabel);
 
         row.qualityCombo = std::make_unique<juce::ComboBox>();
         row.qualityCombo->addItem ("Best (up to 4K)", 1 + static_cast<int> (CameraQuality::Best));
         row.qualityCombo->addItem ("1080p", 1 + static_cast<int> (CameraQuality::HD1080));
         row.qualityCombo->addItem ("720p (smaller files)", 1 + static_cast<int> (CameraQuality::HD720));
-        row.qualityCombo->setSelectedId (1 + static_cast<int> (camera.quality), juce::dontSendNotification);
-        row.qualityCombo->setTitle ("Recording quality for " + camera.displayName);
-        row.qualityCombo->setEnabled (! recording);
+
+        // A click leaves the keyboard where it was: Up and Down resize the
+        // pictures on the main screen, and must not quietly change a size here.
         row.qualityCombo->setWantsKeyboardFocus (false);
-        row.qualityCombo->onChange = [this, id = camera.id, combo = row.qualityCombo.get()] {
+        row.qualityCombo->setMouseClickGrabsKeyboardFocus (false);
+        row.qualityCombo->onChange = [later, id = camera.id, combo = row.qualityCombo.get()]
+        {
             const int selected = combo->getSelectedId();
-            if (selected > 0 && onCameraQualityChanged)
-                onCameraQualityChanged (id, static_cast<CameraQuality> (selected - 1));
+            if (selected <= 0)
+                return;
+
+            later ([id, quality = static_cast<CameraQuality> (selected - 1)] (CameraPanel& panel)
+            {
+                if (panel.onCameraQualityChanged)
+                    panel.onCameraQualityChanged (id, quality);
+            });
         };
-        addAndMakeVisible (*row.qualityCombo);
+        addChildComponent (*row.qualityCombo);
 
-        row.formatLabel = std::make_unique<juce::Label>();
-        row.formatLabel->setText (formatLine (camera, recording), juce::dontSendNotification);
-        row.formatLabel->setFont (juce::Font (12.0f));
-        row.formatLabel->setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
-        row.formatLabel->setMinimumHorizontalScale (1.0f);
-        addAndMakeVisible (*row.formatLabel);
-
-        if (camera.enabled && camera.available && makeViewer)
-            row.viewer = makeViewer (camera.id);
-
-        if (row.viewer != nullptr)
-        {
-            // Born hidden when a card is up (setCameraPreviewsHidden): a
-            // rebuild must not put the live picture back over the card.
-            addChildComponent (*row.viewer);
-            row.viewer->setVisible (! previewsHidden);
-        }
-        else
-        {
-            // A camera that is off, or one that would not open, gets a well
-            // that says which -- never an empty rectangle.
-            row.placeholder = std::make_unique<juce::Label>();
-            row.placeholder->setText (camera.discoveryPending
-                                          ? "Still checking for this camera. Sound can record now; video waits for the next take."
-                                      : ! camera.available && recording
-                                          ? "Out for this take. SobStage will check and reopen it for the next take."
-                                      : ! camera.available
-                                          ? "Not available to the system. Reconnect it; SobStage will rescan automatically."
-                                      : camera.enabled && camera.signalStatusText.isNotEmpty()
-                                          ? camera.signalStatusText
-                                      : camera.enabled
-                                          ? "This camera didn't open. Check that nothing else is using it."
-                                          : "Switched off. Turn it on to see it live.",
-                                      juce::dontSendNotification);
-            row.placeholder->setJustificationType (juce::Justification::centred);
-            row.placeholder->setFont (juce::Font (12.0f));
-            row.placeholder->setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
-            addAndMakeVisible (*row.placeholder);
-        }
+        row.formatLabel = makeLabel (12.0f, AppLookAndFeel::tertiary);
+        addChildComponent (*row.formatLabel);
 
         rows.push_back (std::move (row));
     }
 
+    applyRowsInPlace();
     resized();
+}
+
+void CameraPanel::applyRow (Row& row, const CameraRow& camera)
+{
+    const bool showRow = ! camerasUnavailable();
+
+    row.enabledToggle->setToggleState (camera.enabled, juce::dontSendNotification);
+    row.enabledToggle->setTitle ("Record " + camera.displayName);
+    row.enabledToggle->setEnabled (! recording);
+    row.enabledToggle->setVisible (showRow);
+
+    // Never over someone's typing: the name they are part-way through is not
+    // yet the one on file, and restating that would undo it.
+    if (! row.nameEditor->hasKeyboardFocus (true) && row.nameEditor->getText() != camera.displayName)
+        row.nameEditor->setText (camera.displayName, juce::dontSendNotification);
+
+    row.nameEditor->setTitle ("Name " + camera.displayName);
+    row.nameEditor->setEnabled (! recording);
+    row.nameEditor->setVisible (showRow);
+
+    row.fileName->setText (fileLine (camera, recording), juce::dontSendNotification);
+    row.fileName->setVisible (showRow);
+
+    const auto hint = hintLine (camera, recording);
+    row.hint->setText (hint, juce::dontSendNotification);
+    row.hint->setVisible (showRow && hint.isNotEmpty());
+
+    row.qualityCombo->setSelectedId (1 + static_cast<int> (camera.quality), juce::dontSendNotification);
+    row.qualityCombo->setTitle ("Picture size for " + camera.displayName);
+    row.qualityCombo->setEnabled (! recording);
+    row.qualityCombo->setVisible (showRow);
+    row.qualityLabel->setVisible (showRow);
+
+    const auto format = formatLine (camera, recording);
+    row.formatLabel->setText (format, juce::dontSendNotification);
+    row.formatLabel->setVisible (showRow && format.isNotEmpty());
+}
+
+void CameraPanel::applyRowsInPlace()
+{
+    // What each line says and whether it shows; resized() is asked for only
+    // when that moves something, since this runs on the UI tick.
+    juce::StringArray before;
+    const auto snapshot = [this] (juce::StringArray& out)
+    {
+        out.clear();
+        for (auto* child : getChildren())
+            if (auto* label = dynamic_cast<juce::Label*> (child))
+                out.add ((label->isVisible() ? "1" : "0") + label->getText());
+            else
+                out.add (child->isVisible() ? "1" : "0");
+    };
+
+    snapshot (before);
+
+    for (size_t i = 0; i < rows.size() && i < lastCameras.size(); ++i)
+        applyRow (rows[i], lastCameras[i]);
+
+    const bool available = ! camerasUnavailable();
+    unavailableLabel.setVisible (! available);
+    explanation.setVisible (available);
+    problemLabel.setVisible (available && problemLabel.getText().isNotEmpty());
+    camerasSection.setVisible (available);
+    noCamerasLabel.setVisible (available && rows.empty());
+    afterTakeSection.setVisible (available);
+    combineVideoToggle.setVisible (available);
+    combineVideoNote.setVisible (available && combineVideoNote.getText().isNotEmpty());
+    roomNoteLabel.setVisible (roomNoteLabel.getText().isNotEmpty());
+
+    juce::StringArray after;
+    snapshot (after);
+
+    if (after != before)
+        resized();
+}
+
+// --- layout ------------------------------------------------------------------
+
+int CameraPanel::contentWidth() const
+{
+    // Before the owner has given it a width, the narrowest drawer's.
+    return juce::jmax (1, (getWidth() > 0 ? getWidth() : 380) - 2 * kMargin);
+}
+
+int CameraPanel::textHeight (const juce::Label& label, int width)
+{
+    if (label.getText().isEmpty())
+        return 0;
+
+    // Laid out exactly as the label draws it -- GlyphArrangement's own line
+    // breaking at the label's inner width -- given room for every line it
+    // wants. A label shorter than its lines shrinks the font instead.
+    const auto font = label.getFont();
+    const auto border = label.getBorderSize();
+    const float available = (float) juce::jmax (1, width - border.getLeftAndRight());
+
+    juce::GlyphArrangement glyphs;
+    glyphs.addFittedText (font, label.getText(), 0.0f, 0.0f, available, 100000.0f,
+                          juce::Justification::topLeft, 1000, label.getMinimumHorizontalScale());
+
+    const float textHeight = glyphs.getNumGlyphs() > 0 ? glyphs.getBoundingBox (0, -1, true).getHeight()
+                                                       : font.getHeight();
+
+    return (int) std::ceil (textHeight) + border.getTopAndBottom() + 2;
+}
+
+int CameraPanel::headerToggleWidth (int width) const
+{
+    // What "Record this camera" needs beside its tick box (AppLookAndFeel
+    // draws it at 14pt, 34px in), and never more than half the row: the name
+    // box beside it is the thing being typed in.
+    const auto text = juce::String ("Record this camera");
+    const int wanted = (int) std::ceil (juce::Font (14.0f).getStringWidthFloat (text)) + 40;
+    return juce::jmin (wanted, width / 2);
+}
+
+int CameraPanel::rowHeight (const Row& row, int width) const
+{
+    // The name and its switch, the file line, the hint when there is one,
+    // the picture size, and what the camera says it runs at when it says.
+    int height = kRowHeight + kLineGap + textHeight (*row.fileName, width);
+
+    if (row.hint->isVisible())
+        height += textHeight (*row.hint, width);
+
+    height += kLineGap + kRowHeight;
+
+    if (row.formatLabel->isVisible())
+        height += textHeight (*row.formatLabel, width);
+
+    return height;
 }
 
 int CameraPanel::getRequiredHeight() const
 {
-    // The way back, the heading, and the paragraph under it.
-    int height = kMargin + 36 + 10 + 30 + 8 + 56 + 16;
+    // Mirrors resized() below, block by block.
+    const int width = contentWidth();
+    int height = kMargin + kCloseRow + kAfterClose + kHeadingRow + kAfterHeading;
 
-    if (unavailableLabel.isVisible())
-        return height + 40 + kMargin;
+    if (camerasUnavailable())
+    {
+        height += textHeight (unavailableLabel, width) + kGapAfter;
+    }
+    else
+    {
+        if (problemLabel.isVisible())
+            height += textHeight (problemLabel, width) + kLineGap;
 
-    height += kRowHeight + 4 + 34 + 16; // the preview toggle and its note
+        height += textHeight (explanation, width) + kGapAfter;
 
-    if (problemLabel.isVisible())
-        height += 40;
+        height += kSection;
 
-    for (size_t i = 0; i < rows.size(); ++i)
-        height += kRowHeight + 18 + 4 + kRowHeight + 6 + viewHeight() + kViewGap;
+        if (rows.empty())
+            height += textHeight (noCamerasLabel, width) + kGapAfter;
 
-    if (rows.empty())
-        height += 60;
+        for (const auto& row : rows)
+            height += rowHeight (row, width) + kGapAfter;
+
+        height += kSection + kToggleRow;
+
+        if (combineVideoNote.isVisible())
+            height += textHeight (combineVideoNote, width - 2 * kNoteIndent);
+
+        height += kGapAfter;
+    }
+
+    height += kSection + textHeight (spaceLabel, width);
+
+    if (roomNoteLabel.isVisible())
+        height += kLineGap + textHeight (roomNoteLabel, width);
 
     return height + kMargin;
-}
-
-void CameraPanel::paint (juce::Graphics& g)
-{
-    g.fillAll (AppLookAndFeel::background);
-
-    // The same card treatment the rest of the app uses, so a live view sits in
-    // a well rather than floating on the background.
-    g.setColour (AppLookAndFeel::surface);
-
-    for (const auto& row : rows)
-    {
-        const auto* view = row.viewer != nullptr ? row.viewer.get()
-                                                 : static_cast<juce::Component*> (row.placeholder.get());
-
-        if (view != nullptr)
-            g.fillRoundedRectangle (view->getBounds().toFloat().expanded (4.0f), 8.0f);
-    }
 }
 
 void CameraPanel::resized()
 {
     auto area = getLocalBounds().reduced (kMargin);
+    const int width = area.getWidth();
+    ruleYs.clear();
 
-    // The way back goes first, in the same place and with the same wording as
-    // the one in Settings. Two doors off the main screen that close in
-    // different corners is two things to learn instead of one.
-    closeButton.setBounds (area.removeFromTop (36).removeFromLeft (110));
-    area.removeFromTop (10);
+    // Top-left and first, where Settings keeps its own, and placed before
+    // anything else claims the space so a long list cannot push it away.
+    closeButton.setBounds (area.removeFromTop (kCloseRow).removeFromLeft (110));
+    area.removeFromTop (kAfterClose);
 
-    heading.setBounds (area.removeFromTop (30));
-    area.removeFromTop (8);
-    explanation.setBounds (area.removeFromTop (56));
-    area.removeFromTop (16);
+    heading.setBounds (area.removeFromTop (kHeadingRow));
+    area.removeFromTop (kAfterHeading);
 
-    if (unavailableLabel.isVisible())
+    const auto place = [&area, width] (juce::Label& label, int gapAfter = 0, int indent = 0)
     {
-        unavailableLabel.setBounds (area.removeFromTop (40));
-        return;
+        auto line = area.removeFromTop (textHeight (label, width - 2 * indent));
+        label.setBounds (line.reduced (indent, 0));
+        area.removeFromTop (gapAfter);
+    };
+
+    // A heading, then the hairline paint() draws under it, as in Settings.
+    const auto section = [this, &area] (juce::Label& label)
+    {
+        label.setBounds (area.removeFromTop (14));
+        area.removeFromTop (3);
+        ruleYs.push_back (area.getY());
+        area.removeFromTop (1 + 9);
+    };
+
+    if (camerasUnavailable())
+    {
+        place (unavailableLabel, kGapAfter);
+    }
+    else
+    {
+        if (problemLabel.isVisible())
+            place (problemLabel, kLineGap);
+
+        place (explanation, kGapAfter);
+
+        section (camerasSection);
+
+        if (rows.empty())
+            place (noCamerasLabel, kGapAfter);
+
+        for (auto& row : rows)
+        {
+            auto header = area.removeFromTop (kRowHeight);
+            row.enabledToggle->setBounds (header.removeFromRight (headerToggleWidth (width)));
+            header.removeFromRight (12);
+            row.nameEditor->setBounds (header);
+            area.removeFromTop (kLineGap);
+
+            place (*row.fileName);
+
+            if (row.hint->isVisible())
+                place (*row.hint);
+
+            area.removeFromTop (kLineGap);
+
+            // A Settings row: the question on the left, its answer in a
+            // capped column on the right.
+            auto sizeRow = area.removeFromTop (kRowHeight);
+            row.qualityCombo->setBounds (sizeRow.removeFromRight (juce::jmin (kValueWidth, sizeRow.getWidth() * 3 / 5)));
+            sizeRow.removeFromRight (12);
+            row.qualityLabel->setBounds (sizeRow);
+
+            if (row.formatLabel->isVisible())
+                place (*row.formatLabel);
+
+            area.removeFromTop (kGapAfter);
+        }
+
+        section (afterTakeSection);
+        combineVideoToggle.setBounds (area.removeFromTop (kToggleRow));
+
+        if (combineVideoNote.isVisible())
+            place (combineVideoNote, 0, kNoteIndent);
+
+        area.removeFromTop (kGapAfter);
     }
 
-    fullPreviewToggle.setBounds (area.removeFromTop (kRowHeight));
-    area.removeFromTop (4);
-    qualityNote.setBounds (area.removeFromTop (34));
-    area.removeFromTop (16);
+    section (spaceSection);
+    place (spaceLabel);
 
-    if (problemLabel.isVisible())
-        problemLabel.setBounds (area.removeFromTop (40));
-
-    for (auto& row : rows)
+    if (roomNoteLabel.isVisible())
     {
-        auto header = area.removeFromTop (kRowHeight);
-        row.nameEditor->setBounds (header.removeFromLeft (juce::jmin (240, header.getWidth() / 2)));
-        header.removeFromLeft (12);
-        row.enabledToggle->setBounds (header);
-
-        row.fileName->setBounds (area.removeFromTop (18));
-        area.removeFromTop (4);
-
-        auto settingsLine = area.removeFromTop (kRowHeight);
-        row.qualityLabel->setBounds (settingsLine.removeFromLeft (60));
-        row.qualityCombo->setBounds (settingsLine.removeFromLeft (juce::jmin (180, settingsLine.getWidth() / 2)).reduced (0, 2));
-        settingsLine.removeFromLeft (12);
-        row.formatLabel->setBounds (settingsLine);
-        area.removeFromTop (6);
-        auto view = area.removeFromTop (viewHeight());
-
-        // 16:9 inside whatever space the panel has, centred, so a camera is
-        // never stretched to the panel's shape.
-        const int wanted = juce::jmin (view.getWidth(), view.getHeight() * 16 / 9);
-        view = view.withSizeKeepingCentre (wanted, view.getHeight());
-
-        if (row.viewer != nullptr)
-            row.viewer->setBounds (view);
-        else if (row.placeholder != nullptr)
-            row.placeholder->setBounds (view);
-
-        area.removeFromTop (kViewGap);
+        area.removeFromTop (kLineGap);
+        place (roomNoteLabel);
     }
+}
+
+void CameraPanel::paint (juce::Graphics& g)
+{
+    g.fillAll (AppLookAndFeel::surface);
+
+    // One hairline under each heading, in the outline tone, as in Settings.
+    g.setColour (AppLookAndFeel::outline);
+    const auto bounds = getLocalBounds().reduced (kMargin, 0);
+
+    for (int y : ruleYs)
+        g.fillRect (bounds.getX(), y, bounds.getWidth(), 1);
 }
 
 } // namespace mma

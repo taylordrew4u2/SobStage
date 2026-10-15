@@ -10,11 +10,14 @@
 #include "UI/SavedTakePanel.h"
 #include "UI/TakeAlertCard.h"
 #include "UI/CameraPreviewCover.h"
+#include "UI/AppLookAndFeel.h"
+#include "Core/FfmpegLocator.h"
 #include "Core/QuitQuestions.h"
 #include "Core/TakeCopy.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 namespace {
@@ -245,26 +248,17 @@ int main()
     const bool statusTextUpdatesPlaceholderInPlace = placeholderCreates == 1
         && placeholderHas ("No video signal.") && ! placeholderHas ("Waiting for video.");
 
-    int panelViewerCreates = 0;
+    // The Cameras page holds no picture of its own -- the main screen is
+    // always beside it -- so it has no viewer to cache or rebuild.
     mma::CameraPanel cameraPanel;
-    cameraPanel.makeViewer = [&panelViewerCreates] (const std::string&)
-    {
-        ++panelViewerCreates;
-        return std::make_unique<juce::Component>();
-    };
     cameraPanel.setCameras (
         { { "capture", "HDMI", true, true, false, false, false, "HDMI.mov", 1 } });
-    cameraPanel.setCameras (
-        { { "capture", "HDMI", true, true, false, false, false, "HDMI.mov", 1 } });
-    const bool panelCacheKeepsViewer = panelViewerCreates == 1;
-    cameraPanel.setCameras (
-        { { "capture", "HDMI", true, true, false, false, false, "HDMI.mov", 2 } });
-    const bool panelRevisionRebuildsViewer = panelViewerCreates == 2;
 
     auto cameraConfigurationHasState = [&cameraPanel] (bool expectedEnabled)
     {
         bool foundRecordToggle = false;
         bool foundNameEditor = false;
+        bool foundPictureSize = false;
         bool allMatch = true;
 
         for (int i = 0; i < cameraPanel.getNumChildComponents(); ++i)
@@ -282,9 +276,17 @@ int main()
                 foundNameEditor = true;
                 allMatch = allMatch && editor->isEnabled() == expectedEnabled;
             }
+
+            // A take fixes each camera's picture size as well.
+            if (auto* combo = dynamic_cast<juce::ComboBox*> (child);
+                combo != nullptr && combo->getTitle().startsWith ("Picture size for"))
+            {
+                foundPictureSize = true;
+                allMatch = allMatch && combo->isEnabled() == expectedEnabled;
+            }
         }
 
-        return foundRecordToggle && foundNameEditor && allMatch;
+        return foundRecordToggle && foundNameEditor && foundPictureSize && allMatch;
     };
 
     cameraPanel.setRecording (true);
@@ -345,12 +347,8 @@ int main()
                  omittedCameraNeverClaimsRec ? "PASS" : "FAIL");
     std::printf ("caption/name/signal changes keep the viewer host: %s\n",
                  captionsKeepViewerHost ? "PASS" : "FAIL");
-    std::printf ("status text updates the placeholder in place: %s\n",
+    std::printf ("status text updates the placeholder in place: %s\n\n",
                  statusTextUpdatesPlaceholderInPlace ? "PASS" : "FAIL");
-    std::printf ("panel cache preserves unchanged viewer: %s\n",
-                 panelCacheKeepsViewer ? "PASS" : "FAIL");
-    std::printf ("panel revision rebuilds viewer: %s\n\n",
-                 panelRevisionRebuildsViewer ? "PASS" : "FAIL");
     std::printf ("recording freezes camera roster controls: %s\n",
                  takeFreezesCameraControls ? "PASS" : "FAIL");
     std::printf ("stopping restores camera roster controls: %s\n\n",
@@ -368,8 +366,6 @@ int main()
     failures += omittedCameraNeverClaimsRec ? 0 : 1;
     failures += captionsKeepViewerHost ? 0 : 1;
     failures += statusTextUpdatesPlaceholderInPlace ? 0 : 1;
-    failures += panelCacheKeepsViewer ? 0 : 1;
-    failures += panelRevisionRebuildsViewer ? 0 : 1;
     failures += takeFreezesCameraControls ? 0 : 1;
     failures += stopRestoresCameraControls ? 0 : 1;
     failures += lateCameraCopyNamesThisTake ? 0 : 1;
@@ -499,11 +495,11 @@ int main()
 
     // --- Controls that must show what was SAVED, not a constant ------------
     //
-    // Three controls opened at a hardcoded value with no setter at all: the
-    // monitor volume slider at 70, the backup-copy box ticked, and the full-
-    // preview box unticked. Each therefore described a state the app might not
-    // be in. The backup one is the dangerous member of the set -- it told
-    // someone who had switched the second copy off that it was on.
+    // Controls opened at a hardcoded value with no setter at all: the monitor
+    // volume slider at 70 and the backup-copy box ticked. Each therefore
+    // described a state the app might not be in. The backup one is the
+    // dangerous member of the set -- it told someone who had switched the
+    // second copy off that it was on.
     {
         mma::MainScreen screen;
         mma::AdvancedPanel panel;
@@ -511,22 +507,16 @@ int main()
         screen.setMasterVolume (15.0);
         const bool volumeRoundTrips = std::abs (screen.getMasterVolume() - 15.0) < 1.0e-9;
 
-        screen.setFullPreview (true);
-        const bool previewRoundTrips = screen.isFullPreview();
-
         panel.setMirrorEnabled (false);
         const bool mirrorRoundTrips = ! panel.isMirrorEnabled();
 
         std::printf ("\nControls restate what was saved\n");
         std::printf ("  %s  the volume slider shows the saved volume, not 70\n",
                      volumeRoundTrips ? "PASS" : "FAIL");
-        std::printf ("  %s  the full-preview box shows the saved quality\n",
-                     previewRoundTrips ? "PASS" : "FAIL");
         std::printf ("  %s  the backup-copy box shows the saved setting, not always on\n",
                      mirrorRoundTrips ? "PASS" : "FAIL");
 
         failures += volumeRoundTrips ? 0 : 1;
-        failures += previewRoundTrips ? 0 : 1;
         failures += mirrorRoundTrips ? 0 : 1;
     }
 
@@ -1236,24 +1226,6 @@ int main()
         screen.setCameraPreviewsHidden (false);
         const bool screenShowsAgain = allViewers (screenViewers, true);
 
-        std::vector<juce::Component*> panelViewers;
-        mma::CameraPanel panel;
-        panel.makeViewer = [&panelViewers] (const std::string&)
-        {
-            auto viewer = std::make_unique<juce::Component>();
-            panelViewers.push_back (viewer.get());
-            return viewer;
-        };
-        panel.setCameras ({ { "a", "Cam A", true, true, false, false, false, "A.mov", 1 } });
-        const bool panelShownByDefault = allViewers (panelViewers, true);
-        panel.setCameraPreviewsHidden (true);
-        const bool panelHides = allViewers (panelViewers, false);
-        panelViewers.clear();
-        panel.setCameras ({ { "a", "Cam A", true, true, false, false, false, "A.mov", 2 } });
-        const bool panelRebuildStaysHidden = allViewers (panelViewers, false);
-        panel.setCameraPreviewsHidden (false);
-        const bool panelShowsAgain = allViewers (panelViewers, true);
-
         // The window-level watcher: any watched overlay going visible covers
         // the previews at once, and they come back only when all are gone.
         juce::Component coverWindow;
@@ -1310,10 +1282,6 @@ int main()
             { "main-screen previews hide under a card", screenHides },
             { "main-screen rebuild under a card stays hidden", screenRebuildStaysHidden },
             { "main-screen previews come back after the card", screenShowsAgain },
-            { "cameras-panel previews shown by default", panelShownByDefault },
-            { "cameras-panel previews hide under a card", panelHides },
-            { "cameras-panel rebuild under a card stays hidden", panelRebuildStaysHidden },
-            { "cameras-panel previews come back after the card", panelShowsAgain },
             { "cover starts uncovered", startsUncovered },
             { "a card going up covers at once", cardCovers },
             { "banner keeps previews covered after the card", bannerKeepsCovered },
@@ -1325,6 +1293,355 @@ int main()
         {
             std::printf ("%s: %s\n", name, ok ? "PASS" : "FAIL");
             failures += ok ? 0 : 1;
+        }
+    }
+
+
+    // --- The Cameras page fits the drawer -------------------------------------
+    //
+    // The page opens beside the main screen in the Settings drawer's place, so
+    // it has the drawer's width: 380 at the narrowest window (less the
+    // scrollbar when it scrolls), 500 at the widest. With everything it can
+    // show at once -- a live camera, an unplugged one, one waiting for a
+    // signal with the longest message there is, a problem line, the combined
+    // video's note and the room note -- every line must be drawn whole, inside
+    // the page, with nothing on top of anything else, and the page must ask
+    // for exactly the height it lays out. Drawn with the app's own look, which
+    // is what decides how wide a switch's words are.
+    mma::AppLookAndFeel appLook;
+
+    // A child whose words could not all be drawn in it, by how it draws them.
+    const auto wordsCut = [] (juce::Component& c) -> bool
+    {
+        if (auto* label = dynamic_cast<juce::Label*> (&c))
+        {
+            const auto area = label->getBorderSize().subtractedFrom (label->getLocalBounds());
+            juce::GlyphArrangement glyphs;
+            glyphs.addFittedText (label->getFont(), label->getText(), 0.0f, 0.0f, (float) area.getWidth(), 100000.0f,
+                                  juce::Justification::topLeft, 1000, label->getMinimumHorizontalScale());
+            const auto box = glyphs.getBoundingBox (0, -1, true);
+            return box.getHeight() > (float) area.getHeight() + 0.5f || box.getWidth() > (float) area.getWidth() + 0.5f;
+        }
+
+        // AppLookAndFeel::drawToggleButton: 14pt, beside a box 34px in.
+        if (auto* toggle = dynamic_cast<juce::ToggleButton*> (&c))
+            return juce::Font (14.0f).getStringWidthFloat (toggle->getButtonText()) > (float) (toggle->getWidth() - 34);
+
+        // LookAndFeel_V2::drawButtonText's indents, at the button's own font.
+        if (auto* button = dynamic_cast<juce::TextButton*> (&c))
+        {
+            const auto font = button->getLookAndFeel().getTextButtonFont (*button, button->getHeight());
+            const int fontHeight = juce::roundToInt (font.getHeight() * 0.6f);
+            const int corner = juce::jmin (button->getHeight(), button->getWidth()) / 2;
+            const int indent = juce::jmin (fontHeight, 2 + corner / 2);
+            return font.getStringWidthFloat (button->getButtonText()) > (float) (button->getWidth() - 2 * indent);
+        }
+
+        return false;
+    };
+
+    // Every visible child: inside its parent, on top of nothing, words whole.
+    const auto childrenFit = [&wordsCut] (juce::Component& parent, juce::String& detail)
+    {
+        bool ok = true;
+        std::vector<juce::Component*> shown;
+
+        for (auto* child : parent.getChildren())
+            if (child->isVisible())
+                shown.push_back (child);
+
+        for (auto* child : shown)
+        {
+            const auto b = child->getBounds();
+            const auto name = dynamic_cast<juce::Label*> (child) != nullptr
+                                  ? "\"" + dynamic_cast<juce::Label*> (child)->getText().substring (0, 40) + "\""
+                              : dynamic_cast<juce::Button*> (child) != nullptr
+                                  ? "\"" + dynamic_cast<juce::Button*> (child)->getButtonText() + "\""
+                                  : child->getTitle();
+
+            if (b.isEmpty() || ! parent.getLocalBounds().contains (b))
+            {
+                ok = false;
+                detail << " OUTSIDE " << name << " " << b.toString() << ";";
+            }
+
+            if (wordsCut (*child))
+            {
+                ok = false;
+                detail << " CUT " << name << ";";
+            }
+
+            for (auto* other : shown)
+                if (other < child && other->getBounds().intersects (b))
+                {
+                    ok = false;
+                    detail << " OVERLAP " << name << " " << b.toString() << " / " << other->getBounds().toString() << ";";
+                }
+        }
+
+        return ok;
+    };
+
+    const auto hasChildButton = [] (juce::Component& parent, const juce::String& text)
+    {
+        for (auto* child : parent.getChildren())
+            if (auto* b = dynamic_cast<juce::Button*> (child); b != nullptr && b->getButtonText() == text)
+                return true;
+        return false;
+    };
+
+    const char* snapshotDir = std::getenv ("MMA_LAYOUT_PROBE_SNAPSHOT_DIR");
+    const auto savePng = [snapshotDir] (juce::Component& c, const juce::String& name)
+    {
+        if (snapshotDir == nullptr || *snapshotDir == '\0')
+            return;
+
+        const auto image = c.createComponentSnapshot (c.getLocalBounds(), true, 2.0f);
+        const auto file = juce::File (snapshotDir).getChildFile (name + ".png");
+        file.getParentDirectory().createDirectory();
+        file.deleteFile();
+        juce::FileOutputStream out (file);
+        if (out.openedOk())
+            juce::PNGImageFormat().writeImageToStream (image, out);
+    };
+
+    {
+        std::printf ("\n-- the Cameras page fits the drawer --\n");
+
+        mma::CameraPanel::CameraRow live;
+        live.id = "a";
+        live.displayName = "Wide Shot";
+        live.enabled = true;
+        live.recordingThisTake = true;
+        live.fileName = "V01_Wide-Shot.mov";
+        live.activeFormatText = "3840 x 2160, 30 fps";
+
+        mma::CameraPanel::CameraRow unplugged;
+        unplugged.id = "b";
+        unplugged.displayName = "Late HDMI capture";
+        unplugged.enabled = true;
+        unplugged.available = false;
+        unplugged.fileName = "V02_Late-HDMI-capture.mov";
+        unplugged.quality = mma::CameraQuality::HD720;
+
+        mma::CameraPanel::CameraRow waiting;
+        waiting.id = "c";
+        waiting.displayName = "Logitech C920";
+        waiting.enabled = true;
+        waiting.fileName = "V03_Logitech-C920.mov";
+        waiting.signalStatusText = "No video signal from Logitech C920. Check the camera or capture device; "
+                                   "for HDMI, check the output and both cables, then turn this camera off and back on.";
+        waiting.quality = mma::CameraQuality::HD1080;
+
+        const auto roomNote = juce::String (mma::cardcopy::roomHereNote (25.0 * 60.0, -1.0, true, true));
+        const auto spaceLine = juce::String (mma::CameraSelection::spaceAnHourText (2.0 * 8.0e6 + 4.0e6 + 1.2e6));
+
+        struct PageCase { int width; bool recordingNow; bool unavailable; const char* label; };
+        const PageCase pageCases[] = {
+            { 380, false, false, "380px" },
+            { 372, false, false, "380px less scrollbar" },
+            { 500, false, false, "500px" },
+            { 380, true,  false, "380px, during a take" },
+            { 380, false, true,  "380px, no cameras here" },
+            { 500, false, true,  "500px, no cameras here" },
+        };
+
+        for (const auto& pc : pageCases)
+        {
+            mma::CameraPanel page;
+            page.setLookAndFeel (&appLook);
+            page.setVisible (true);
+            page.setSize (pc.width, 100);
+            page.setProblemText ("Logitech C920 couldn't start recording. Close any other app using it, "
+                                 "then switch it off and on again.");
+            page.setCombineVideoState (true, juce::String (mma::ffmpegMissingNote (mma::HostPlatform::Windows)));
+            page.setSpaceText (spaceLine, roomNote);
+            page.setRecording (pc.recordingNow);
+            page.setCameras ({ live, unplugged, waiting });
+
+            if (pc.unavailable)
+                page.setUnavailableReason ("This build can't use cameras. Camera recording is available in the "
+                                           "macOS and Windows builds; the sound recording works either way.");
+
+            page.setSize (pc.width, page.getRequiredHeight());
+
+            juce::String detail;
+            bool ok = childrenFit (page, detail);
+
+            int lowest = 0;
+            for (auto* child : page.getChildren())
+                if (child->isVisible())
+                    lowest = juce::jmax (lowest, child->getBottom());
+
+            const bool heightMatches = page.getRequiredHeight() == lowest + 12;
+            const bool noPreviewToggle = ! hasChildButton (page, "Show a bigger, sharper preview");
+            const bool spaceShown = findLabel (page, spaceLine) != nullptr && findLabel (page, spaceLine)->isVisible()
+                                 && findLabel (page, roomNote) != nullptr && findLabel (page, roomNote)->isVisible();
+
+            int pictureSizes = 0, recordSwitches = 0;
+            for (auto* child : page.getChildren())
+            {
+                if (! child->isVisible())
+                    continue;
+                if (auto* combo = dynamic_cast<juce::ComboBox*> (child); combo != nullptr && combo->getTitle().startsWith ("Picture size for"))
+                    ++pictureSizes;
+                if (auto* t = dynamic_cast<juce::ToggleButton*> (child); t != nullptr && t->getButtonText() == "Record this camera")
+                    ++recordSwitches;
+            }
+
+            const auto* combine = findButton (page, "Also save video with the sound in one file");
+            const bool rowsRight = pc.unavailable
+                                 ? pictureSizes == 0 && recordSwitches == 0 && (combine == nullptr || ! combine->isVisible())
+                                 : pictureSizes == 3 && recordSwitches == 3 && combine != nullptr && combine->isVisible();
+
+            ok = ok && heightMatches && noPreviewToggle && spaceShown && rowsRight;
+
+            std::printf ("  %s  %-24s %4dpx tall (lowest child ends at %d)%s%s%s%s\n",
+                         ok ? "PASS" : "FAIL", pc.label, page.getRequiredHeight(), lowest,
+                         heightMatches ? "" : ", HEIGHT DIFFERS", noPreviewToggle ? "" : ", OLD PREVIEW BOX",
+                         rowsRight ? "" : ", WRONG CONTROLS", detail.toRawUTF8());
+            failures += ok ? 0 : 1;
+
+            savePng (page, juce::String ("cameras-page-") + juce::String (pc.width)
+                               + (pc.recordingNow ? "-recording" : "") + (pc.unavailable ? "-unavailable" : ""));
+            page.setLookAndFeel (nullptr);
+        }
+    }
+
+    // Settings no longer has the combined-video switch: it is on the Cameras
+    // page, once. Left in both, the walker's "every control" step would find
+    // it twice and the two would have to be kept in step by hand.
+    {
+        mma::AdvancedPanel settings;
+        mma::CameraPanel page;
+        const juce::String combine ("Also save video with the sound in one file");
+        const bool notInSettings = ! hasChildButton (settings, combine);
+        const bool onCamerasPage = hasChildButton (page, combine);
+
+        std::printf ("  %s  the combined-video switch is on the Cameras page, not in Settings\n",
+                     notInSettings && onCamerasPage ? "PASS" : "FAIL");
+        failures += notInSettings && onCamerasPage ? 0 : 1;
+    }
+
+    // --- The masthead's three doors ---------------------------------------------
+    //
+    // Help, Cameras and Settings sit together at the top of the main screen, at
+    // every width the main screen gets: the whole window, beside an open drawer,
+    // and the narrowest window. The Cameras door was in the footer and hidden
+    // whenever a camera was on -- exactly when its settings matter -- so the
+    // check is made with two cameras on.
+    {
+        std::printf ("\n-- the masthead's doors: Help, Cameras, Settings --\n");
+
+        for (const int width : { 560, 720, 1180 })
+        {
+            mma::MainScreen s;
+            s.setLookAndFeel (&appLook);
+            s.setMicCount (2);
+            s.setVersionText ("v1.13.28");
+            s.setCameraCount (2);
+            s.setCameraTiles ({ { "a", "Wide Shot" }, { "b", "Close Up" } });
+            s.setVisibleHeight (700);
+            s.setSize (width, juce::jmax (700, s.getRequiredHeight()));
+            s.resized();
+
+            auto* help = findButton (s, "Help");
+            auto* cameras = findButton (s, "Cameras (2)");
+            auto* settings = findButton (s, "Settings");
+            auto* brand = findLabel (s, "S O B S T A G E");
+
+            bool ok = help != nullptr && cameras != nullptr && settings != nullptr && brand != nullptr;
+            juce::String detail;
+
+            if (ok)
+            {
+                std::vector<juce::Component*> masthead { brand, help, cameras, settings };
+
+                // The tagline and version, when they are shown, are in the
+                // masthead too and may not sit on anything in it.
+                for (auto* child : s.getChildren())
+                    if (auto* label = dynamic_cast<juce::Label*> (child); label != nullptr && label->isVisible()
+                        && (label->getText() == "let's give these tears a stage" || label->getText() == "v1.13.28"))
+                        masthead.push_back (label);
+
+                for (auto* c : masthead)
+                {
+                    const auto b = c->getBounds();
+                    const bool placed = c->isVisible() && ! b.isEmpty() && s.getLocalBounds().contains (b) && b.getBottom() <= 60;
+                    const bool whole = ! wordsCut (*c);
+                    ok = ok && placed && whole;
+                    if (! placed) detail << " MISPLACED " << c->getBounds().toString() << ";";
+                    if (! whole)  detail << " CUT " << (c == brand ? juce::String ("wordmark") : c->getTitle()) << ";";
+
+                    for (auto* other : masthead)
+                        if (other < c && other->getBounds().intersects (b))
+                        {
+                            ok = false;
+                            detail << " OVERLAP " << b.toString() << " / " << other->getBounds().toString() << ";";
+                        }
+                }
+
+                // Help, Cameras, Settings, left to right.
+                ok = ok && help->getX() < cameras->getX() && cameras->getX() < settings->getX()
+                        && cameras->getTitle() == "Cameras";
+            }
+
+            const bool noOldDoors = ! hasChildButton (s, "+ Add camera") && ! hasChildButton (s, "Full preview");
+            ok = ok && noOldDoors;
+
+            std::printf ("  %s  %4dpx main screen: Help, Cameras (2), Settings in the masthead%s%s\n",
+                         ok ? "PASS" : "FAIL", width, noOldDoors ? "" : ", OLD CAMERA DOORS", detail.toRawUTF8());
+            failures += ok ? 0 : 1;
+
+            if (width == 720)
+                savePng (s, "masthead-720");
+
+            s.setLookAndFeel (nullptr);
+        }
+
+        // The main screen and the page beside it, as the window shows them
+        // with the Cameras door open at its narrowest drawer width.
+        if (snapshotDir != nullptr && *snapshotDir != '\0')
+        {
+            juce::Component window;
+            window.setLookAndFeel (&appLook);
+            mma::MainScreen s;
+            mma::CameraPanel page;
+            window.addAndMakeVisible (s);
+            window.addAndMakeVisible (page);
+
+            s.setMicCount (3);
+            s.setVersionText ("v1.13.28");
+            s.setCameraCount (2);
+            s.setCameraTiles ({ { "a", "Wide Shot" }, { "b", "Close Up" } });
+            s.setDoorsOpen (false, false, true);
+            s.setRemainingTimeText ("Room for 11h 20m of feelings");
+            s.setSaveLocationText ("Saves to /Volumes/SHOW CARD (recorded on this computer first)");
+
+            mma::CameraPanel::CameraRow wide;
+            wide.id = "a"; wide.displayName = "Wide Shot"; wide.enabled = true;
+            wide.fileName = "V01_Wide-Shot.mov"; wide.activeFormatText = "3840 x 2160, 30 fps";
+            mma::CameraPanel::CameraRow close;
+            close.id = "b"; close.displayName = "Close Up"; close.enabled = true;
+            close.fileName = "V02_Close-Up.mov"; close.quality = mma::CameraQuality::HD1080;
+            close.activeFormatText = "1920 x 1080, 30 fps";
+            page.setCameras ({ wide, close });
+            page.setCombineVideoState (false, {});
+            page.setSpaceText (juce::String (mma::CameraSelection::spaceAnHourText (8.0e6 + 4.0e6 + 0.9e6)), {});
+
+            constexpr int kDrawer = 420;
+            const int mainWidth = 760;
+            page.setSize (kDrawer, 100);
+            const int height = juce::jmax (760, page.getRequiredHeight());
+            window.setSize (mainWidth + 1 + kDrawer, height);
+            s.setVisibleHeight (height);
+            s.setBounds (0, 0, mainWidth, height);
+            page.setBounds (mainWidth + 1, 0, kDrawer, height);
+            savePng (window, "window-with-cameras-page");
+
+            s.setLookAndFeel (nullptr);
+            page.setLookAndFeel (nullptr);
+            window.setLookAndFeel (nullptr);
         }
     }
 

@@ -147,10 +147,6 @@ public:
     /// "Record on this computer, then copy to the card". On by default.
     std::function<void (bool)> onCopyToCardToggled;
 
-    /// Whether a finished take also writes one video-with-sound file per
-    /// camera. Beside the separate files, never instead of them.
-    std::function<void (bool)> onCombineVideoToggled;
-
     /// Which platform the take is aimed at, by name; empty means none.
     std::function<void (juce::String)> onDeliveryTargetChanged;
 
@@ -168,11 +164,6 @@ public:
     /// "what was that amber thing I looked away from" without having to have
     /// been watching.
     void setActivityLines (const juce::StringArray& lines);
-
-    /// Sets that toggle and the sentence under it. `unavailableReason` is empty
-    /// when the machine can actually do this, and otherwise says what is
-    /// missing -- named here, before a take, rather than in an alert after one.
-    void setCombineVideoState (bool on, const juce::String& unavailableReason);
 
     /// The backup-copy box was fixed ON at construction with no setter, so it
     /// read "ticked" to someone who had turned it off -- telling them a second
@@ -243,12 +234,8 @@ private:
     // for the case where the card does not survive the day, and saying that
     // plainly is what makes someone leave it on.
     juce::Label mirrorNote;
-    juce::ToggleButton combineVideoToggle { "Also save video with the sound in one file" };
-
-    // Named under the toggle rather than in an alert, because the answer is
-    // "install a thing", and an alert after the take is the wrong moment to
-    // learn that.
-    juce::Label combineVideoNote;
+    // "Also save video with the sound in one file" is on the Cameras page: it
+    // is a question about the cameras' files, asked where the cameras are.
     juce::Label destinationFolderLabel;
     juce::TextButton destinationFolderButton { "Change..." };
     juce::TextButton diagnosticsExportButton { "Export diagnostics" };

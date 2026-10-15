@@ -102,8 +102,9 @@ public:
     /// about the rig right now. Empty hides the line.
     void setAdviceText (const juce::String& text);
 
-    /// How many cameras are in the take, so the button says whether any are.
-    /// Zero leaves it reading "Cameras".
+    /// How many cameras are in the take, so the Cameras door in the masthead
+    /// says whether any are: "Cameras (2)". Zero leaves it reading "Cameras".
+    /// The door is always there, with or without a camera.
     void setCameraCount (int count);
 
     /// One camera that is switched on for this take, as the main screen needs
@@ -158,15 +159,6 @@ public:
     /// The arrows. Fired by the buttons on the row and by the up/down keys.
     std::function<void (int)> onCameraScaleChanged;
 
-    /// Destroys the live views without disturbing anything else.
-    ///
-    /// The rule this and setCameraTiles() together keep: whichever screen is on
-    /// screen owns the viewers, and no camera ever has two. The panels are
-    /// mutually exclusive viewports, so the owner releases these before showing
-    /// another screen and repopulates them on the way back. A viewer outliving
-    /// the device behind it is a component drawing from freed memory.
-    void releaseCameraViews();
-
     /// §5.3/§5.4: anything wrong with the listening path, in plain language.
     /// Empty hides the line. Never leave this unshown -- the spec forbids
     /// silently delivering a high-latency mix instead of saying so.
@@ -182,12 +174,6 @@ public:
     /// takes hunting is an answer nobody checks.
     void setVersionText (const juce::String& text);
 
-    /// §10.2: the camera's own controls, brought onto the main screen.
-    /// "Full preview" is the existing preview-quality choice; "+ Add camera"
-    /// opens the panel where cameras are switched on and named.
-    std::function<void (bool)> onFullPreviewToggled;
-    void setFullPreview (bool on) { fullPreviewToggle.setToggleState (on, juce::dontSendNotification); }
-    bool isFullPreview() const { return fullPreviewToggle.getToggleState(); }
     double getMasterVolume() const { return volumeSlider.getValue(); }
 
     /// The slider opened at a hardcoded 70 whatever the saved volume was, so
@@ -208,7 +194,7 @@ public:
 
     /// Which drawer is open, so its button reads as pressed: the same button
     /// closes it again, and it should look like it will.
-    void setDoorsOpen (bool settingsOpen, bool helpOpen);
+    void setDoorsOpen (bool settingsOpen, bool helpOpen, bool camerasOpen);
     std::function<void()> onMuteToggled;
     std::function<void (int)> onMicNameClicked; // meter index
 
@@ -247,9 +233,6 @@ private:
     // the sound -- rather than one undifferentiated stack of controls.
     juce::Label cameraSectionLabel, micSectionLabel;
 
-    juce::ToggleButton fullPreviewToggle { "Full preview" };
-    juce::TextButton addCameraButton { "+ Add camera" };
-
     /// The sob mark, drawn rather than loaded: it is four shapes, and a PNG
     /// would need a second copy of the icon kept in step with Tools/make_icon.py
     /// by hand.
@@ -268,7 +251,9 @@ private:
         bool recordingThisTake = false;
         bool startingThisTake = false;
         juce::String signalStatusText;
-        // Owned here and destroyed with the tile, per releaseCameraViews().
+        // Owned here and destroyed with the tile: a viewer outliving the
+        // device behind it is a component drawing from freed memory. The main
+        // screen is always showing, so it is the only thing that holds one.
         std::unique_ptr<juce::Component> viewer;
         std::unique_ptr<juce::Label> caption;
         std::unique_ptr<juce::Label> placeholder;
@@ -362,15 +347,17 @@ private:
     juce::Slider volumeSlider;
     juce::TextEditor sessionNameEditor;
     juce::ToggleButton muteButton { "Mute" };
-    // "Settings" rather than "Advanced": this is the only door out of the main
-    // screen, and it holds ordinary choices -- which mics are in use, where
-    // recordings go -- not expert ones. "Advanced" told users to stay out.
+    // The three doors, together in the masthead: Help, Cameras, Settings.
+    // "Settings" rather than "Advanced": it holds ordinary choices -- which
+    // mics are in use, where recordings go -- not expert ones, and "Advanced"
+    // told users to stay out.
     juce::TextButton advancedButton { "Settings" };
-    // The second door, and the only other one. Named for what is behind it,
-    // like Settings: a user looking for their webcam looks for "Cameras".
+    // Named for what is behind it, like Settings: a user looking for their
+    // webcam looks for "Cameras". Always in the masthead -- it was hidden
+    // whenever a camera was on, which is exactly when its settings matter.
     juce::TextButton camerasButton { "Cameras" };
-    // The third door. Beside Settings in the masthead, because someone with a
-    // flat meter looks up there for a way out, not down in the level row.
+    // Beside the other two, because someone with a flat meter looks up there
+    // for a way out, not down in the level row.
     juce::TextButton helpButton { "Help" };
 
     /// Layout differs between the two states, so it is remembered rather than
