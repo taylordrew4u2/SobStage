@@ -1503,6 +1503,7 @@ void MainComponent::refreshCameras()
         cameraPanel.setCombineVideoState (application.getCombineVideoAndAudio(),
                                           application.getCombineUnavailableReason());
         cameraPanel.setSpaceText (application.recordingSpaceLine(), application.nextTakeRoomNote());
+        cameraPanel.setLookingForCameras (! controller.hasLookedForCameras());
     }
 
     std::vector<CameraPanel::CameraRow> cameras;

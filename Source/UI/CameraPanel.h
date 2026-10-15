@@ -66,6 +66,12 @@ public:
     /// Empty when cameras work here. Otherwise the one sentence saying why they
     /// do not, in place of the controls.
     void setUnavailableReason (const juce::String& reason);
+
+    /// Whether the first look for cameras has yet to finish. Until it has --
+    /// and for as long as a camera driver keeps it from finishing -- an empty
+    /// list is not "no camera is plugged in", and the page says it is still
+    /// looking. True until told otherwise.
+    void setLookingForCameras (bool looking);
     /// §10.6: anything currently wrong with a camera. Empty hides the line.
     void setProblemText (const juce::String& text);
     /// Reflected in the page's own wording, so what is on screen says whether
@@ -115,6 +121,7 @@ private:
     std::vector<Row> rows;
     std::vector<CameraRow> lastCameras;
     bool recording = false;
+    bool lookingForCameras = true;
 
     bool camerasUnavailable() const { return unavailableLabel.getText().isNotEmpty(); }
     void rebuildRows();

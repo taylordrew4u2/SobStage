@@ -1509,6 +1509,51 @@ int main()
         }
     }
 
+    // An empty list says "No camera is plugged in" only once a look for
+    // cameras has finished. Before that -- the first seconds after launch, or
+    // for good with a camera driver that never answers -- it told someone
+    // with a camera plugged in to plug one in.
+    {
+        std::printf ("\n-- the Cameras page is looking before it says there is no camera --\n");
+
+        const juce::String looking ("Looking for cameras...");
+        const juce::String none ("No camera is plugged in. Plug one in and it shows up here, ready to record.");
+
+        mma::CameraPanel page;
+        page.setLookAndFeel (&appLook);
+        page.setVisible (true);
+        page.setSize (380, 100);
+        page.setCombineVideoState (false, {});
+        page.setSpaceText (juce::String (mma::CameraSelection::spaceAnHourText (1.2e6)), {});
+        page.setCameras ({});
+        page.setSize (380, page.getRequiredHeight());
+
+        const auto showing = [&page, &findLabel] (const juce::String& text)
+        {
+            auto* label = findLabel (page, text);
+            return label != nullptr && label->isVisible() && ! label->getBounds().isEmpty();
+        };
+
+        juce::String detail;
+        const bool lookingFirst = showing (looking) && ! showing (none) && childrenFit (page, detail);
+
+        page.setLookingForCameras (false);
+        page.setSize (380, page.getRequiredHeight());
+        const bool noneOnceLooked = showing (none) && ! showing (looking) && childrenFit (page, detail);
+
+        page.setLookingForCameras (true);
+        const bool lookingAgain = showing (looking) && ! showing (none);
+
+        const bool ok = lookingFirst && noneOnceLooked && lookingAgain;
+        std::printf ("  %s  before the first look: \"%s\"; after one that found none: \"No camera is "
+                     "plugged in...\"%s%s%s%s\n",
+                     ok ? "PASS" : "FAIL", looking.toRawUTF8(),
+                     lookingFirst ? "" : ", NOT LOOKING FIRST", noneOnceLooked ? "" : ", NO-CAMERA LINE MISSING",
+                     lookingAgain ? "" : ", NOT BACK TO LOOKING", detail.toRawUTF8());
+        failures += ok ? 0 : 1;
+        page.setLookAndFeel (nullptr);
+    }
+
     // Settings no longer has the combined-video switch: it is on the Cameras
     // page, once. Left in both, the walker's "every control" step would find
     // it twice and the two would have to be kept in step by hand.

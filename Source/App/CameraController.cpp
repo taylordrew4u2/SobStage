@@ -377,6 +377,15 @@ bool CameraController::waitForCameraRefresh (int timeoutMilliseconds)
 #endif
 }
 
+bool CameraController::hasLookedForCameras() const noexcept
+{
+#if JUCE_USE_CAMERA
+    return hasAppliedDeviceList;
+#else
+    return true;
+#endif
+}
+
 bool CameraController::isInitialDiscoveryPending() const noexcept
 {
 #if JUCE_USE_CAMERA

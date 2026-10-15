@@ -78,10 +78,8 @@ CameraPanel::CameraPanel()
     }
 
     // Said, rather than an empty space under the heading, which reads as
-    // broken.
+    // broken. Worded in applyRowsInPlace(): still looking, or none there.
     styled (noCamerasLabel, 13.0f, AppLookAndFeel::secondary);
-    noCamerasLabel.setText ("No camera is plugged in. Plug one in and it shows up here, "
-                            "ready to record.", juce::dontSendNotification);
     addAndMakeVisible (noCamerasLabel);
 
     // Off by default: it costs disk and minutes of CPU after every take, and
@@ -425,6 +423,15 @@ void CameraPanel::applyRow (Row& row, const CameraRow& camera)
     row.formatLabel->setVisible (showRow && format.isNotEmpty());
 }
 
+void CameraPanel::setLookingForCameras (bool looking)
+{
+    if (looking == lookingForCameras)
+        return;
+
+    lookingForCameras = looking;
+    applyRowsInPlace();
+}
+
 void CameraPanel::applyRowsInPlace()
 {
     // What each line says and whether it shows; resized() is asked for only
@@ -444,6 +451,15 @@ void CameraPanel::applyRowsInPlace()
 
     for (size_t i = 0; i < rows.size() && i < lastCameras.size(); ++i)
         applyRow (rows[i], lastCameras[i]);
+
+    // "No camera is plugged in" only once a look has finished and found none:
+    // before that -- at launch, or with a driver that never answers -- a
+    // camera may well be plugged in, and the page said otherwise.
+    noCamerasLabel.setText (lookingForCameras
+                                ? juce::String ("Looking for cameras...")
+                                : juce::String ("No camera is plugged in. Plug one in and it shows up here, "
+                                                "ready to record."),
+                            juce::dontSendNotification);
 
     const bool available = ! camerasUnavailable();
     unavailableLabel.setVisible (! available);
