@@ -1033,6 +1033,83 @@ int main()
         }
     }
 
+    // How long this computer can record for, said on the save prompt when it
+    // is shorter than the card could have: the longest note, beside a long
+    // path, on the narrowest window -- and a refusal that carries a card's
+    // reason and what to delete here. Measured with the label's own line
+    // breaking (GlyphArrangement); a fixed height cut both short.
+    {
+        std::printf ("\nThe save prompt's room note and Record's refusal are drawn whole\n");
+
+        const auto computerFolder = juce::String ("/Users/someone-with-a-long-name/RECORDINGS-MIRROR/"
+                                                  "2026-10-12_2200_Encore");
+        const auto roomNote = juce::String (mma::cardcopy::roomHereNote (25.0 * 60.0, -1.0, true, true));
+        const auto refusal = juce::String (mma::cardcopy::computerFullRefusal (
+            "This card is too slow for this recording: it managed 0.3 MB/s and needs 2.1 MB/s. Turning the "
+            "cameras off may make it fast enough.",
+            "/Users/someone-with-a-long-name/RECORDINGS-MIRROR",
+            { "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/2026-10-12_2015_Show" }, true));
+
+        const auto glyphsFit = [] (juce::Label& label)
+        {
+            const auto area = label.getBorderSize().subtractedFrom (label.getLocalBounds());
+            juce::GlyphArrangement glyphs;
+            glyphs.addFittedText (label.getFont(), label.getText(), 0.0f, 0.0f, (float) area.getWidth(), 100000.0f,
+                                  juce::Justification::topLeft, 1000, label.getMinimumHorizontalScale());
+            const auto box = glyphs.getBoundingBox (0, -1, true);
+            return box.getHeight() <= (float) area.getHeight() && box.getWidth() <= (float) area.getWidth() + 0.5f;
+        };
+
+        for (const int width : { 1180, 560, 420, 380 })
+        {
+            mma::SaveLocationPrompt prompt;
+            prompt.setVisible (true);
+            prompt.setPlan ("/Volumes/CARD/RECORDINGS", "2026-10-12_2200_Encore", {},
+                            { "MIX.wav", "Mic 1 - Host.wav", "Mic 2 - Guest.wav", "session.json" }, 1, 1, {},
+                            computerFolder, roomNote);
+            prompt.setBlockedReason (refusal);
+            prompt.setSize (width, prompt.getRequiredHeight() + 32);
+
+            const int cardWidth = juce::jmin (480, juce::jmax (280, width - 32));
+            const auto cardBounds = juce::Rectangle<int> (cardWidth, prompt.getRequiredHeight())
+                                        .withCentre (prompt.getLocalBounds().getCentre());
+
+            const auto promptLine = "Recorded on this computer first, then copied to the card when you stop. This "
+                                    "computer keeps its copy in " + computerFolder + ". " + roomNote;
+
+            bool ok = true;
+            juce::String detail;
+            std::vector<juce::Label*> lines;
+
+            for (const auto& text : { promptLine, refusal })
+            {
+                auto* label = findLabel (prompt, text);
+                const bool shown = label != nullptr && label->isVisible();
+                const bool whole = shown && glyphsFit (*label);
+                const bool inside = shown && cardBounds.contains (label->getBounds());
+                const bool front = shown && prompt.getComponentAt (label->getBounds().getCentre()) == label;
+                ok = ok && whole && inside && front;
+                if (shown)
+                    lines.push_back (label);
+                detail << (shown ? juce::String (label->getHeight()) + "px" : juce::String ("missing"))
+                       << (whole ? "" : " CUT OFF") << (inside ? "" : " OUTSIDE") << (front ? "" : " COVERED") << "; ";
+            }
+
+            // Nothing else on the card sits on either line.
+            for (auto* line : lines)
+                for (int i = 0; i < prompt.getNumChildComponents(); ++i)
+                    if (auto* other = prompt.getChildComponent (i); other != line && other->isVisible()
+                        && other->getBounds().intersects (line->getBounds()))
+                    {
+                        ok = false;
+                        detail << "OVERLAPS " << other->getName() << " " << other->getBounds().toString() << "; ";
+                    }
+
+            std::printf ("  %s  %4dpx save prompt: %s\n", ok ? "PASS" : "FAIL", width, detail.toRawUTF8());
+            failures += ok ? 0 : 1;
+        }
+    }
+
     // Every sentence the copy can put on the saved-take card, as describe()
     // words it -- each outcome, for the whole take and for a file added
     // since, in a Mac's words and in Windows' -- and the "nearly full" note

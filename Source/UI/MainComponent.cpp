@@ -615,7 +615,8 @@ void MainComponent::showSaveLocationPrompt()
     saveLocationPrompt.setAskEveryTime (application.getAskWhereToSaveEveryTime());
     saveLocationPrompt.setPlan (plan.parentFolder, plan.folderName, plan.mirrorFolder, plan.fileNames,
                                 armedCameraCount, readyCameraCount, plan.mirrorNote,
-                                plan.recordsOnComputerFirst ? plan.computerFolder : juce::String());
+                                plan.recordsOnComputerFirst ? plan.computerFolder : juce::String(),
+                                plan.recordsOnComputerFirst ? plan.roomNote : juce::String());
 
     saveLocationPrompt.setBlockedReason (application.getRecordDisabledReason());
     // Room for the whole card BEFORE it is shown. ModalCard clamps itself to

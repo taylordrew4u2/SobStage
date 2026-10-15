@@ -2813,13 +2813,18 @@ void Application::toggleRecording()
         const auto route = plannedTakeRoute (true);
         const bool onComputer = route == TakeRoute::ComputerThenCard;
 
+        // How long this computer can record for, when that is short: worked
+        // out now, from the probe's look between takes, which a running take
+        // replaces with its own folder's.
+        const auto roomNote = onComputer ? roomNoteForTakeHere() : juce::String();
+
         // Straight to the card: everything that refuses that is checked
         // against the route just decided, in case it differs from the one the
         // button was enabled for. Recorded on this computer, the card is not
         // asked anything at all until the copy.
         if (! onComputer)
         {
-            if (const auto blocked = directRecordingBlockedReason(); blocked.isNotEmpty())
+            if (const auto blocked = refusalForRoute (route, directRecordingBlockedReason()); blocked.isNotEmpty())
             {
                 recordStartProblem = blocked;
                 return;
@@ -3021,6 +3026,12 @@ void Application::toggleRecording()
                 {
                     lastTakeRouteNote.clear();
                 }
+
+                // Said once, in the activity list, as the take starts: how
+                // long it can run here. Not lastTakeRouteNote, which is the
+                // saved-take card's after Stop, when it no longer applies.
+                if (roomNote.isNotEmpty())
+                    noteActivity (ActivityLevel::Started, "Recording", roomNote);
 
                 // Held until the take's last movie has finished, so a rename
                 // after the audio stops is still followed. See
@@ -4031,6 +4042,7 @@ Application::PlannedSave Application::planSave (const juce::String& proposedSess
     {
         plan.recordsOnComputerFirst = true;
         plan.computerFolder = backupRootFolder().getChildFile (plan.folderName).getFullPathName();
+        plan.roomNote = nextTakeRoomNote();
     }
     else if (mirrorPolicy.isEnabledByUser())
     {
@@ -4506,6 +4518,13 @@ TakeRoute Application::plannedTakeRoute (bool authoritative) const
     // Room for audio AND cameras: the take writes both here.
     in.bytesPerSecond = bytesPerSecondOfRecording();
 
+    // What the card's last check says, from what is already known: under an
+    // hour here, a card that passed takes the take, and one that refuses is
+    // passed over. Only the arm passes `authoritative`, and then there is no
+    // time left to check a card that has not been.
+    in.card = cardCheckForNextTake();
+    in.arming = authoritative;
+
     if (authoritative)
     {
         // Purgeable space counted, as for the backup copy.
@@ -4543,6 +4562,102 @@ bool Application::wouldRecordOnComputer() const
     return plannedTakeRoute (false) == TakeRoute::ComputerThenCard;
 }
 
+CardCheck Application::cardCheckForNextTake() const
+{
+    // A full card refuses a take whatever its speed. From the probe's last
+    // look between takes: nothing here may touch the card.
+    if (destinationRoomFromProbe() == 0.0)
+        return CardCheck::Refuses;
+
+    const auto checked = preflightResults.find (destinationFolder);
+
+    // Never checked, or another card -- or none -- has been seen at this path
+    // since: the status tick has that one checked next.
+    if (checked == preflightResults.end() || probeSeesAnotherDriveThanChecked (checked->second))
+        return CardCheck::NotYet;
+
+    // A refusal is kept. Once it sends takes here, startPreflightIfNeeded()
+    // does not check the card again: that 200 MB write would be to a card no
+    // take is recorded on. A swap, or choosing the location again, clears it,
+    // as they always have; turning cameras off re-answers it below.
+    return cachedCardRefusal (checked->second).isEmpty() ? CardCheck::Clears : CardCheck::Refuses;
+}
+
+juce::String Application::cachedCardRefusal (const PreflightResult& checked) const
+{
+    // The benchmark measured the card; the gate is about this take. They are
+    // applied apart so that switching a camera or a microphone on re-answers
+    // the question here, rather than leaving the verdict frozen at whatever
+    // the rig was when the 200 MB test last ran -- which would let a card
+    // pass for the audio and then fail mid-take once a camera started, the
+    // exact outcome §6.4 exists to prevent.
+    //
+    // A card that could not be written is refused as that: with no windows
+    // it read "too slow, 0 MB/s", and a run cut short by the failure could
+    // even have measured fast enough to pass.
+    const auto verdict = PreflightThroughputTest::evaluateCached (
+        checked,
+        std::max (1, getIncludedMicCount()),
+        currentSampleRate,
+        std::max (1, currentBitDepth / 8),
+        static_cast<double> (cameraController.getSelection().getEstimatedBytesPerSecond()));
+
+    if (! verdict.passed)
+        return juce::String (verdict.reason);
+
+    return juce::String (PreflightThroughputTest::fileSizeRefusal (
+        verdict.limitedTo4GiBFiles, cameraController.getSelection().getEnabledCount()));
+}
+
+double Application::computerSecondsForNextTake() const
+{
+    const auto free = getMirrorFreeBytes();
+    return computerRecordingSeconds (free >= 0 ? std::optional<int64_t> (free) : std::nullopt,
+                                     bytesPerSecondOfRecording());
+}
+
+juce::String Application::roomNoteForTakeHere() const
+{
+    return juce::String (cardcopy::roomHereNote (computerSecondsForNextTake(), destinationRoomFromProbe(),
+                                                 cameraController.getSelection().getEnabledCount() > 0,
+                                                 cardCheckForNextTake() == CardCheck::Refuses));
+}
+
+juce::String Application::nextTakeRoomNote() const
+{
+    return wouldRecordOnComputer() ? roomNoteForTakeHere() : juce::String();
+}
+
+juce::String Application::nextTakeRouteAdvice() const
+{
+    if (const auto note = nextTakeRoomNote(); note.isNotEmpty())
+        return note;
+
+    // Going to a card that will take it: said, with how to make room, so the
+    // user is not surprised to find the take on the card alone. A card that
+    // refuses is Record's own line to say (refusalForRoute).
+    if (plannedTakeRoute (false) == TakeRoute::StraightToCardComputerFull
+        && cardCheckForNextTake() == CardCheck::Clears)
+        return juce::String (cardcopy::computerFullNote (backupRootFolder().getFullPathName().toStdString(),
+                                                         cardCopier.summary().foldersStillToCopy, true));
+
+    return {};
+}
+
+juce::String Application::refusalForRoute (TakeRoute route, const juce::String& reason) const
+{
+    if (route != TakeRoute::StraightToCardComputerFull || reason.isEmpty())
+        return reason;
+
+    // Nothing but this computer's room sent the take to the card: the user
+    // chose to record here. Said first, or "this card is too slow" reads as
+    // the app having changed its mind about where takes go.
+    return juce::String (cardcopy::computerFullRefusal (reason.toStdString(),
+                                                        backupRootFolder().getFullPathName().toStdString(),
+                                                        cardCopier.summary().foldersStillToCopy,
+                                                        cardCheckForNextTake() == CardCheck::Refuses));
+}
+
 int64_t Application::getMirrorFreeBytes() const
 {
     const auto request = currentFilesystemProbeRequest();
@@ -4558,17 +4673,29 @@ double Application::getRemainingRecordingSeconds() const
         return -1.0;
 
     // Between takes, a take that will record on this computer has this
-    // computer's room, not the card's. During one the probe already measures
-    // the take's own folder, which is here.
+    // computer's room, not the card's, short of the 1 GB it is stopped with.
     if (! isRecording() && wouldRecordOnComputer())
-    {
-        const auto free = getMirrorFreeBytes();
-        return free >= 0 ? static_cast<double> (free) / request.bytesPerSecond : -1.0;
-    }
+        return computerSecondsForNextTake();
 
     filesystemStatusProbe.setRequest (request);
     const auto snapshot = filesystemStatusProbe.getSnapshot();
-    return snapshot.ready && snapshot.request == request ? snapshot.remainingSeconds : -1.0;
+
+    if (! snapshot.ready || ! (snapshot.request == request))
+        return -1.0;
+
+    // During a take recorded here, the probe measures the take's own folder,
+    // on this computer, and nothing else is written there on this route --
+    // the backup copy is not needed -- so remaining x rate is the free space.
+    // Counted against the same 1 GB reserve, the full-drive stop and the 10-
+    // and 2-minute warnings come with 1 GB still free on the startup disk,
+    // and "Room for ..." agrees with them.
+    if (isRecording() && currentTakeRoute == TakeRoute::ComputerThenCard)
+        return snapshot.remainingSeconds < 0.0
+                   ? -1.0
+                   : computerRecordingSeconds (std::llround (snapshot.remainingSeconds * request.bytesPerSecond),
+                                               request.bytesPerSecond);
+
+    return snapshot.remainingSeconds;
 }
 
 juce::String Application::formatDuration (double seconds)
@@ -4672,11 +4799,11 @@ juce::String Application::getRecordDisabledReason() const
     // not its speed, its room or its format. Those are the copy's to report,
     // after the take, with the take safe here. Only a computer too full to
     // hold the take sends it straight to the card, and then every check below
-    // applies.
+    // applies -- said as that, since the user chose to record here.
     if (wouldRecordOnComputer())
         return {};
 
-    return directRecordingBlockedReason();
+    return refusalForRoute (plannedTakeRoute (false), directRecordingBlockedReason());
 }
 
 juce::String Application::directRecordingBlockedReason() const
@@ -4686,7 +4813,10 @@ juce::String Application::directRecordingBlockedReason() const
     // and was stopped by the capacity check a moment later. Refusing before the
     // take is the same principle, and it is the answer to "what tells the user
     // when the drive is full and nothing is recording".
-    if (getRemainingRecordingSeconds() == 0.0)
+    // The card's own room, from the probe's last look: between takes
+    // getRemainingRecordingSeconds() is this computer's when the probe would
+    // record here, and the arm can decide otherwise.
+    if (destinationRoomFromProbe() == 0.0)
         return "This drive is full. Free some space, or choose another drive.";
 
     publishCompletedPreflight();
@@ -4726,35 +4856,9 @@ juce::String Application::directRecordingBlockedReason() const
     if (probeSeesAnotherDriveThanChecked (it->second))
         return "Checking this drive is fast enough...";
 
-    if (it != preflightResults.end())
-    {
-        // The benchmark measured the card; the gate is about this take. They
-        // are applied apart so that switching a camera or a microphone on
-        // re-answers the question here, rather than leaving the verdict
-        // frozen at whatever the rig was when the 200 MB test last ran --
-        // which would let a card pass for the audio and then fail mid-take
-        // once a camera started, the exact outcome §6.4 exists to prevent.
-        //
-        // A card that could not be written is refused as that: with no
-        // windows it read "too slow, 0 MB/s", and a run cut short by the
-        // failure could even have measured fast enough to pass.
-        const auto verdict = PreflightThroughputTest::evaluateCached (
-            it->second,
-            std::max (1, getIncludedMicCount()),
-            currentSampleRate,
-            std::max (1, currentBitDepth / 8),
-            static_cast<double> (cameraController.getSelection().getEstimatedBytesPerSecond()));
-
-        if (! verdict.passed)
-            return juce::String (verdict.reason);
-
-        if (const auto refusal = PreflightThroughputTest::fileSizeRefusal (
-                verdict.limitedTo4GiBFiles, cameraController.getSelection().getEnabledCount());
-            ! refusal.empty())
-            return juce::String (refusal);
-    }
-
-    return {};
+    // The verdict against the rig as it is now (cachedCardRefusal), which is
+    // what the route reads too: the two can never disagree about the card.
+    return cachedCardRefusal (it->second);
 }
 
 void Application::beginPreflightForDestination()
@@ -4798,9 +4902,11 @@ void Application::startPreflightIfNeeded() const
         return;
 
     // No 200 MB test write to a card nothing will record onto: the take is
-    // recorded on this computer and copied there after Stop. If this computer
-    // fills up, the next take goes straight to the card, and the Record gate
-    // comes back through here to check it then.
+    // recorded on this computer and copied there after Stop. With under an
+    // hour of room here, a card not checked yet is the next take's, and the
+    // Record gate comes back through here to check it; one that refused sends
+    // takes back here, and is not checked again while they record here
+    // (cardCheckForNextTake).
     if (wouldRecordOnComputer())
     {
         speedTestTurn.clear();
@@ -6710,11 +6816,19 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
         if (roomRanOut)
         {
-            stopReason = "the drive ran out of room";
+            // Read before the stop: a take recorded here was stopped with
+            // 1 GB still free (computerRecordingSeconds), and everything it
+            // holds is on this computer, still to be copied to the card.
+            const bool recordedHere = currentTakeRoute == TakeRoute::ComputerThenCard;
+
+            stopReason = recordedHere ? "this computer ran out of room" : "the drive ran out of room";
             toggleRecording();
 
-            const auto line = juce::String ("The drive is full. Recording has stopped -- free some "
-                                            "space or choose another drive.");
+            const auto line = recordedHere
+                ? juce::String ("This computer is full, so recording has stopped. Everything recorded so far "
+                                "is saved on this computer.")
+                : juce::String ("The drive is full. Recording has stopped -- free some "
+                                "space or choose another drive.");
 
             noteActivity (ActivityLevel::Failed, "Drive", line);
             return line;
@@ -7458,7 +7572,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
     // §6.5 next: running out of room stops the take, which outranks everything
     // else that is merely a warning.
-    switch (pollCapacityWarning())
+    switch (const auto warning = pollCapacityWarning(); warning)
     {
         case RemainingTimeWarning::Exhausted:
             // Kept only so the switch stays exhaustive. A running take that is
@@ -7468,9 +7582,23 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
             // running is the record button's job, not this line's.
             break;
         case RemainingTimeWarning::TwoMinutes:
-            return "About two minutes of room left. Wrap up or switch drives now.";
         case RemainingTimeWarning::TenMinutes:
-            return "About ten minutes of room left on this drive.";
+        {
+            // A take recorded here is on this computer, whose room is what
+            // runs out; "switch drives" means nothing for it. Into the
+            // activity list too, once each: the warning latches.
+            const bool here = currentTakeRoute == TakeRoute::ComputerThenCard;
+            const bool twoMinutes = warning == RemainingTimeWarning::TwoMinutes;
+
+            const auto line = juce::String (
+                twoMinutes ? (here ? "About two minutes of room left on this computer. Wrap up now."
+                                   : "About two minutes of room left. Wrap up or switch drives now.")
+                           : (here ? "About ten minutes of room left on this computer."
+                                   : "About ten minutes of room left on this drive."));
+
+            noteActivity (ActivityLevel::Warning, "Recording", line);
+            return line;
+        }
         case RemainingTimeWarning::None:
             break;
     }
@@ -7657,6 +7785,13 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
             return activityLine;
         }
     }
+
+    // Last of all, between takes: how long this computer can record for when
+    // that is short, or that the next take goes straight to the card. Below
+    // everything else, so it never hides a warning or unseen news.
+    if (! isRecording())
+        if (const auto advice = nextTakeRouteAdvice(); advice.isNotEmpty())
+            return advice;
 
     return {};
 }
