@@ -79,3 +79,27 @@ TEST_CASE (FfmpegLocator_OnlyAnFfmpegThatRunsIsAccepted)
     REQUIRE_FALSE (looksLikeFfmpegVersionOutput ("Bad CPU type in executable"));
     REQUIRE_FALSE (looksLikeFfmpegVersionOutput ("ffprobe version 7.1"));
 }
+
+TEST_CASE (FfmpegMissingNote_WindowsNeverSaysMac)
+{
+    // The one note there was told a Windows user "On a Mac: brew install
+    // ffmpeg". Each platform's note names where ffmpeg goes on that platform,
+    // and the Windows one is the first place ffmpegSearchPaths looks.
+    const auto windows = ffmpegMissingNote (HostPlatform::Windows);
+    REQUIRE (windows.find ("C:\\Program Files\\ffmpeg") != std::string::npos);
+    REQUIRE (windows.find ("bin") != std::string::npos);
+    REQUIRE (windows.find ("brew") == std::string::npos);
+    REQUIRE (windows.find ("Mac") == std::string::npos);
+    REQUIRE (ffmpegSearchPaths (HostPlatform::Windows).front().rfind ("C:\\Program Files\\ffmpeg\\bin\\", 0) == 0);
+
+    // Nothing is lost without it, said before the instructions.
+    REQUIRE (windows.find ("separate files") != std::string::npos);
+
+    const auto onLinux = ffmpegMissingNote (HostPlatform::Linux);
+    REQUIRE (onLinux.find ("package manager") != std::string::npos);
+    REQUIRE (onLinux.find ("brew") == std::string::npos);
+    REQUIRE (onLinux.find ("Program Files") == std::string::npos);
+
+    REQUIRE (ffmpegMissingNote (HostPlatform::MacOS).find ("brew install ffmpeg") != std::string::npos);
+    REQUIRE (ffmpegInstallHint (HostPlatform::Windows).find ("brew") == std::string::npos);
+}

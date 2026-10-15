@@ -15,6 +15,7 @@
 #include "../Core/TakeCompleteness.h"
 #include "../Platform/SystemThermalState.h"
 #include "../Core/CombinedTakePlan.h"
+#include "../Core/FfmpegLocator.h"
 #include "../Core/LoudnessMeter.h"
 #include "../Core/SampleRateNegotiator.h"
 #include "../Core/WriteSafetyActions.h"
@@ -547,9 +548,7 @@ juce::String Application::getCombineUnavailableReason()
     // §10.6: named before a take rather than discovered after one. Finding out
     // that the combined file was never possible is worth knowing while there is
     // still time to install the thing, not once the recording is over.
-    return "Combined video needs ffmpeg, which isn't installed. Your picture and "
-           "sound will still both be recorded, as separate files. On a Mac: "
-           "brew install ffmpeg.";
+    return juce::String (ffmpegMissingNote (thisHostPlatform()));
 }
 
 namespace {
@@ -4626,6 +4625,11 @@ juce::String Application::roomNoteForTakeHere() const
 juce::String Application::nextTakeRoomNote() const
 {
     return wouldRecordOnComputer() ? roomNoteForTakeHere() : juce::String();
+}
+
+juce::String Application::recordingSpaceLine() const
+{
+    return juce::String (CameraSelection::spaceAnHourText (bytesPerSecondOfRecording()));
 }
 
 juce::String Application::nextTakeRouteAdvice() const

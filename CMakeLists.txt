@@ -212,10 +212,10 @@ if (MMA_BUILD_APP)
         COMPANY_COPYRIGHT "Copyright (c) 2026 Taylor Drew Kozero"
         MICROPHONE_PERMISSION_ENABLED TRUE
         MICROPHONE_PERMISSION_TEXT "SobStage records from external USB, FireWire, and Thunderbolt microphones and audio interfaces you connect."
-        # A newly seen camera is opt-in; once enabled it is remembered and may
-        # reopen on later launches until switched off. macOS still wants the
-        # usage string declared up front, and §10.1 wants the reason to be the
-        # one the user would have guessed.
+        # A newly seen camera records unless switched off on the Cameras page,
+        # and that choice is remembered across launches. macOS wants the usage
+        # string declared up front, and §10.1 wants the reason to be the one
+        # the user would have guessed.
         CAMERA_PERMISSION_ENABLED TRUE
         CAMERA_PERMISSION_TEXT "SobStage records video from the cameras you switch on, alongside your microphone recordings."
         HARDENED_RUNTIME_ENABLED TRUE

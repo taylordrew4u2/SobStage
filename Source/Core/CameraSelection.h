@@ -163,6 +163,12 @@ public:
 
     static PreviewSettings previewSettingsFor (PreviewQuality quality);
 
+    /// "Recording now takes up to about 33 GB an hour, sound included." --
+    /// the Cameras page's one line about space, in whole gigabytes. Given the
+    /// same bytes-per-second the route and card checks use, so the page can
+    /// never promise a figure those checks disagree with.
+    static std::string spaceAnHourText (double bytesPerSecond);
+
 private:
     struct Choice
     {

@@ -582,6 +582,12 @@ public:
     /// otherwise. From what the probe already knows; never waits.
     juce::String nextTakeRoomNote() const;
 
+    /// The Cameras page's line about space: how much an hour of recording
+    /// takes at the current mics and camera sizes. From the same figure the
+    /// route and card checks use (bytesPerSecondOfRecording), so the page and
+    /// those checks can never disagree.
+    juce::String recordingSpaceLine() const;
+
     /// Fired on the message thread whenever the capture coordinator's meters
     /// have been destroyed and rebuilt (rename, hot-plug, output change, rate
     /// change). The UI must rebind every Metering pointer inside this callback

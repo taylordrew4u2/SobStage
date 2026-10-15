@@ -44,4 +44,14 @@ std::vector<std::string> withLowDiskPriority (std::vector<std::string> args, Hos
 /// with an error, and was accepted on existence alone, failing every take.
 bool looksLikeFfmpegVersionOutput (const std::string& output);
 
+/// How to get ffmpeg onto this kind of machine, in one sentence a
+/// non-technical user can follow. Per platform because the one sentence that
+/// existed told a Windows user to type a Mac command.
+std::string ffmpegInstallHint (HostPlatform platform);
+
+/// The line under "Also save video with the sound in one file" when ffmpeg
+/// is missing: what it needs, that nothing is lost without it, and how to add
+/// it on this platform.
+std::string ffmpegMissingNote (HostPlatform platform);
+
 } // namespace mma

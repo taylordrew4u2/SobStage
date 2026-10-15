@@ -176,8 +176,8 @@ SetupGuidePage SetupGuide::pageFor (SetupGuideStep step, const SetupGuideRig& ri
             p.title = "Cameras";
             p.body = "Cameras plugged into this computer record with every take, each into "
                      "its own video file next to the sound, and their pictures show on the "
-                     "main screen. To leave one out, or to give it a name, click Cameras on "
-                     "the main screen.";
+                     "main screen. To leave one out, or to give it a name, click Cameras at "
+                     "the top of the window.";
 
             p.status = "Found " + plural (rig.cameraCount, "camera", "cameras");
 

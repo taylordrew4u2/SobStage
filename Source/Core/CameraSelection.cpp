@@ -1,6 +1,7 @@
 #include "CameraSelection.h"
 #include "SessionFolderNaming.h"
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <utility>
 
@@ -294,6 +295,19 @@ int64_t CameraSelection::estimatedBytesPerSecondFor (CameraQuality quality) noex
     }
 
     return kEstimatedVideoBytesPerSecond;
+}
+
+std::string CameraSelection::spaceAnHourText (double bytesPerSecond)
+{
+    // Decimal gigabytes, the unit a card or drive is sold in, so the figure
+    // can be held up against what is printed on the card.
+    const double gigabytesAnHour = std::max (0.0, bytesPerSecond) * 3600.0 / 1.0e9;
+    const auto rounded = static_cast<long long> (std::llround (gigabytesAnHour));
+
+    const std::string amount = gigabytesAnHour < 1.0 ? std::string ("less than 1 GB")
+                                                     : "about " + std::to_string (rounded) + " GB";
+
+    return "Recording now takes up to " + amount + " an hour, sound included.";
 }
 
 const char* cameraQualityKey (CameraQuality quality) noexcept

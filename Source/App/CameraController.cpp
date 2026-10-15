@@ -1147,10 +1147,10 @@ void CameraController::openCamera (const std::string& id, int osIndex,
     // highQuality=false is what JUCE calls preview mode, where the OS is free
     // to drop frames -- fine for a picture on screen, not fine for the file
     // that is the point of the exercise. Since one open device feeds both the
-    // view and the recording, the safe request is high-quality capture while
-    // making the *view* cheap by drawing it small, which PreviewQuality does.
-    // The user's per-camera quality caps the size asked for; the macOS
-    // backend honours it (Windows still lets the driver choose).
+    // view and the recording, the safe request is high-quality capture, with
+    // the view kept cheap by the size the main screen's arrows draw it at.
+    // The user's per-camera picture size caps what is asked for: the Mac
+    // picks the matching preset, and Windows the largest mode within it.
     const auto limit = CameraSelection::frameLimitFor (selection.getQuality (id));
     std::unique_ptr<juce::CameraDevice> device (
         juce::CameraDevice::openDevice (osIndex,
