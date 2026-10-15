@@ -46,13 +46,24 @@
 #   copyhere as othercard, with the saved-take card closed: "Copy to this
 #            card" under the record button -- the button the take's line
 #            names -- copies it to the card that is in
+#   slowcard a big card too slow to record on (its speed test stalls for 4 s
+#            on its first write, as SD cards do). a) With an hour of room
+#            here -- v1.13.28 wanted room for all four hours the card could
+#            hold -- the card is never tested and the take records here.
+#            b) Under an hour, the card is tested and refused, and the take
+#            still records here, said with "can't be recorded on directly".
+#            c) Under ten minutes here, Record stays off
+#   herefull a take recorded here as this computer fills: warned with about
+#            two minutes left, then stopped with 1 GB still free, never at
+#            nothing; the take is whole, and copied to the card
 #
 # MMA_E2E_ONLY="quit requit" runs only the scenarios named.
 #
 # The scratch home and the "card" are on one disk, so MMA_TREAT_AS_CARD (test
 # builds only) makes the card folder count as a card, and the shim has the
-# card report 4 GB free: on one disk, a runner with less than four hours of
-# takes free would otherwise send every take straight to the "card".
+# card report 4 GB free. A take is recorded here when this computer has room
+# for an hour of it plus 2 GB, so a runner needs that much free; the
+# scenarios that turn on this computer's room set it with the shim.
 #
 #   Tools/e2e_card_copy.sh
 #
@@ -1009,6 +1020,188 @@ else
   else
     fail "speedtest: no take started on the card once the copy was done"
     grep -i "fast enough\|too slow\|Pausing" "$LOG" | tail -3 | sed 's/^/        /'
+  fi
+fi
+[ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
+stop_app
+fi
+
+if want slowcard; then
+# -------------------------------------------------------------------------
+echo
+echo "=== A card too slow to record on does not stop Record ==="
+# A 64 GB card whose speed test stalls for 4 s on its first write, so it
+# measures about 0.25 MB/s and is refused. This computer's room is set with
+# the shim (MiB). The thresholds hold whether the fixture mics open mono or
+# stereo: 9000 is over an hour plus 2 GB here and under four hours; 3500 is
+# under an hour plus 2 GB and over ten minutes plus 2 GB; 2300 is under ten
+# minutes plus 2 GB.
+BEFORE_FAIL=$FAILED
+ROOM="$WORK/slowcard.computerfree"
+echo 9000 > "$ROOM"
+# Watched from before the app starts: a test run at launch, while the window
+# is still coming up, is over before any click. Stalled 4 s on its first
+# write, its scratch file is there for longer than that.
+SCRATCH="$WORK/slowcard/CARD/RECORDINGS/.sobstage-preflight.tmp"
+SEEN_FLAG="$WORK/slowcard.scratchseen"
+rm -f "$SEEN_FLAG" "$WORK/slowcard.stopwatching"
+( while [ ! -e "$WORK/slowcard.stopwatching" ] && kill -0 $$ 2>/dev/null; do
+    [ -e "$SCRATCH" ] && { touch "$SEEN_FLAG"; break; }
+    sleep 0.05
+  done ) &
+WATCHER=$!
+launch slowcard fresh MMA_STALL_CARD_FREE_MB=64000 MMA_STALL_COMPUTER_PREFIX="$WORK/slowcard" \
+  MMA_STALL_COMPUTER_FREE_MB_FILE="$ROOM" MMA_STALL_SLOW_FILE=.sobstage-preflight.tmp \
+  MMA_STALL_SLOW_FIRST_WRITE_MS=4000
+dismiss_cards
+
+# grep -c prints 0 for none, and fails: "|| echo 0" would print it twice.
+copied_count() { local n; n=$(grep -c "Copied .* to the card" "$LOG" 2>/dev/null); echo "${n:-0}"; }
+
+wait_for_copied_after() {  # count before, seconds
+  for _ in $(seq 1 "$2"); do
+    [ "$(copied_count)" -gt "$1" ] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# a) An hour of room here: recorded here, and the card is not tested at all.
+sleep 3
+press_record
+TAKE_A=""
+for _ in $(seq 1 15); do
+  sleep 1
+  TAKE_A=$(newest_take "$STAGING")
+  [ -n "$TAKE_A" ] && break
+done
+
+if [ -z "$TAKE_A" ]; then
+  fail "slowcard a: no take started on this computer within 15 s with an hour of room here"
+  grep -i "fast enough\|too slow\|Checking" "$LOG" | tail -3 | sed 's/^/        /'
+else
+  pass "slowcard a: an hour of room here, and the take records here: $(basename "$TAKE_A")"
+  if grep -qi "fast enough\|too slow" "$LOG"; then
+    fail "slowcard a: the log speaks of the card's speed: $(grep -i "fast enough\|too slow" "$LOG" | tail -1)"
+  else
+    pass "slowcard a: nothing about the card's speed in the log"
+  fi
+
+  BEFORE_COPIES=$(copied_count)
+  press_stop
+  wait_for_log "Saved on this computer" 20 || fail "slowcard a: the take was not saved"
+  dismiss_saved
+  if wait_for_copied_after "$BEFORE_COPIES" 60; then
+    check_copy_matches "slowcard a" "$TAKE_A"
+  else
+    fail "slowcard a: the take was not copied to the card within 60 s"
+  fi
+fi
+
+# From launch to the copy: the card's speed test never ran.
+touch "$WORK/slowcard.stopwatching"
+wait "$WATCHER" 2>/dev/null || true
+if [ -e "$SEEN_FLAG" ]; then fail "slowcard a: the card's speed test ran, with an hour of room here"
+else pass "slowcard a: the card's speed was never tested, from launch to the copy"; fi
+
+# b) Under an hour here, over ten minutes: the card is tested, and refused.
+echo 3500 > "$ROOM"
+if wait_for_file "$SCRATCH" 30; then
+  pass "slowcard b: under an hour of room here, the card's speed is tested"
+  for _ in $(seq 1 200); do [ -e "$SCRATCH" ] || break; sleep 0.1; done
+  [ -e "$SCRATCH" ] && fail "slowcard b: the card's speed test never finished"
+else
+  fail "slowcard b: the card's speed was not tested with under an hour of room here"
+fi
+sleep 2   # the verdict lands, and the next take's route with it
+
+BEFORE_COPIES=$(copied_count)
+press_record
+if TAKE_B=$(wait_for_new_take "$STAGING" "$TAKE_A"); then
+  pass "slowcard b: the card was refused, and the take records here: $(basename "$TAKE_B")"
+  if wait_for_log "can't be recorded on directly" 5; then
+    pass "slowcard b: it says the card can't be recorded on directly, and how long this computer has"
+  else
+    fail "slowcard b: no word that the card can't be recorded on directly"
+  fi
+  sleep 3
+  press_stop
+  wait_for_log "Saved on this computer" 20 || fail "slowcard b: the take was not saved"
+  dismiss_saved
+  if wait_for_copied_after "$BEFORE_COPIES" 60; then
+    pass "slowcard b: the take recorded here reached the card"
+    check_copy_matches "slowcard b" "$TAKE_B"
+  else
+    fail "slowcard b: the take was not copied to the card within 60 s"
+  fi
+else
+  fail "slowcard b: no take started with a refused card and over ten minutes of room here"
+  [ -n "$(newest_take "$CARD")" ] && echo "        (newest on the card: $(newest_take "$CARD"))"
+fi
+
+# c) Under ten minutes here: straight to the refused card, so Record is off.
+echo 2300 > "$ROOM"
+sleep 3
+LAST_HERE=$(newest_take "$STAGING")
+LAST_CARD=$(newest_take "$CARD")
+press_record
+STARTED=""
+for _ in $(seq 1 10); do
+  sleep 1
+  if [ "$(newest_take "$STAGING")" != "$LAST_HERE" ] || [ "$(newest_take "$CARD")" != "$LAST_CARD" ]; then
+    STARTED=yes; break
+  fi
+done
+if [ -z "$STARTED" ]; then
+  pass "slowcard c: under ten minutes of room here, and a refused card: no take starts"
+else
+  fail "slowcard c: a take started with under ten minutes here and a refused card"
+  press_stop
+fi
+[ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
+stop_app
+fi
+
+if want herefull; then
+# -------------------------------------------------------------------------
+echo
+echo "=== A take recorded here stops with 1 GB still free on this computer ==="
+# This computer's room is set with the shim (MiB). 1030 leaves seconds of
+# recording above the 1 GB the take is stopped with; 1000 is under it.
+# Counted against nothing, neither line would ever come.
+BEFORE_FAIL=$FAILED
+ROOM="$WORK/herefull.computerfree"
+echo 9000 > "$ROOM"
+launch herefull fresh MMA_STALL_COMPUTER_PREFIX="$WORK/herefull" MMA_STALL_COMPUTER_FREE_MB_FILE="$ROOM"
+dismiss_cards
+press_record
+
+if ! TAKE=$(wait_for_new_take "$STAGING"); then
+  fail "herefull: no take started on this computer"
+else
+  sleep 4
+  echo 1030 > "$ROOM"
+  if wait_for_log "About two minutes of room left on this computer" 10; then
+    pass "herefull: warned with about two minutes of room left on this computer"
+  else
+    fail "herefull: no two-minute warning within 10 s of this computer nearly filling"
+  fi
+
+  echo 1000 > "$ROOM"
+  if wait_for_log "This computer is full, so recording has stopped" 10; then
+    pass "herefull: the take stopped with 1 GB still free on this computer"
+  else
+    fail "herefull: the take did not stop within 10 s of 1 GB free"
+    press_stop
+  fi
+  dismiss_saved
+  verify herefull "$TAKE" 4
+
+  if wait_for_log "Copied .* to the card" 90; then
+    pass "herefull: the take is copied to the card"
+    check_copy_matches herefull "$TAKE"
+  else
+    fail "herefull: the take was not copied to the card within 90 s"
   fi
 fi
 [ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
