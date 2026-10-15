@@ -312,6 +312,8 @@ AdvancedPanel::AdvancedPanel()
         if (auto* window = getTopLevelComponent(); window != nullptr && window != this)
             window->grabKeyboardFocus();
     };
+    // Escape too, or the box swallowed it and Settings would not close.
+    aggregateNameEditor.onEscapeKey = aggregateNameEditor.onReturnKey;
     aggregateNameEditor.onFocusLost = [this] { if (onAggregateNameChanged) onAggregateNameChanged (aggregateNameEditor.getText()); };
     addAndMakeVisible (aggregateNameEditor);
     aggregateStatusLabel.setJustificationType (juce::Justification::centredLeft);

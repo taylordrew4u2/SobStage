@@ -72,6 +72,19 @@ private:
     /// Whether a drawer is taking the right-hand side of the window.
     bool anyDrawerOpen() const { return advancedVisible || helpVisible || guideVisible || cameraVisible; }
 
+    /// A click on the main screen ends typing in a drawer's text box -- a
+    /// camera's name, the combined device's -- as one on the main screen's
+    /// own name box does (MainScreen::ClickAwayWatcher). Nothing there takes
+    /// the keyboard on a click, so the box kept it beside the live main
+    /// screen, and the next Space, the room's mute, typed into the name.
+    struct DrawerTypingWatcher final : juce::MouseListener
+    {
+        explicit DrawerTypingWatcher (MainComponent& o) : owner (o) {}
+        void mouseDown (const juce::MouseEvent&) override;
+        MainComponent& owner;
+    };
+    DrawerTypingWatcher drawerTypingWatcher { *this };
+
     // The third door, beside Settings: the answers to "why is it silent?",
     // in the app rather than in a README. Same viewport arrangement as the
     // other two, and like them only one is open at a time.

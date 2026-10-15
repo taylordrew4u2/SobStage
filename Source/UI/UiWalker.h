@@ -111,6 +111,7 @@ private:
     int diagnosticsZipsBefore = 0;
     juce::String takeFolder;
     juce::Rectangle<int> windowBoundsBefore;
+    juce::String nameBoxTextBefore;
 
     // --- reporting -------------------------------------------------------
 
@@ -287,6 +288,28 @@ private:
             && pageArea.getRight() <= mc->getWidth() + 1;
     }
 
+    /// A name box in the drawer that is open: a camera's on the Cameras page,
+    /// or the combined device's in Settings.
+    juce::TextEditor* drawerNameBox() const
+    {
+        for (auto* c : showing())
+            if (auto* box = dynamic_cast<juce::TextEditor*> (c); box != nullptr && box->isEnabled()
+                && (box->findParentComponentOfClass<CameraPanel>() != nullptr
+                    || box->findParentComponentOfClass<AdvancedPanel>() != nullptr))
+                return box;
+        return nullptr;
+    }
+
+    /// A heading on the main screen: takes no keyboard when clicked.
+    juce::Label* mainScreenHeading() const
+    {
+        for (auto* c : showing())
+            if (auto* l = dynamic_cast<juce::Label*> (c); l != nullptr && l->getText() == "M I C R O P H O N E S"
+                && l->findParentComponentOfClass<MainScreen>() != nullptr)
+                return l;
+        return nullptr;
+    }
+
     /// The monitor mute button reads "Mute" or "Unmute" depending on state.
     juce::Button* muteButton() const
     {
@@ -378,11 +401,21 @@ private:
     /// whoever has the focus.
     bool pressKeyThroughWindow (int keyCode)
     {
+        return pressKeyThroughWindow (juce::KeyPress (keyCode));
+    }
+
+    /// The same for a key that carries its character, as a real one does: a
+    /// text box types a space only for a key that says it is one, and lets a
+    /// bare key code past to the window.
+    bool pressKeyThroughWindow (const juce::KeyPress& key)
+    {
         if (auto* mc = mainComponent())
             if (auto* peer = mc->getPeer())
-                return peer->handleKeyPress (juce::KeyPress (keyCode));
+                return peer->handleKeyPress (key);
         return false;
     }
+
+    static juce::KeyPress typedSpace() { return juce::KeyPress (juce::KeyPress::spaceKey, juce::ModifierKeys(), ' '); }
 
     /// Every modal card, and the take banner, is the size of the whole window
     /// -- not of whatever the Settings or Help drawer left beside it, or the
@@ -1078,13 +1111,13 @@ private:
             return editor != nullptr && ! editor->hasKeyboardFocus (true);
         });
         add ("so the space bar then mutes the room, not types into the name",
-             [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+             [this] { pressKeyThroughWindow (typedSpace()); },
              [this]
              {
                  auto* ms = find<MainScreen>();
                  return muted() && busMuted() && ms != nullptr && ms->getSessionName() == "UI walk";
              });
-        add ("  (and unmutes it)", [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+        add ("  (and unmutes it)", [this] { pressKeyThroughWindow (typedSpace()); },
              [this] { return ! muted() && ! busMuted(); });
         // The same after a click on something that does not take the keyboard
         // itself: JUCE left the focus in the box.
@@ -1104,13 +1137,13 @@ private:
             auto* editor = find<juce::TextEditor>();
             return editor != nullptr && ! editor->hasKeyboardFocus (true);
         });
-        add ("  and the space bar mutes", [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+        add ("  and the space bar mutes", [this] { pressKeyThroughWindow (typedSpace()); },
              [this]
              {
                  auto* ms = find<MainScreen>();
                  return muted() && busMuted() && ms != nullptr && ms->getSessionName() == "UI walk";
              });
-        add ("  (and unmutes it)", [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+        add ("  (and unmutes it)", [this] { pressKeyThroughWindow (typedSpace()); },
              [this] { return ! muted() && ! busMuted(); });
 
         // Rename microphone 1, and check the name reaches its file later.
@@ -1362,6 +1395,56 @@ private:
         add ("Cameras' Close closes it", [this] { click<CameraPanel> ("Close"); }, [this] { return ! isUp<CameraPanel>(); });
         add ("Escape closes Cameras", [this] { clickCamerasDoor(); }, [this] { return isUp<CameraPanel>(); });
         add ("  (Escape)", [this] { pressKey (juce::KeyPress::escapeKey); }, [this] { return ! isUp<CameraPanel>(); });
+
+        // A name box in a drawer kept the keyboard while the main screen beside
+        // it was used: nothing there takes the keyboard on a click, so Space
+        // typed into the name and the room stayed live. A camera's name where
+        // this build lists cameras; the combined device's in Settings where it
+        // does not. Its text is left as it is, so nothing is renamed.
+        add ("a drawer with a name box opens beside the main screen", [this] { clickCamerasDoor(); },
+             [this] { return isUp<CameraPanel>(); });
+        add ("  (Settings, with no camera here to name)", [this]
+        {
+            if (drawerNameBox() == nullptr)
+                click<MainScreen> ("Settings");
+        }, [this] { return drawerNameBox() != nullptr; });
+        add ("typing in it, then a click on the main screen beside it, ends the typing", [this]
+        {
+            if (auto* box = drawerNameBox())
+            {
+                nameBoxTextBefore = box->getText();
+                box->grabKeyboardFocus();
+            }
+
+            if (auto* heading = mainScreenHeading())
+                clickWithMouse (*heading);
+        }, [this]
+        {
+            auto* box = drawerNameBox();
+            return box != nullptr && ! box->hasKeyboardFocus (true);
+        });
+        add ("  so the space bar mutes the room, and nothing is typed into the name",
+             [this] { pressKeyThroughWindow (typedSpace()); },
+             [this]
+             {
+                 auto* box = drawerNameBox();
+                 return muted() && busMuted() && box != nullptr && box->getText() == nameBoxTextBefore;
+             });
+        add ("  (and unmutes it)", [this] { pressKeyThroughWindow (typedSpace()); },
+             [this] { return ! muted() && ! busMuted(); });
+        add ("Escape in the name box ends the typing, with the page still open", [this]
+        {
+            if (auto* box = drawerNameBox())
+                box->grabKeyboardFocus();
+
+            pressKeyThroughWindow (juce::KeyPress::escapeKey);
+        }, [this]
+        {
+            auto* box = drawerNameBox();
+            return box != nullptr && ! box->hasKeyboardFocus (true) && box->getText() == nameBoxTextBefore;
+        });
+        add ("  and a second Escape closes the page", [this] { pressKeyThroughWindow (juce::KeyPress::escapeKey); },
+             [this] { return ! isUp<CameraPanel>() && ! isUp<AdvancedPanel>(); });
 
         // A take.
         add ("recording starts", [this]

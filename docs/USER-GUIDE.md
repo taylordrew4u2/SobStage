@@ -562,7 +562,9 @@ this feature works out for you.
   Opening it also looks for newly plugged-in cameras and tries again any that
   didn't open. It can be opened during a take.
 - **On the Cameras page**, for each camera:
-  - **its name** — the name goes on its file;
+  - **its name** — the name goes on its file. Return, Escape or a click on
+    the main screen finishes typing it, so the space bar mutes the room
+    again (a first Escape finishes the name, a second closes the page);
   - **Record this camera** — switching one off is remembered across an
     unplug and a relaunch;
   - **the file it will write** — `Writes V01_Kitchen-Cam.mov`, updating as you

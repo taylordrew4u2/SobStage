@@ -94,6 +94,7 @@ MainComponent::MainComponent (Application& app)
 
     // The window is where Space means mute.
     mainScreen.onSessionNameFinished = [this] { grabKeyboardFocus(); };
+    mainScreen.addMouseListener (&drawerTypingWatcher, true);
 
     // A reason under the record button, a no-microphones message or another
     // row of strips makes the screen taller. Re-fitted here, the viewport
@@ -427,11 +428,33 @@ MainComponent::MainComponent (Application& app)
 
 MainComponent::~MainComponent()
 {
+    mainScreen.removeMouseListener (&drawerTypingWatcher);
+
     // The window is torn down before Application::shutdown(), and a queued
     // device-change can still fire in between -- it must not call into a
     // destroyed component.
     application.onCaptureRebuilt = nullptr;
     stopTimer();
+}
+
+void MainComponent::DrawerTypingWatcher::mouseDown (const juce::MouseEvent&)
+{
+    auto* focused = juce::Component::getCurrentlyFocusedComponent();
+
+    if (dynamic_cast<juce::TextEditor*> (focused) == nullptr)
+        return;
+
+    const juce::Component* drawers[] { &owner.advancedViewport, &owner.cameraViewport,
+                                       &owner.helpViewport, &owner.guideViewport };
+
+    for (const auto* drawer : drawers)
+        if (drawer->isParentOf (focused))
+        {
+            // To the window, where Space mutes; the box commits what was
+            // typed as it loses the keyboard (its onFocusLost).
+            owner.grabKeyboardFocus();
+            return;
+        }
 }
 
 void MainComponent::timerCallback()

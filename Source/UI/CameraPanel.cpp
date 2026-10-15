@@ -332,6 +332,11 @@ void CameraPanel::rebuildRows()
             if (auto* window = getTopLevelComponent(); window != nullptr && window != this)
                 window->grabKeyboardFocus();
         };
+
+        // Escape is "done" too, so the first one ends the typing -- the box
+        // swallowed it, and the page would not close -- and a second closes
+        // the page, as it does from anywhere else.
+        row.nameEditor->onEscapeKey = row.nameEditor->onReturnKey;
         addChildComponent (*row.nameEditor);
 
         // The file this camera is going to write, said here because renaming
