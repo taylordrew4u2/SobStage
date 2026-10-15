@@ -47,7 +47,7 @@ audio faster than real time, and SobStage reports it.
 <code>Tools/record_demo.sh</code> regenerates the video.</em></p>
 
 <p align="center">
-  <img src="images/main-screen.png" alt="The main screen: channel strips side by side, a summed mix bar, a session name field, the record button, a row with monitor volume and mute, and Help and Settings in the masthead" width="660">
+  <img src="images/main-screen.png" alt="The main screen: channel strips side by side, a summed mix bar, a session name field, the record button, a row with monitor volume and mute, and Help, Cameras and Settings in the masthead" width="660">
 </p>
 
 One strip per microphone: a little crying face that fills with the level (it
@@ -93,8 +93,9 @@ Opening it widens the window if it must, so both halves fit.
   <img src="images/help.png" alt="Help: headings over plain paragraphs -- the recording is silent, dynamic or condenser microphone, the amber line under the strips, sample rate bit depth and buffer size, a mixer or interface with several sockets, where the files are, still stuck -- with Open Settings and Export diagnostics buttons at the bottom" width="660">
 </p>
 
-Help is the third door, beside Settings in the masthead and again beside
-Close on the Settings drawer, and opens as a drawer the same way. It answers "why is it silent?" in the app, in the
+Help is the first of the three doors in the masthead — Help, Cameras,
+Settings — and is again beside Close on the Settings drawer. It opens as a
+drawer the same way, and so does Cameras (see [Cameras](#cameras)). It answers "why is it silent?" in the app, in the
 order the causes actually turn up. First the checklist for a mixer or
 interface: the box ticked in Settings, microphone permission, the channel
 unmuted with its faders up, the USB send (LOOPBACK on a PUPGSIS T12S)
@@ -329,9 +330,10 @@ files really are empty and the card says so instead of calling it saved.
   its sound, and so does the SobStage device that plays the mix out of every
   microphone's own jack, since its rate is theirs; the app sets it back when
   the take ends.
-- **Help** is in the masthead beside Settings. If a meter is flat or a take
-  came out silent, start there: it lists the causes in the order they actually
-  turn up, with what to do about each.
+- **Help**, **Cameras** and **Settings** are in the masthead, the bar along
+  the top of the window. If a meter is flat or a take came out silent, start
+  in Help: it lists the causes in the order they actually turn up, with what
+  to do about each.
 - If the sound ever cuts out on its own, that is the feedback protection —
   the mute button becomes **Unmute (sound was cut)** and pressing it brings
   the sound back.
@@ -541,39 +543,68 @@ this feature works out for you.
 ## Cameras
 
 - **Every camera the OS reports is on by default** and records for the whole
-  take; the **Cameras** button on the main screen is where you switch one off.
-  USB webcams, built-in and
-  Continuity cameras, and capture cards may appear. Camera selection is separate
-  from the macOS audio-input policy.
-- SobStage opens each camera and shows its live preview. Switching one off is
-  remembered across an unplug and a relaunch. Name each camera and the name goes on its
-  file. For this release candidate, confirm a capture card's preview is visibly
-  non-black and its test recording plays before relying on it for a take.
+  take, each to its own video file, and its picture shows on the main screen.
+  USB webcams, built-in and Continuity cameras, and capture cards may appear.
+  Camera selection is separate from the macOS audio-input policy. The first
+  launch may therefore raise the operating system's camera permission prompt
+  before you have pressed record.
+- **Cameras is at the top of the window**, between Help and Settings, and
+  says how many are on: **Cameras (2)**. It is always there, camera or not.
+  It opens the Cameras page as a drawer down the right-hand side, the way
+  Settings opens, with the main screen and its pictures still live on the
+  left — so you can frame a shot and pick its size while you watch it. The
+  button stays lit while the page is open; it, **Close** and Escape close it.
+  Opening it also looks for newly plugged-in cameras and tries again any that
+  didn't open. It can be opened during a take.
+- **On the Cameras page**, for each camera:
+  - **its name** — the name goes on its file;
+  - **Record this camera** — switching one off is remembered across an
+    unplug and a relaunch;
+  - **the file it will write** — `Writes V01_Kitchen-Cam.mov`, updating as you
+    rename it, because renaming is the moment you want to know what the name
+    does. During a take it says `Recording to` the file it is actually
+    writing, and that name stays put if another camera is unplugged or
+    plugged in mid-take;
+  - **what to do about it** when it isn't live — switched off, unplugged,
+    still being looked for, or no picture yet;
+  - **Picture size**: **Best (up to 4K)**, **1080p** or **720p (smaller
+    files)**. On a Mac this picks the matching camera mode; on Windows the
+    largest mode the camera offers within it. The free-space and card-speed
+    checks budget each camera at its own size;
+  - **"Running at 3840 x 2160, 30 fps"** — what the camera says it is
+    delivering, on a Mac. Windows doesn't report it, so there is no line
+    there rather than a guess.
+
+  Under the cameras: **Also save video with the sound in one file** (below),
+  and a **Space** line saying how much an hour of recording takes at the
+  current settings, sound included ("Recording now takes up to about 33 GB an
+  hour, sound included."), with how long this computer can record for when
+  that is the limit. The names, switches and picture sizes are fixed for the
+  length of a take.
+- **How big the pictures are drawn** is the ▼ ▲ arrows on the main screen's
+  camera row (or the Up and Down keys). That only changes the picture on the
+  screen; what each camera records is its Picture size.
 - On a Mac, a camera or capture card that sends only black (no signal, wrong
   input mode, or an HDCP-protected source) is named on its tile after about
   1.5 s, and an HDMI capture dongle is switched to a 30 fps mode when the one
   picked by default is slower. It is switched again each time it reopens (a
-  Quality change, or switching it off and on). A camera with a 4K mode that
-  runs at 30 fps (Continuity Camera, a 4K webcam, a USB 3 capture card)
+  Picture size change, or switching it off and on). A camera with a 4K mode
+  that runs at 30 fps (Continuity Camera, a 4K webcam, a USB 3 capture card)
   records in 4K; a USB 2 capture dongle tops out at 1080p whatever its HDMI
   input accepts.
-- **Quality, per camera** (Cameras panel): **Best (up to 4K)**, **1080p** or
-  **720p (smaller files)**. Each camera row says what it is actually running at
-  ("Running at 3840 x 2160, 30 fps"), and the free-space and card-speed checks
-  budget each camera at its own setting. Fixed during a take.
 - SobStage asks JUCE and the operating system for high-quality camera capture;
-  the exact format is selected by the platform and driver. The preview toggle
-  changes only how large the picture is drawn on screen; it does not deliberately
-  request a lower recording format.
+  the exact format is selected by the platform and driver within the Picture
+  size you chose.
 - **Picture and sound are separate files.** Each camera writes one video file
   into the same session folder as the audio, with no sound track of its own —
   the sound is the WAVs beside it, and `session.json` records the pairing and
   the shared session origin that lines them up in an editor.
 - **Optionally, one file with both — and nothing is re-encoded.** Off by
-  default. Switch on *Also save video with the sound in one file* in Settings
-  and each camera additionally gets a `..._with-sound.mov` (`.mkv` on Windows)
-  once the take stops — written **beside** the originals, never instead of
-  them, so a combine that fails costs nothing that was not already saved.
+  default. Switch on *Also save video with the sound in one file* on the
+  Cameras page and each camera additionally gets a `..._with-sound.mov`
+  (`.mkv` on Windows) once the take stops — written **beside** the originals,
+  never instead of them, so a combine that fails costs nothing that was not
+  already saved.
   **The picture is copied bit for bit** and **the sound stays 24-bit PCM**
   (FLAC in the Matroska case, which is also lossless). The combined file is
   not a compressed convenience copy: it is the same data in one container, so
@@ -583,8 +614,9 @@ this feature works out for you.
   open before any camera does and a take laid together without accounting for
   that runs a fraction of a second out of sync. On a Mac nothing needs
   installing: SobStage uses macOS's own video tools. **On Windows it needs
-  [ffmpeg](https://ffmpeg.org)**; if it is missing, the toggle says so before a
-  take rather than after one.
+  [ffmpeg](https://ffmpeg.org)**: put it in `C:\Program Files\ffmpeg`, with
+  `ffmpeg.exe` in its `bin` folder. If it is missing, the line under the switch
+  says so before a take rather than after one.
   The combined file is made after the take stops, and **never while the next
   take records**: press Record while it is still being made and it stops,
   deletes its unfinished copy, and starts again from the beginning once that
@@ -606,29 +638,21 @@ this feature works out for you.
   format and looks for interrupted takes on it before Record turns back on — a
   FAT32 card no longer slips in on the last card's results and stops the
   camera 4 GB into the show. Record also looks once more as you press it.
-- **Each camera says what it will write** — `Writes V01_Kitchen-Cam.mov`,
-  under its name, updating as you rename it. Renaming is the moment you want to
-  know what the name does. During a take it says `Recording to` the file it is
-  actually writing, and that name stays put if another camera is unplugged or
-  plugged in mid-take.
-- **Every camera plugged in records**, each to its own file for the whole
-  take, without a trip to this panel first. Switching one off here is the
-  exception, and that choice is remembered across an unplug and a relaunch.
-  The first launch may therefore raise the operating system's camera
-  permission prompt before you have pressed record.
 - **macOS and Windows only.** JUCE implements camera capture on those two
   targets; the Linux build says so in one sentence instead of showing controls
   that cannot work. The sound recording works either way.
 
 <p align="center">
-  <img src="images/cameras.png" alt="The Cameras panel on Linux: a Done button, the heading Cameras, a paragraph explaining that video and sound save as separate files, and a line saying this build cannot use cameras" width="660">
+  <img src="images/cameras.png" alt="The Cameras page open as a drawer on the right, with the live main screen on the left and the Cameras button lit in the masthead between Help and Settings. On Linux the page has a Close button, the heading Cameras, a sentence saying this build cannot use cameras, and a Space line saying how much an hour of recording takes" width="660">
 </p>
 
 That shot is the Linux build, which is the one this container can render — so
-it is showing the sentence rather than the cameras. On macOS and Windows the
-same panel carries a row per camera: its name, a switch, the file it will write,
-and a live-preview area. The final candidate's real capture-card picture and
-recording remain part of the physical-hardware gate.
+the page shows the sentence rather than the cameras. On macOS and Windows the
+same page carries, under YOUR CAMERAS, a block per camera: its name and
+Record switch, the file it will write, what to do if it isn't live, its
+Picture size and what it is running at; then AFTER EACH TAKE with the
+combined-video switch, and SPACE. The final candidate's real capture-card
+picture and recording remain part of the physical-hardware gate.
 
 - **It remembers your rig.** Microphone names and trims, which mics are
   switched off, where recordings go, the backup setting, the combined-device

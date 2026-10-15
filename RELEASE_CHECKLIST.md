@@ -186,8 +186,9 @@ passed the physical camera matrix.
   across unplug and relaunch.
 - [ ] **GA blocker:** On the final macOS and Windows candidate artifacts, connect
   a UVC HDMI capture card to a known-good, non-HDCP video source. Verify a visibly
-  non-black preview after enabling it, then move main screen → Cameras panel →
-  main screen and confirm the picture remains live. Record and play back the
+  non-black preview after enabling it, then open Cameras from the top of the
+  window, change Picture size, and close it; the main-screen picture stays live
+  throughout (it reopens once at the new size). Record and play back the
   resulting video, verify duration and advancing frames, and repeat alongside
   the maximum audio load. A device-open result, non-null viewer, first-frame log
   or simulator pass alone does not close this gate.

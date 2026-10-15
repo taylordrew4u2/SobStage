@@ -16,6 +16,18 @@
   records here, and the line under the record button says how long you have
   ("This computer has room for about 25 minutes of recording."). The
   "Where does this recording go?" card says it too.
+- **Cameras has its own settings page.** **Cameras** is always in the bar at
+  the top of the window, between Help and Settings, and says how many are on.
+  It opens a page beside the main screen, the way Settings does, so the
+  pictures stay in view: for each camera its name, whether it records, the
+  file it will write, what to do if it isn't working, its **Picture size**
+  (was "Quality") and, on a Mac, what it is running at. It also says how much
+  an hour of recording takes now.
+- **"Also save video with the sound in one file" moved from Settings to the
+  Cameras page.**
+- **The "bigger, sharper preview" and "Full preview" boxes are gone.** The
+  arrows on the main screen's camera row size the pictures, as before; what a
+  camera records is its Picture size.
 
 ### Fixed
 
@@ -23,6 +35,11 @@
   nothing**, so the computer keeps working and the copy to the card can run.
   The ten- and two-minute warnings come in time for that, and say "on this
   computer".
+- **On Windows, the note about combined video no longer gives Mac
+  instructions.** It says where to put ffmpeg (`C:\Program Files\ffmpeg`,
+  with `ffmpeg.exe` in its `bin` folder); so does the message after a take.
+- **The Cameras button was hidden whenever a camera was on**, which is
+  exactly when its settings matter. It is always in the top bar now.
 
 ## v1.13.28 -- 2026-10-14 (release candidate)
 

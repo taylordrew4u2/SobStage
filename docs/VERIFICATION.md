@@ -371,9 +371,9 @@ the matrix. In particular:
   rather than setup — losing it costs a second to reset, where losing a trim
   costs the ear-work that found it.
 - **Cameras are an addition, not a spec item.** `docs/SPEC.md` is about
-  microphones and says nothing about video, so everything in the Cameras panel
-  is a judgment call against the spec's own principles rather than a
-  requirement being met: every plugged-in camera recording by default because
+  microphones; it now lists the Cameras page's contents (§10.3.1) and its door
+  in the masthead (§10.2), but what is on that page is still a judgment call
+  against the spec's own principles rather than a requirement being met: every plugged-in camera recording by default because
   a take with a camera missing from it cannot be redone, while §6.5's
   card-full failure is guarded by the remaining-time figure counting every
   recording camera; capture
