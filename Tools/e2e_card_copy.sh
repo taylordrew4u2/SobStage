@@ -46,13 +46,14 @@
 #   copyhere as othercard, with the saved-take card closed: "Copy to this
 #            card" under the record button -- the button the take's line
 #            names -- copies it to the card that is in
-#   slowcard a big card too slow to record on (its speed test stalls for 4 s
-#            on its first write, as SD cards do). a) With an hour of room
-#            here -- v1.13.28 wanted room for all four hours the card could
-#            hold -- the card is never tested and the take records here.
-#            b) Under an hour, the card is tested and refused, and the take
-#            still records here, said with "can't be recorded on directly".
-#            c) Under ten minutes here, Record stays off
+#   slowcard a big card too slow to record on (about 0.25 MB/s throughout).
+#            a) With an hour of room here -- v1.13.28 wanted room for all
+#            four hours the card could hold -- the card is never tested and
+#            the take records here. b) Under an hour, the card is tested and
+#            refused within seconds -- not the 13 minutes the whole 200 MB
+#            would take -- and the take still records here, said with "can't
+#            be recorded on directly". c) Under ten minutes here, Record
+#            stays off
 #   lockedcard a locked card, with under an hour of room here: its speed
 #            test can't write to it, so takes would record here. The lock is
 #            slid off with the card left in -- nothing chosen again -- and the
@@ -1035,8 +1036,8 @@ if want slowcard; then
 # -------------------------------------------------------------------------
 echo
 echo "=== A card too slow to record on does not stop Record ==="
-# A 64 GB card whose speed test stalls for 4 s on its first write, so it
-# measures about 0.25 MB/s and is refused. This computer's room is set with
+# A 64 GB card whose speed test pauses 4 s on every 1 MB write: about
+# 0.25 MB/s, refused at its first second. This computer's room is set with
 # the shim (MiB). The thresholds hold whether the fixture mics open mono or
 # stereo: 9000 is over an hour plus 2 GB here and under four hours; 3500 is
 # under an hour plus 2 GB and over ten minutes plus 2 GB; 2300 is under ten
@@ -1045,7 +1046,7 @@ BEFORE_FAIL=$FAILED
 ROOM="$WORK/slowcard.computerfree"
 echo 9000 > "$ROOM"
 # Watched from before the app starts: a test run at launch, while the window
-# is still coming up, is over before any click. Stalled 4 s on its first
+# is still coming up, is over before any click. Paused 4 s on its first
 # write, its scratch file is there for longer than that.
 SCRATCH="$WORK/slowcard/CARD/RECORDINGS/.sobstage-preflight.tmp"
 SEEN_FLAG="$WORK/slowcard.scratchseen"
@@ -1057,7 +1058,7 @@ rm -f "$SEEN_FLAG" "$WORK/slowcard.stopwatching"
 WATCHER=$!
 launch slowcard fresh MMA_STALL_CARD_FREE_MB=64000 MMA_STALL_COMPUTER_PREFIX="$WORK/slowcard" \
   MMA_STALL_COMPUTER_FREE_MB_FILE="$ROOM" MMA_STALL_SLOW_FILE=.sobstage-preflight.tmp \
-  MMA_STALL_SLOW_FIRST_WRITE_MS=4000
+  MMA_STALL_SLOW_EVERY_WRITE_MS=4000
 dismiss_cards
 
 # grep -c prints 0 for none, and fails: "|| echo 0" would print it twice.
@@ -1113,8 +1114,13 @@ else pass "slowcard a: the card's speed was never tested, from launch to the cop
 echo 3500 > "$ROOM"
 if wait_for_file "$SCRATCH" 30; then
   pass "slowcard b: under an hour of room here, the card's speed is tested"
+  # Settled at its first second, about 4 s in: done well inside 20 s.
   for _ in $(seq 1 200); do [ -e "$SCRATCH" ] || break; sleep 0.1; done
-  [ -e "$SCRATCH" ] && fail "slowcard b: the card's speed test never finished"
+  if [ -e "$SCRATCH" ]; then
+    fail "slowcard b: the card's speed test went on past 20 s, with its verdict settled at the first second"
+  else
+    pass "slowcard b: the card's speed test stopped once it was too slow, without writing all 200 MB"
+  fi
 else
   fail "slowcard b: the card's speed was not tested with under an hour of room here"
 fi

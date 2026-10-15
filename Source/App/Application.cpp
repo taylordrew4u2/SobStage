@@ -4606,8 +4606,10 @@ CardCheck Application::cardCheckForNextTake() const
     const auto checked = preflightResults.find (destinationFolder);
 
     // Never checked, or another card -- or none -- has been seen at this path
-    // since: the status tick has that one checked next.
-    if (checked == preflightResults.end() || probeSeesAnotherDriveThanChecked (checked->second))
+    // since: the status tick has that one checked next. Or checked only as far
+    // as a second too slow for the rig then, and this one needs less.
+    if (checked == preflightResults.end() || probeSeesAnotherDriveThanChecked (checked->second)
+        || checkNeedsMeasuring (checked->second))
         return CardCheck::NotYet;
 
     // A refusal is kept. Once it sends takes here, startPreflightIfNeeded()
@@ -4617,6 +4619,16 @@ CardCheck Application::cardCheckForNextTake() const
     // "couldn't write" is tried again (speedTestDue), and a take copied to
     // the card clears it (reportFinishedCardCopies).
     return cachedCardRefusal (checked->second).isEmpty() ? CardCheck::Clears : CardCheck::Refuses;
+}
+
+bool Application::checkNeedsMeasuring (const PreflightResult& checked) const
+{
+    return PreflightThroughputTest::needsMeasuringFor (
+        checked,
+        std::max (1, getIncludedMicCount()),
+        currentSampleRate,
+        std::max (1, currentBitDepth / 8),
+        static_cast<double> (cameraController.getSelection().getEstimatedBytesPerSecond()));
 }
 
 juce::String Application::cachedCardRefusal (const PreflightResult& checked) const
@@ -4949,7 +4961,23 @@ void Application::startPreflightIfNeeded() const
     if (destinationFolder.empty())
         return;
 
-    const auto cached = preflightResults.find (destinationFolder);
+    // Published and polled in one step, before any verdict is read: a worker
+    // that finished since the caller's last publish must land first, or its
+    // verdict is thrown away and the card checked again at once.
+    const bool workerRunning = publishCompletedPreflight();
+    auto cached = preflightResults.find (destinationFolder);
+
+    // Stopped at a second too slow for the rig then, and this one needs no
+    // more than that second -- a camera turned off since: not an answer for
+    // it. Dropped, and the card checked again as one never checked is.
+    if (cached != preflightResults.end() && ! workerRunning && checkNeedsMeasuring (cached->second))
+    {
+        preflightResults.erase (cached);
+        preflightVerdictAtMs.erase (destinationFolder);
+        preflightTaskDestination.clear();
+        cached = preflightResults.end();
+    }
+
     const bool checked = cached != preflightResults.end();
     bool retryDue = false;
 
@@ -4960,11 +4988,6 @@ void Application::startPreflightIfNeeded() const
         // location again, which used to be the only thing that cleared this
         // verdict. Try again now and then while idle. The failed verdict stays
         // in place until the new one lands, so Record stays refused meanwhile.
-        //
-        // Published and polled in one step, before the age is read: a worker
-        // that finished since the caller's last publish must land first, or its
-        // verdict is thrown away and the card checked again at once.
-        const bool workerRunning = publishCompletedPreflight();
         const auto verdictAt = preflightVerdictAtMs.find (destinationFolder);
         const double secondsSince = verdictAt == preflightVerdictAtMs.end()
             ? 0.0
@@ -5039,8 +5062,14 @@ void Application::startPreflightIfNeeded() const
     const int bytesPerSample = std::max (1, currentBitDepth / 8);
     const auto mutationGate = recoveryMutationGate;
 
+    // What this rig needs, cameras included: the test stops at its first
+    // second under that, rather than keep Record waiting for the rest.
+    const double stopBelow = PreflightThroughputTest::gateBytesPerSecond (
+        channelCount, sampleRate, bytesPerSample,
+        static_cast<double> (cameraController.getSelection().getEstimatedBytesPerSecond()));
+
     const bool launched = preflightTask.start (
-        [target, channelCount, sampleRate, bytesPerSample,
+        [target, channelCount, sampleRate, bytesPerSample, stopBelow,
          mutationGate]
         (const std::atomic<bool>& cancelled) mutable
         {
@@ -5055,7 +5084,7 @@ void Application::startPreflightIfNeeded() const
                 return PreflightBackgroundResult { target, {}, false };
 
             auto result = Application::runPreflight (target, channelCount, sampleRate,
-                                                     bytesPerSample, cancelled);
+                                                     bytesPerSample, stopBelow, cancelled);
             // Release the path before DetachedResultTask publishes completion.
             // A caller which atomically sees running=false plus this result can
             // therefore authorize the measured root immediately and safely.
@@ -5124,7 +5153,7 @@ std::string Application::filesystemTypeName (const juce::File& folder)
 
 Application::PreflightBackgroundResult Application::runPreflight (
     std::string destination, int channelCount, double sampleRate,
-    int bytesPerSample, const std::atomic<bool>& cancelled)
+    int bytesPerSample, double stopBelowBytesPerSec, const std::atomic<bool>& cancelled)
 {
     PreflightBackgroundResult completed;
     completed.destination = std::move (destination);
@@ -5164,6 +5193,9 @@ Application::PreflightBackgroundResult Application::runPreflight (
     // shopping for a faster card when the card is read-only, full, or gone.
     bool couldNotWrite = false;
     int writeErrno = 0;
+
+    // Stopped at a second too slow for the rig: settled, the rest unwritten.
+    bool cutShort = false;
 
     {
         // §6.4: 200 MB, written the way a take writes -- steadily, measuring the
@@ -5224,6 +5256,15 @@ Application::PreflightBackgroundResult Application::runPreflight (
                     rollingWindows.push_back (static_cast<double> (writtenThisWindow) / durableElapsed);
                     writtenThisWindow = 0;
                     windowStart = std::chrono::steady_clock::now();
+
+                    // The verdict is the slowest second, so one under what the
+                    // rig needs settles it. The rest of 200 MB on a card that
+                    // manages 1.5 MB/s kept Record off for over two minutes.
+                    if (PreflightThroughputTest::settledBelow (rollingWindows.back(), stopBelowBytesPerSec))
+                    {
+                        cutShort = true;
+                        break;
+                    }
                 }
             }
 
@@ -5282,6 +5323,7 @@ Application::PreflightBackgroundResult Application::runPreflight (
     }
 
     result.limitedTo4GiBFiles = PreflightThroughputTest::needsReformat (filesystemKind);
+    result.cutShort = cutShort && ! couldNotWrite;
 
     // Stamped once the test file is gone. A card swapped while it was being
     // measured is still described by the card it began on, so the probe's

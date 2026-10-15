@@ -15,6 +15,25 @@ double PreflightThroughputTest::requiredBytesPerSecond (int numChannels, double 
          + (videoBytesPerSecond > 0.0 ? videoBytesPerSecond : 0.0);
 }
 
+double PreflightThroughputTest::gateBytesPerSecond (int numChannels, double sampleRate, int bytesPerSample,
+                                                    double videoBytesPerSecond) noexcept
+{
+    return requiredBytesPerSecond (numChannels, sampleRate, bytesPerSample, videoBytesPerSecond) * kRequiredMultiplier;
+}
+
+bool PreflightThroughputTest::settledBelow (double windowBytesPerSec, double gate) noexcept
+{
+    return gate > 0.0 && windowBytesPerSec < gate;
+}
+
+bool PreflightThroughputTest::needsMeasuringFor (const PreflightResult& cached, int numChannels, double sampleRate,
+                                                 int bytesPerSample, double videoBytesPerSecond) noexcept
+{
+    return cached.cutShort && ! cached.couldNotWrite
+        && cached.sustainedMinBytesPerSec >= gateBytesPerSecond (numChannels, sampleRate, bytesPerSample,
+                                                                 videoBytesPerSecond);
+}
+
 double PreflightThroughputTest::sustainedMinimum (const std::vector<double>& rollingWindowBytesPerSec) noexcept
 {
     if (rollingWindowBytesPerSec.empty())
@@ -39,7 +58,7 @@ PreflightResult PreflightThroughputTest::evaluateMeasured (double sustainedMinBy
     result.requiredBytesPerSec = requiredBytesPerSecond (numChannels, sampleRate, bytesPerSample,
                                                          videoBytesPerSecond);
 
-    const double gate = result.requiredBytesPerSec * kRequiredMultiplier;
+    const double gate = gateBytesPerSecond (numChannels, sampleRate, bytesPerSample, videoBytesPerSecond);
     result.passed = result.sustainedMinBytesPerSec >= gate;
 
     if (! result.passed)
@@ -81,9 +100,20 @@ PreflightResult PreflightThroughputTest::evaluateCached (const PreflightResult& 
         return refused;
     }
 
+    // Its slowest second is fast enough for this rig, but the rest of the
+    // card was never written: a pass on that would be on half a test.
+    if (needsMeasuringFor (cached, numChannels, sampleRate, bytesPerSample, videoBytesPerSecond))
+    {
+        PreflightResult unmeasured = cached;
+        unmeasured.passed = false;
+        unmeasured.reason = "Checking this drive is fast enough...";
+        return unmeasured;
+    }
+
     auto verdict = evaluateMeasured (cached.sustainedMinBytesPerSec, numChannels, sampleRate,
                                      bytesPerSample, videoBytesPerSecond);
     verdict.limitedTo4GiBFiles = cached.limitedTo4GiBFiles;
+    verdict.cutShort = cached.cutShort;
     return verdict;
 }
 

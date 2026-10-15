@@ -448,7 +448,8 @@ copies it to the card when you press Stop.
   doesn't even check the card's speed. "An hour" is at your settings, with
   the cameras that are on.
 - **With less room than that here**, SobStage checks the card first, which
-  takes a few seconds. A card that passes, and has more room than this
+  takes a few seconds (a card that is too slow is known within a second or
+  two). A card that passes, and has more room than this
   computer, takes the take instead, recorded straight to it, so a long show
   isn't cut short. The line under the record button says so: "This computer
   is nearly full, so the next take will go straight to the card." A card with

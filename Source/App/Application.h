@@ -1156,9 +1156,15 @@ private:
     mutable std::map<std::string, double> preflightVerdictAtMs;
     static std::string filesystemTypeName (const juce::File& folder);
     static int probeWriteErrno (const juce::File& folder);
+    /// `stopBelowBytesPerSec`: what the rig needs at launch
+    /// (PreflightThroughputTest::gateBytesPerSecond); the test stops at its
+    /// first second under that, the verdict settled.
     static PreflightBackgroundResult runPreflight (
         std::string destination, int channelCount, double sampleRate,
-        int bytesPerSample, const std::atomic<bool>& cancelled);
+        int bytesPerSample, double stopBelowBytesPerSec, const std::atomic<bool>& cancelled);
+    /// A check that stopped early and does not answer the rig as it is now
+    /// (PreflightThroughputTest::needsMeasuringFor): the card is checked again.
+    bool checkNeedsMeasuring (const PreflightResult& checked) const;
     /// Consumes any completed verdict and atomically reports whether its
     /// worker is still running. This combined observation is what keeps Record
     /// fail-closed at the instant a background benchmark publishes.

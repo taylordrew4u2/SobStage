@@ -272,6 +272,7 @@ Only for a destination that takes are recorded straight to (§6.3): a take recor
   is pending. Failure to start or complete the check is a refusal, never an
   implicit pass.
 - Write a 200 MB test file. Measure **sustained minimum throughput over rolling 1-second windows**, not average. Delete the test file.
+- Stop at the first window under what the rig needs (2× required, cameras included): the verdict is the slowest window, so the rest cannot change it, and on a card that manages 1.5 MB/s the whole file kept Record waiting for over two minutes. A result stopped early answers that rig and any needing more; a rig needing no more than its slowest window (a camera turned off since) has the card checked again, and is not passed meanwhile.
 - Required rate = channels × sample rate × bytes per sample × 2 (card plus mix file overhead).
 - **Block arming if sustained minimum is under 2× required.** Refuse before recording starts; **never degrade mid-take.** A novice cannot act on a mid-take warning, and a corrupted three-hour recording is worse than a delayed start.
 - Report free space as remaining recording time in hours and minutes, not bytes.

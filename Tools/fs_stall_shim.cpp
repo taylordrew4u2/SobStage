@@ -53,12 +53,16 @@
  *
  *   MMA_STALL_SLOW_FILE             a file name, e.g. .sobstage-preflight.tmp
  *   MMA_STALL_SLOW_FIRST_WRITE_MS   how long, in ms, the first write pauses
+ *   MMA_STALL_SLOW_EVERY_WRITE_MS   how long, in ms, every write pauses
  *
  * a file of that name opened under the card (open, openat, creat) has its
- * first write (write, pwrite, writev) held that long; every later write, and
- * every other file, goes straight through. With the speed test's file and
- * 4000 ms, the test measures about 0.25 MB/s, well under any rig's bar, and
- * still finishes in about 5 s; the copy to the card is not slowed.
+ * first write (write, pwrite, writev) held that long -- or every write, for a
+ * card that is slow throughout; every other file goes straight through. With
+ * the speed test's file, which it writes 1 MB at a time, and 4000 ms on every
+ * write, the card sustains about 0.25 MB/s, well under any rig's bar: the
+ * whole 200 MB would take over 13 minutes, so a test that does not stop once
+ * its verdict is settled never finishes in a gate's time. The copy to the
+ * card is not slowed.
  *
  * A card can also be locked, and then unlocked without being taken out:
  *
@@ -172,6 +176,8 @@ std::set<int>& cardFds() { static std::set<int> s; return s; }
 // MMA_STALL_SLOW_FILE / MMA_STALL_SLOW_FIRST_WRITE_MS: descriptors of that
 // file under the card whose first write is still to come.
 std::set<int>& slowFds() { static std::set<int> s; return s; }
+// MMA_STALL_SLOW_EVERY_WRITE_MS: descriptors of it slow throughout.
+std::set<int>& steadilySlowFds() { static std::set<int> s; return s; }
 
 bool isCardFd (int fd)
 {
@@ -192,6 +198,7 @@ void forgetFd (int fd)
     const std::lock_guard<std::mutex> lock (fdMutex());
     cardFds().erase (fd);
     slowFds().erase (fd);
+    steadilySlowFds().erase (fd);
 }
 
 const char* slowFileName()
@@ -212,9 +219,19 @@ long long slowFirstWriteMs()
     return ms;
 }
 
+long long slowEveryWriteMs()
+{
+    static const long long ms = [] {
+        const char* v = std::getenv ("MMA_STALL_SLOW_EVERY_WRITE_MS");
+        return v != nullptr && *v != 0 ? std::atoll (v) : 0LL;
+    }();
+    return ms;
+}
+
 void rememberSlowFd (int fd, const char* path)
 {
-    if (fd < 0 || slowFileName() == nullptr || slowFirstWriteMs() <= 0 || ! underCardPrefix (path))
+    if (fd < 0 || slowFileName() == nullptr || (slowFirstWriteMs() <= 0 && slowEveryWriteMs() <= 0)
+        || ! underCardPrefix (path))
         return;
 
     const char* slash = std::strrchr (path, '/');
@@ -223,20 +240,27 @@ void rememberSlowFd (int fd, const char* path)
         return;
 
     const std::lock_guard<std::mutex> lock (fdMutex());
-    slowFds().insert (fd);
+    if (slowFirstWriteMs() > 0)
+        slowFds().insert (fd);
+    if (slowEveryWriteMs() > 0)
+        steadilySlowFds().insert (fd);
 }
 
-// The first write on such a descriptor pauses, as a card does mid-write.
+// The first write on such a descriptor pauses, as a card does mid-write; on
+// a card slow throughout, every write does.
 void pauseIfFirstSlowWrite (int fd)
 {
-    bool first = false;
+    long long ms = 0;
     {
         const std::lock_guard<std::mutex> lock (fdMutex());
-        first = slowFds().erase (fd) > 0;
+        if (slowFds().erase (fd) > 0)
+            ms += slowFirstWriteMs();
+        if (steadilySlowFds().count (fd) > 0)
+            ms += slowEveryWriteMs();
     }
 
-    if (first)
-        std::this_thread::sleep_for (std::chrono::milliseconds (slowFirstWriteMs()));
+    if (ms > 0)
+        std::this_thread::sleep_for (std::chrono::milliseconds (ms));
 }
 
 bool cardIsDead()
