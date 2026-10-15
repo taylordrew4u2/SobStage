@@ -60,6 +60,14 @@
  * 4000 ms, the test measures about 0.25 MB/s, well under any rig's bar, and
  * still finishes in about 5 s; the copy to the card is not slowed.
  *
+ * A card can also be locked, and then unlocked without being taken out:
+ *
+ *   MMA_STALL_LOCKED_FILE  while this file exists, opening a file under the
+ *                          card for writing, or making a folder there, fails
+ *                          with EROFS, as a card with its lock switch on
+ *                          does. Reading goes through. Removed, the card
+ *                          takes writes again -- the same card, in place.
+ *
  * The gates' "card" is a folder on this computer's own disk, and whether a
  * take is recorded here and copied, or goes straight to the card, depends on
  * how much room this computer has: an hour of recording plus 2 GB. On one
@@ -306,6 +314,28 @@ void mark (const char* suffix)
         realClose (fd);
 }
 
+// MMA_STALL_LOCKED_FILE: true, with errno EROFS, for a write-open or a
+// folder made under the card while the file exists.
+bool refusedAsLocked (const char* path, bool writes)
+{
+    static const char* flag = [] {
+        const char* v = std::getenv ("MMA_STALL_LOCKED_FILE");
+        return v != nullptr && *v != 0 ? v : nullptr;
+    }();
+    static auto realAccess = real<int (*) (const char*, int)> ("access");
+
+    if (! writes || flag == nullptr || ! underCardPrefix (path) || realAccess (flag, F_OK) != 0)
+        return false;
+
+    errno = EROFS;
+    return true;
+}
+
+bool opensForWriting (int flags)
+{
+    return (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC)) != 0;
+}
+
 mode_t modeArg (int flags, va_list args)
 {
     return (flags & O_CREAT) != 0 || (flags & O_TMPFILE) == O_TMPFILE
@@ -428,6 +458,8 @@ int open (const char* path, int flags, ...)
 {
     va_list args; va_start (args, flags); const auto mode = modeArg (flags, args); va_end (args);
     touchPath (path);
+    if (refusedAsLocked (path, opensForWriting (flags)))
+        return -1;
     static const auto fn = real<int (*) (const char*, int, ...)> ("open");
     const int fd = fn (path, flags, mode);
     rememberFd (fd, path);
@@ -439,6 +471,8 @@ int open64 (const char* path, int flags, ...)
 {
     va_list args; va_start (args, flags); const auto mode = modeArg (flags, args); va_end (args);
     touchPath (path);
+    if (refusedAsLocked (path, opensForWriting (flags)))
+        return -1;
     static const auto fn = real<int (*) (const char*, int, ...)> ("open64");
     const int fd = fn (path, flags, mode);
     rememberFd (fd, path);
@@ -450,6 +484,8 @@ int openat (int dirfd, const char* path, int flags, ...)
 {
     va_list args; va_start (args, flags); const auto mode = modeArg (flags, args); va_end (args);
     touchPath (path);
+    if (refusedAsLocked (path, opensForWriting (flags)))
+        return -1;
     static const auto fn = real<int (*) (int, const char*, int, ...)> ("openat");
     const int fd = fn (dirfd, path, flags, mode);
     rememberFd (fd, path);
@@ -461,6 +497,8 @@ int openat64 (int dirfd, const char* path, int flags, ...)
 {
     va_list args; va_start (args, flags); const auto mode = modeArg (flags, args); va_end (args);
     touchPath (path);
+    if (refusedAsLocked (path, opensForWriting (flags)))
+        return -1;
     static const auto fn = real<int (*) (int, const char*, int, ...)> ("openat64");
     const int fd = fn (dirfd, path, flags, mode);
     rememberFd (fd, path);
@@ -471,6 +509,8 @@ int openat64 (int dirfd, const char* path, int flags, ...)
 int creat (const char* path, mode_t mode)
 {
     touchPath (path);
+    if (refusedAsLocked (path, true))
+        return -1;
     static const auto fn = real<int (*) (const char*, mode_t)> ("creat");
     const int fd = fn (path, mode);
     rememberFd (fd, path);
@@ -647,6 +687,8 @@ int faccessat (int dirfd, const char* path, int mode, int flags)
 int mkdir (const char* path, mode_t mode)
 {
     touchPath (path);
+    if (refusedAsLocked (path, true))
+        return -1;
     static const auto fn = real<int (*) (const char*, mode_t)> ("mkdir");
     return fn (path, mode);
 }
@@ -654,6 +696,8 @@ int mkdir (const char* path, mode_t mode)
 int mkdirat (int dirfd, const char* path, mode_t mode)
 {
     touchPath (path);
+    if (refusedAsLocked (path, true))
+        return -1;
     static const auto fn = real<int (*) (int, const char*, mode_t)> ("mkdirat");
     return fn (dirfd, path, mode);
 }

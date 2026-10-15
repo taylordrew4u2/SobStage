@@ -460,6 +460,8 @@ copies it to the card when you press Stop.
   line under the record button says how long you have: "This card can't be
   recorded on directly, so each take is recorded on this computer, then copied
   to the card. This computer has room for about 25 minutes of recording."
+  Unlock a locked card, or free up space on a full one, and SobStage tries it
+  again within seconds, with no need to choose it again.
 - **"This computer has room for about 1h 40m of recording."** Said under the
   record button, and on the "Where does this recording go?" card, whenever
   this computer would run out before the card would. For more time, free up

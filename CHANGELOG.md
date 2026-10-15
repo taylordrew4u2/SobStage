@@ -16,7 +16,8 @@
   computer has room for 10 minutes: the take
   records here, and the line under the record button says how long you have
   ("This computer has room for about 25 minutes of recording."). The
-  "Where does this recording go?" card says it too.
+  "Where does this recording go?" card says it too. A locked or full card is
+  tried again within seconds of being unlocked or having space freed.
 - **Cameras has its own settings page.** **Cameras** is always in the bar at
   the top of the window, between Help and Settings, and says how many are on.
   It opens a page beside the main screen, the way Settings does, so the

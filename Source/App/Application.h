@@ -1082,6 +1082,8 @@ private:
     /// The route for the next take. `authoritative` (arm time only) asks the
     /// disks themselves; otherwise only what the probe already knows.
     TakeRoute plannedTakeRoute (bool authoritative) const;
+    /// What plannedTakeRoute() decides from, gathered the same way.
+    TakeRouteInputs takeRouteInputs (bool authoritative) const;
     /// How long the save location itself could record for, from the probe's
     /// last look between takes, or -1 when that is not known.
     double destinationRoomFromProbe() const;

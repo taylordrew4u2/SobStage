@@ -91,6 +91,18 @@ double computerRecordingSeconds (std::optional<int64_t> freeBytes, double bytesP
 /// checks then apply.
 TakeRoute decideTakeRoute (const TakeRouteInputs& inputs) noexcept;
 
+/// Whether the card's 200 MB speed test (§6.4) is to run now, between takes,
+/// for the next take's route as `in` gives it. `checked`: there is a verdict
+/// for the card that is there; `retryDue`: it is "couldn't write" and due
+/// another try (PreflightThroughputTest::shouldRetryCached).
+///
+/// A take that goes to the card has it checked first. One recorded here asks
+/// nothing of the card -- unless all that sends it here is a "couldn't
+/// write" a card that passed would replace: freeing space or unlocking the
+/// card is done without choosing the location again, and a long show is then
+/// not held to this computer's room.
+bool speedTestDue (const TakeRouteInputs& in, bool checked, bool retryDue) noexcept;
+
 /// How long Record waits for the first answer about where a save location
 /// is before going on without it. A card that hangs before the status probe
 /// has answered holds the probe inside that call; not knowing is treated as

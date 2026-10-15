@@ -2837,6 +2837,17 @@ void Application::toggleRecording()
                 return;
             }
         }
+        else if (preflightTaskDestination == destinationFolder && isPreflightRunning())
+        {
+            // Recorded here, nothing is written to the card while the take
+            // runs -- its reader may be on the microphones' hub. A check of it
+            // still going, such as a "couldn't write" being tried again, which
+            // does not hold Record, stops now; the card's last verdict stays,
+            // and it is tried again after Stop if that is still due.
+            preflightTask.abandon();
+            preflightTaskDestination.clear();
+            speedTestTurn.clear();
+        }
 
         std::vector<RecordingChannel> channels;
         for (const auto& d : deviceManager.getDevices())
@@ -3639,6 +3650,18 @@ void Application::reportFinishedCardCopies()
                           "Copied " + juce::File (juce::String (done.folderNow)).getFileName() + " to the card.",
                           true);
         }
+
+        // A take just written to the save location says its card can be
+        // written: a "couldn't write" kept for it -- full then, space freed
+        // since -- no longer holds, and it is checked afresh when it matters.
+        if (done.result.outcome == cardcopy::Outcome::Copied && ! destinationFolder.empty()
+            && cardcopy::parentOf (done.result.cardFolder) == destinationFolder)
+            if (const auto kept = preflightResults.find (destinationFolder);
+                kept != preflightResults.end() && kept->second.couldNotWrite)
+            {
+                preflightResults.erase (kept);
+                preflightVerdictAtMs.erase (destinationFolder);
+            }
         else if (! done.repeat)
         {
             noteActivity (ActivityLevel::Warning, "Card copy",
@@ -4503,16 +4526,23 @@ bool Application::destinationPlacementKnown() const
 
 TakeRoute Application::plannedTakeRoute (bool authoritative) const
 {
+    return decideTakeRoute (takeRouteInputs (authoritative));
+}
+
+TakeRouteInputs Application::takeRouteInputs (bool authoritative) const
+{
     TakeRouteInputs in;
     in.copyAfterTakeEnabled = recordOnComputerThenCopy;
 
+    // Either of these goes straight to the destination, so nothing more is
+    // asked of the disks (decideTakeRoute).
     if (! in.copyAfterTakeEnabled)
-        return TakeRoute::StraightToDestination;
+        return in;
 
     in.destinationOnThisComputer = destinationOnThisComputer (authoritative);
 
     if (in.destinationOnThisComputer == 1)
-        return TakeRoute::StraightToDestination;
+        return in;
 
     // Room for audio AND cameras: the take writes both here.
     in.bytesPerSecond = bytesPerSecondOfRecording();
@@ -4541,7 +4571,7 @@ TakeRoute Application::plannedTakeRoute (bool authoritative) const
         in.computerFreeBytes = free;
     }
 
-    return decideTakeRoute (in);
+    return in;
 }
 
 double Application::destinationRoomFromProbe() const
@@ -4583,7 +4613,9 @@ CardCheck Application::cardCheckForNextTake() const
     // A refusal is kept. Once it sends takes here, startPreflightIfNeeded()
     // does not check the card again: that 200 MB write would be to a card no
     // take is recorded on. A swap, or choosing the location again, clears it,
-    // as they always have; turning cameras off re-answers it below.
+    // as they always have; turning cameras off re-answers it below. Only a
+    // "couldn't write" is tried again (speedTestDue), and a take copied to
+    // the card clears it (reportFinishedCardCopies).
     return cachedCardRefusal (checked->second).isEmpty() ? CardCheck::Clears : CardCheck::Refuses;
 }
 
@@ -4910,19 +4942,11 @@ void Application::startPreflightIfNeeded() const
     if (destinationFolder.empty())
         return;
 
-    // No 200 MB test write to a card nothing will record onto: the take is
-    // recorded on this computer and copied there after Stop. With under an
-    // hour of room here, a card not checked yet is the next take's, and the
-    // Record gate comes back through here to check it; one that refused sends
-    // takes back here, and is not checked again while they record here
-    // (cardCheckForNextTake).
-    if (wouldRecordOnComputer())
-    {
-        speedTestTurn.clear();
-        return;
-    }
+    const auto cached = preflightResults.find (destinationFolder);
+    const bool checked = cached != preflightResults.end();
+    bool retryDue = false;
 
-    if (const auto cached = preflightResults.find (destinationFolder); cached != preflightResults.end())
+    if (checked)
     {
         // A card that could not be written is usually fixed by the user --
         // space freed, the card reinserted or unlocked -- without choosing the
@@ -4939,18 +4963,29 @@ void Application::startPreflightIfNeeded() const
             ? 0.0
             : (juce::Time::getMillisecondCounterHiRes() - verdictAt->second) / 1000.0;
 
-        if (! PreflightThroughputTest::shouldRetryCached (
-                cached->second, secondsSince,
-                recordingEngine.getState() == RecordingState::Idle,
-                workerRunning))
-        {
-            speedTestTurn.clear();
-            return;
-        }
-
-        // The previous worker finished; nothing of it is left to abandon.
-        preflightTaskDestination.clear();
+        retryDue = PreflightThroughputTest::shouldRetryCached (
+            cached->second, secondsSince,
+            recordingEngine.getState() == RecordingState::Idle,
+            workerRunning);
     }
+
+    // No 200 MB test write to a card nothing will record onto: the take is
+    // recorded on this computer and copied there after Stop. With under an
+    // hour of room here, a card not checked yet is the next take's, and the
+    // Record gate comes back through here to check it. One that refused sends
+    // takes back here, and is not checked again while they record here
+    // (cardCheckForNextTake) -- except a "couldn't write", tried again as
+    // above even then, from the status tick: kept, it held the show to this
+    // computer's room after the card had been fixed (speedTestDue).
+    if (! speedTestDue (takeRouteInputs (false), checked, retryDue))
+    {
+        speedTestTurn.clear();
+        return;
+    }
+
+    // The previous worker finished; nothing of it is left to abandon.
+    if (checked)
+        preflightTaskDestination.clear();
 
     const auto target = destinationFolder;
 
@@ -8925,10 +8960,17 @@ void Application::recheckDestinationIfItsDriveChanged()
     // nothing else on screen is asking about it.
     filesystemStatusProbe.setRequest (currentFilesystemProbeRequest());
 
-    if (! probeSeesAnotherDriveThanChecked (verdict->second))
+    if (probeSeesAnotherDriveThanChecked (verdict->second))
+    {
+        forgetCheckedDriveAtDestination();
         return;
+    }
 
-    forgetCheckedDriveAtDestination();
+    // A card that couldn't be written is tried again now and then even while
+    // takes record here because of it, when the Record gate does not ask:
+    // only this tick does (startPreflightIfNeeded decides).
+    if (verdict->second.couldNotWrite)
+        startPreflightIfNeeded();
 }
 
 void Application::forgetCheckedDriveAtDestination()

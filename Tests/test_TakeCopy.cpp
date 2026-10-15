@@ -2323,6 +2323,62 @@ TEST_CASE (TakeRoute_NotYetWaitsBetweenTakesButNotAtRecord)
     REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
 }
 
+// The bug: a card left with 150 MB failed its speed test as "This card is
+// full", which sent takes here, 20 GB of room (about 33 minutes). Space freed
+// on it in Finder -- the same card, so nothing cleared the verdict -- it was
+// never checked again, and a long set was stopped at this computer's room with
+// ~100 GB free on the card. Mutation: a take recorded here never has the card
+// checked (the early return as it was), or always does.
+TEST_CASE (SpeedTestDue_ACardThatCouldNotBeWrittenIsTriedAgainWhileTakesRecordHere)
+{
+    constexpr double gb = 1024.0 * 1024 * 1024;
+
+    TakeRouteInputs in;
+    in.destinationOnThisComputer = 0;
+    in.bytesPerSecond = 9.2 * 1024 * 1024;
+    in.computerFreeBytes = static_cast<int64_t> (20.0 * gb);
+    in.card = CardCheck::Refuses;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
+
+    // Due another try: tried, though takes record here. Not due -- or a card
+    // refused for its speed, which is never tried again -- nothing.
+    REQUIRE (speedTestDue (in, true, true));
+    REQUIRE_FALSE (speedTestDue (in, true, false));
+
+    // A card that passed would not take the take anyway: an hour here, or
+    // less room on the card than here. Nothing is written to it.
+    in.computerFreeBytes = static_cast<int64_t> (500.0 * gb);
+    REQUIRE_FALSE (speedTestDue (in, true, true));
+    in.computerFreeBytes = static_cast<int64_t> (20.0 * gb);
+    in.cardRoomSeconds = 60.0;
+    REQUIRE_FALSE (speedTestDue (in, true, true));
+    in.cardRoomSeconds.reset();
+
+    // An hour here and a card never checked: never checked.
+    in.card = CardCheck::NotYet;
+    in.computerFreeBytes = static_cast<int64_t> (500.0 * gb);
+    REQUIRE_FALSE (speedTestDue (in, false, false));
+
+    // A take going to the card has it checked first, and a verdict kept
+    // until a "couldn't write" is due another try -- as always.
+    in.computerFreeBytes = static_cast<int64_t> (20.0 * gb);
+    REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
+    REQUIRE (speedTestDue (in, false, false));
+    in.card = CardCheck::Clears;
+    REQUIRE_FALSE (speedTestDue (in, true, false));
+    in.card = CardCheck::Refuses;
+    in.computerFreeBytes = static_cast<int64_t> (in.bytesPerSecond * kShortestTakeHereSeconds);
+    REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
+    REQUIRE (speedTestDue (in, true, true));
+    REQUIRE_FALSE (speedTestDue (in, true, false));
+
+    // Copying off: the save location is the take's, and is checked.
+    in.copyAfterTakeEnabled = false;
+    in.computerFreeBytes = static_cast<int64_t> (500.0 * gb);
+    REQUIRE (speedTestDue (in, false, false));
+    REQUIRE_FALSE (speedTestDue (in, true, false));
+}
+
 // Mutation: the 1 GB reserve dropped (a take here ran the startup disk to
 // nothing, and the warnings came ten minutes too late), or -1 read as 0 --
 // which stops a take on a disk whose free space could not be read.

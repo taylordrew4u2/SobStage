@@ -76,6 +76,22 @@ TakeRoute decideTakeRoute (const TakeRouteInputs& in) noexcept
     return TakeRoute::StraightToCardComputerFull;
 }
 
+bool speedTestDue (const TakeRouteInputs& in, bool checked, bool retryDue) noexcept
+{
+    if (checked && ! retryDue)
+        return false;
+
+    if (decideTakeRoute (in) != TakeRoute::ComputerThenCard)
+        return true;
+
+    if (! checked)
+        return false;
+
+    auto passed = in;
+    passed.card = CardCheck::Clears;
+    return decideTakeRoute (passed) == TakeRoute::StraightToCardComputerFull;
+}
+
 std::string SpeedTestTurn::waitingReason (bool copyStalled)
 {
     if (copyStalled)

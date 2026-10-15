@@ -53,6 +53,11 @@
 #            b) Under an hour, the card is tested and refused, and the take
 #            still records here, said with "can't be recorded on directly".
 #            c) Under ten minutes here, Record stays off
+#   lockedcard a locked card, with under an hour of room here: its speed
+#            test can't write to it, so takes would record here. The lock is
+#            slid off with the card left in -- nothing chosen again -- and the
+#            card is tried again within seconds, and the next take records
+#            straight to it
 #   herefull a take recorded here as this computer fills: warned with about
 #            two minutes left, then stopped with 1 GB still free, never at
 #            nothing; the take is whole, and copied to the card
@@ -1157,6 +1162,54 @@ if [ -z "$STARTED" ]; then
 else
   fail "slowcard c: a take started with under ten minutes here and a refused card"
   press_stop
+fi
+[ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
+stop_app
+fi
+
+if want lockedcard; then
+# -------------------------------------------------------------------------
+echo
+echo "=== A card that couldn't be written is tried again once it can be ==="
+# A 64 GB card with its lock on (fs_stall_shim's MMA_STALL_LOCKED_FILE), and
+# under an hour of room here (3500 MiB, as in slowcard b). Its speed test
+# can't write to it, and that "couldn't write" sends takes here. It used to be
+# kept for as long as takes recorded here: the card was never tried again, so
+# a long set stopped at this computer's room with the card fixed beside it.
+BEFORE_FAIL=$FAILED
+ROOM="$WORK/lockedcard.computerfree"
+LOCK="$WORK/lockedcard.locked"
+echo 3500 > "$ROOM"
+touch "$LOCK"
+launch lockedcard fresh MMA_STALL_CARD_FREE_MB=64000 MMA_STALL_COMPUTER_PREFIX="$WORK/lockedcard" \
+  MMA_STALL_COMPUTER_FREE_MB_FILE="$ROOM" MMA_STALL_LOCKED_FILE="$LOCK"
+dismiss_cards
+
+if wait_for_log "This card is read-only" 30; then
+  pass "lockedcard: the locked card's speed test couldn't write to it"
+else
+  fail "lockedcard: no word that the card is read-only"
+fi
+
+# The lock slid off, the card left in. Tried again within ten seconds of the
+# verdict, the 200 MB test then takes a moment on this disk.
+rm -f "$LOCK"
+sleep 16
+# Nothing recorded here yet: no folder for it either.
+LAST_HERE=$(newest_take "$STAGING" || true)
+press_record
+if TAKE=$(wait_for_new_take "$CARD"); then
+  pass "lockedcard: tried again once unlocked, and the next take records straight to the card"
+  sleep 3
+  press_stop
+  wait_for_log "Saved to $(basename "$TAKE")" 20 || fail "lockedcard: the take on the card was not saved"
+else
+  fail "lockedcard: the unlocked card was not tried again; no take started on it"
+  HERE_NOW=$(newest_take "$STAGING" || true)
+  if [ "$HERE_NOW" != "$LAST_HERE" ]; then
+    echo "        (the take recorded here: $HERE_NOW)"
+    press_stop
+  fi
 fi
 [ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
 stop_app
