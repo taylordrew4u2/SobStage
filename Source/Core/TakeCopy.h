@@ -29,9 +29,9 @@ enum class TakeRoute
     ComputerThenCard,
     /// The destination is a card and this computer has room for under an
     /// hour (kPlanningSeconds), and either the card passed its check for this
-    /// rig or there are under ten minutes of room here
-    /// (kShortestTakeHereSeconds): the take records straight to the card, as
-    /// every take did before this.
+    /// rig and has more room than this computer, or there are under ten
+    /// minutes of room here (kShortestTakeHereSeconds): the take records
+    /// straight to the card, as every take did before this.
     StraightToCardComputerFull,
 };
 
@@ -60,6 +60,10 @@ struct TakeRouteInputs
     /// The card's last check, against this rig (speed, FAT32 with a camera,
     /// can't be written, full).
     CardCheck card = CardCheck::NotYet;
+    /// How long a take recorded straight to the card could run before the
+    /// card is full, from the status probe's last look between takes; empty
+    /// when not known. Weighed only under an hour here.
+    std::optional<double> cardRoomSeconds;
     /// Record was just pressed: there is no time left to check the card.
     bool arming = false;
 };
@@ -81,9 +85,10 @@ double computerRecordingSeconds (std::optional<int64_t> freeBytes, double bytesP
 
 /// The route for the next take (§1, §6.3). An hour here plus 2 GB records
 /// here. Under that, a card that passed its check takes the take; one that
-/// refuses -- or is not checked yet when Record is pressed -- is passed over
-/// while there are ten minutes plus 2 GB here. Otherwise the take goes
-/// straight to the card, where its own checks then apply.
+/// refuses -- or is not checked yet when Record is pressed, or has less room
+/// than this computer -- is passed over while there are ten minutes plus
+/// 2 GB here. Otherwise the take goes straight to the card, where its own
+/// checks then apply.
 TakeRoute decideTakeRoute (const TakeRouteInputs& inputs) noexcept;
 
 /// How long Record waits for the first answer about where a save location

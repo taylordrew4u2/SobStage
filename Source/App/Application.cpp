@@ -4524,6 +4524,11 @@ TakeRoute Application::plannedTakeRoute (bool authoritative) const
     in.card = cardCheckForNextTake();
     in.arming = authoritative;
 
+    // And how long the card could run: under an hour here, a card that passed
+    // but has less room than this computer would stop the show sooner.
+    if (const auto cardRoom = destinationRoomFromProbe(); cardRoom >= 0.0)
+        in.cardRoomSeconds = cardRoom;
+
     if (authoritative)
     {
         // Purgeable space counted, as for the backup copy.

@@ -63,7 +63,14 @@ TakeRoute decideTakeRoute (const TakeRouteInputs& in) noexcept
     // no time left to check it.
     const bool cardRefuses = in.card == CardCheck::Refuses || (in.arming && in.card == CardCheck::NotYet);
 
-    if (cardRefuses && *in.computerFreeBytes > need (kShortestTakeHereSeconds))
+    // Nor is the show given to a card with less room than this computer: a
+    // card left nearly full by earlier shows would stop it sooner than
+    // recording here would, whatever its speed.
+    const bool cardShorter = in.cardRoomSeconds.has_value() && *in.cardRoomSeconds >= 0.0
+                          && *in.cardRoomSeconds < computerRecordingSeconds (in.computerFreeBytes,
+                                                                             in.bytesPerSecond);
+
+    if ((cardRefuses || cardShorter) && *in.computerFreeBytes > need (kShortestTakeHereSeconds))
         return TakeRoute::ComputerThenCard;
 
     return TakeRoute::StraightToCardComputerFull;

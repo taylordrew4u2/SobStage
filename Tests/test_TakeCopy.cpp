@@ -2229,6 +2229,52 @@ TEST_CASE (TakeRoute_UnderAnHourACardThatPassesTakesIt)
     // Also at Record: a card that passed is still the better place.
     in.arming = true;
     REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
+
+    // With room for longer than this computer, or not known, the same.
+    in.cardRoomSeconds = 3.0 * 3600.0;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
+    in.cardRoomSeconds = -1.0;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
+}
+
+// The bug: four mics and a camera at Best, 25 GB here (about 43 minutes) and
+// a 128 GB card left with 3 GB by earlier shows (about 5 minutes) that passed
+// its speed check. The take went to the card and was stopped five minutes in,
+// "This computer is nearly full" said beside it. Mutation: the card's room
+// left out, or compared the wrong way, or the ten-minute floor dropped.
+TEST_CASE (TakeRoute_UnderAnHourACardWithLessRoomThanHereDoesNotTakeIt)
+{
+    constexpr double gb = 1024.0 * 1024 * 1024;
+
+    TakeRouteInputs in;
+    in.destinationOnThisComputer = 0;
+    in.bytesPerSecond = 9.2 * 1024 * 1024;
+    in.card = CardCheck::Clears;
+    in.computerFreeBytes = static_cast<int64_t> (25.0 * gb);
+    in.cardRoomSeconds = 3.0 * gb / in.bytesPerSecond;
+
+    const double here = computerRecordingSeconds (in.computerFreeBytes, in.bytesPerSecond);
+    REQUIRE (here > 40.0 * 60.0);
+    REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
+    in.arming = true;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
+    in.arming = false;
+
+    // A card with a few seconds left -- the take stopped as soon as it began.
+    in.cardRoomSeconds = 5.0;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
+
+    // Where the two meet: the card only when it runs at least as long.
+    in.cardRoomSeconds = here - 1.0;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
+    in.cardRoomSeconds = here;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
+
+    // Under ten minutes plus 2 GB here, the card it is, as for one that refuses.
+    in.computerFreeBytes = static_cast<int64_t> (in.bytesPerSecond * kShortestTakeHereSeconds)
+                         + MirrorPolicy::kMinHeadroomBytes;
+    in.cardRoomSeconds = 60.0;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
 }
 
 // The user's report: "it says it's not strong enough". Mutation: the floor

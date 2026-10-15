@@ -10,9 +10,10 @@
   SobStage used to want room here for everything the card could hold -- about
   130 GB beside a 128 GB card, with four mics and a camera -- and short of
   that it sent the take to the card, said the card was too slow, and kept
-  Record off. With less room than an hour, a card that passed its check takes
-  the take; one that is too slow, full, locked or FAT32 with a camera no
-  longer stops you while this computer has room for 10 minutes: the take
+  Record off. With less room than an hour, a card that passed its check, and
+  has more room left than this computer, takes the take; one that is too
+  slow, full, locked or FAT32 with a camera no longer stops you while this
+  computer has room for 10 minutes: the take
   records here, and the line under the record button says how long you have
   ("This computer has room for about 25 minutes of recording."). The
   "Where does this recording go?" card says it too.
