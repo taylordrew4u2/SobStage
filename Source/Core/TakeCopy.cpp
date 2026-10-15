@@ -12,17 +12,25 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <limits>
 #include <map>
 
 namespace mma {
 
-int64_t projectedTakeBytes (const TakeRouteInputs& in) noexcept
+double computerRecordingSeconds (std::optional<int64_t> freeBytes, double bytesPerSecond) noexcept
 {
-    const double seconds = in.destinationRemainingSeconds.has_value() && *in.destinationRemainingSeconds >= 0.0
-        ? std::min (*in.destinationRemainingSeconds, kLongestShowSeconds)
-        : kPlanningSeconds;
+    // Negative is how the probe says it could not ask. Read as no room, it
+    // would stop a take over a disk that only declined to answer.
+    if (! freeBytes.has_value() || *freeBytes < 0 || ! (bytesPerSecond > 0.0))
+        return -1.0;
 
-    return static_cast<int64_t> (std::max (0.0, in.bytesPerSecond) * seconds);
+    // A take recorded here is stopped with 1 GB still free (§6.5): what this
+    // computer itself needs to keep working, and what the copy to the card
+    // and the next launch need. Room past that is the take's.
+    if (*freeBytes <= MirrorPolicy::kStopBytes)
+        return 0.0;
+
+    return static_cast<double> (*freeBytes - MirrorPolicy::kStopBytes) / bytesPerSecond;
 }
 
 TakeRoute decideTakeRoute (const TakeRouteInputs& in) noexcept
@@ -30,15 +38,35 @@ TakeRoute decideTakeRoute (const TakeRouteInputs& in) noexcept
     if (! in.copyAfterTakeEnabled || in.destinationOnThisComputer == 1)
         return TakeRoute::StraightToDestination;
 
-    // The same rule the backup copy has always had: room for the take plus
-    // 2 GB to spare. A computer that fills up mid-take stops the take, so one
-    // that cannot hold what the card could records straight to the card,
-    // which is how every take was recorded before this.
-    if (in.computerFreeBytes.has_value()
-        && *in.computerFreeBytes <= projectedTakeBytes (in) + MirrorPolicy::kMinHeadroomBytes)
-        return TakeRoute::StraightToCardComputerFull;
+    // Not knowing how much room there is here does not send a take to a card
+    // that may be what fails under it.
+    if (! in.computerFreeBytes.has_value())
+        return TakeRoute::ComputerThenCard;
 
-    return TakeRoute::ComputerThenCard;
+    const auto need = [&in] (double seconds)
+    {
+        return static_cast<int64_t> (std::max (0.0, in.bytesPerSecond) * seconds) + MirrorPolicy::kMinHeadroomBytes;
+    };
+
+    // An hour here is enough, whatever the card holds: the user chose "record
+    // here, then copy", and an hour plus 2 GB is the rule the backup copy has
+    // always kept. The card is not asked anything, not even its speed.
+    if (*in.computerFreeBytes > need (kPlanningSeconds))
+        return TakeRoute::ComputerThenCard;
+
+    // Under an hour, a card that passed its check takes the take, so a long
+    // show is not cut short for want of room here. One that refuses -- too
+    // slow, full, can't be written, FAT32 with a camera -- would stop the show
+    // before it starts, so it never does while there are ten minutes of room
+    // here: the take records here and stops short if it must, warned first.
+    // Record pressed before the card could be checked is the same: there is
+    // no time left to check it.
+    const bool cardRefuses = in.card == CardCheck::Refuses || (in.arming && in.card == CardCheck::NotYet);
+
+    if (cardRefuses && *in.computerFreeBytes > need (kShortestTakeHereSeconds))
+        return TakeRoute::ComputerThenCard;
+
+    return TakeRoute::StraightToCardComputerFull;
 }
 
 std::string SpeedTestTurn::waitingReason (bool copyStalled)
@@ -1167,33 +1195,99 @@ void FailuresWhileQuitting::told() noexcept
         k.told = true;
 }
 
-std::string computerFullNote (const std::string& computerFolder, const std::vector<std::string>& takesStillToCopy)
-{
-    auto note = "This computer is nearly full, so this take is going straight to the card. To make room, "
-                "delete takes in " + computerFolder + " that have already been copied to the card.";
+namespace {
 
+/// " Keep A: it isn't all on the card yet.", naming each take in
+/// `stillToCopy` once, or nothing for none.
+std::string keepClause (const std::vector<std::string>& stillToCopy)
+{
     // By name: a count told nobody which folder to keep, and in Finder the
     // one not on the card looks like every other.
     std::vector<std::string> names;
-    for (const auto& folder : takesStillToCopy)
+    for (const auto& folder : stillToCopy)
         if (const auto name = lastPartOf (folder); ! name.empty()
             && std::find (names.begin(), names.end(), name) == names.end())
             names.push_back (name);
 
     if (names.size() == 1)
-    {
-        note += " Keep " + names.front() + ": it isn't all on the card yet.";
-    }
-    else if (names.size() > 1)
-    {
-        std::string list;
-        for (size_t i = 0; i < names.size(); ++i)
-            list += (i == 0 ? "" : i + 1 == names.size() ? " and " : ", ") + names[i];
+        return " Keep " + names.front() + ": it isn't all on the card yet.";
 
-        note += " Keep " + list + ": they aren't all on the card yet.";
+    if (names.empty())
+        return {};
+
+    std::string list;
+    for (size_t i = 0; i < names.size(); ++i)
+        list += (i == 0 ? "" : i + 1 == names.size() ? " and " : ", ") + names[i];
+
+    return " Keep " + list + ": they aren't all on the card yet.";
+}
+
+/// "about 1h 40m", "about 25 minutes": floored to the minute, so it never
+/// promises a minute this computer does not have.
+std::string aboutDuration (double seconds)
+{
+    const auto minutes = static_cast<int64_t> (std::max (0.0, seconds) / 60.0);
+
+    if (minutes >= 60)
+    {
+        const auto rest = minutes % 60;
+        return "about " + std::to_string (minutes / 60) + "h " + (rest < 10 ? "0" : "") + std::to_string (rest) + "m";
     }
 
-    return note;
+    if (minutes == 0)
+        return "less than a minute";
+
+    return "about " + std::to_string (minutes) + (minutes == 1 ? " minute" : " minutes");
+}
+
+} // namespace
+
+std::string computerFullNote (const std::string& computerFolder, const std::vector<std::string>& takesStillToCopy,
+                              bool nextTake)
+{
+    return std::string (nextTake ? "This computer is nearly full, so the next take will go straight to the card."
+                                 : "This computer is nearly full, so this take is going straight to the card.")
+         + " To make room, delete takes in " + computerFolder + " that have already been copied to the card."
+         + keepClause (takesStillToCopy);
+}
+
+std::string roomHereNote (double hereSeconds, double cardSeconds, bool camerasOn, bool cardRefused)
+{
+    if (hereSeconds < 0.0)
+        return {};
+
+    // Only when this computer runs out first: a card that could hold more is
+    // the only reason the number matters, and no show runs past the cap. A
+    // card that refused cannot take the show instead, so then it is always
+    // said -- it is all the time there is.
+    const double cardCould = std::min (cardSeconds >= 0.0 ? cardSeconds : std::numeric_limits<double>::infinity(),
+                                       kLongestShowSeconds);
+
+    if (! cardRefused && hereSeconds >= cardCould)
+        return {};
+
+    const auto room = "This computer has room for " + aboutDuration (hereSeconds) + " of recording.";
+    const std::string more = std::string ("For more time, free up space on this computer")
+                           + (camerasOn ? ", or choose a smaller picture size in Cameras." : ".");
+
+    if (cardRefused)
+        return "This card can't be recorded on directly, so each take is recorded on this computer, then "
+               "copied to the card. " + room + " " + more;
+
+    return room + " Each take is recorded here, then copied to the card. " + more;
+}
+
+std::string computerFullRefusal (const std::string& cardReason, const std::string& computerFolder,
+                                 const std::vector<std::string>& stillToCopy, bool cardRefused)
+{
+    // Why the card is in it at all: the user chose to record here.
+    auto text = "This computer is nearly full, so this take would go straight to the card. " + cardReason;
+
+    if (cardRefused)
+        text += " To record on this computer instead, delete takes in " + computerFolder
+              + " that are already on the card." + keepClause (stillToCopy);
+
+    return text;
 }
 
 bool isFailure (Outcome outcome) noexcept

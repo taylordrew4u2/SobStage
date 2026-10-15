@@ -4503,13 +4503,8 @@ TakeRoute Application::plannedTakeRoute (bool authoritative) const
     if (in.destinationOnThisComputer == 1)
         return TakeRoute::StraightToDestination;
 
-    // Room for audio AND cameras, for as long as the card could have held
-    // them: the take writes both here. The card's room is the probe's last
-    // look between takes, so arming asks the card nothing.
+    // Room for audio AND cameras: the take writes both here.
     in.bytesPerSecond = bytesPerSecondOfRecording();
-
-    if (const auto cardRoom = destinationRoomFromProbe(); cardRoom >= 0.0)
-        in.destinationRemainingSeconds = cardRoom;
 
     if (authoritative)
     {

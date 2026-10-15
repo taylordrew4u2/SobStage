@@ -2177,50 +2177,198 @@ TEST_CASE (TakeRoute_ComputerFullBoundary)
     TakeRouteInputs in;
     in.destinationOnThisComputer = 0;
     in.bytesPerSecond = 3.0 * 1024 * 1024 * 1024 / 3600.0; // 3 GB an hour
+    in.card = CardCheck::Clears;
 
-    const auto projected = projectedTakeBytes (in);
-    REQUIRE (projected == static_cast<int64_t> (in.bytesPerSecond * kPlanningSeconds));
+    const auto anHour = static_cast<int64_t> (in.bytesPerSecond * kPlanningSeconds);
 
-    in.computerFreeBytes = projected + MirrorPolicy::kMinHeadroomBytes;
+    in.computerFreeBytes = anHour + MirrorPolicy::kMinHeadroomBytes;
     REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
 
-    in.computerFreeBytes = projected + MirrorPolicy::kMinHeadroomBytes + 1;
+    in.computerFreeBytes = anHour + MirrorPolicy::kMinHeadroomBytes + 1;
     REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
 }
 
-// Mutation: the card's room left out of the projection. A 3-hour show on six
-// mics (about 4 GB an hour) with a 64 GB card and 12 GB free here: recorded
-// here it would stop at about 2.5 hours for want of room, where the card
-// would have held all of it. So it goes to the card.
-TEST_CASE (TakeRoute_NeverStopsATakeTheCardWouldHaveHeld)
+// The bug: a 128 GB card, four mics and a camera at Best -- this computer
+// needed room for all four hours the card could hold, so the take went to
+// the card, whose speed test refused it, and Record stayed off. Mutation: the
+// card's room added back to the rule. An hour here is enough.
+TEST_CASE (TakeRoute_AnHourHereIsEnoughWhateverTheCardHolds)
 {
     constexpr double gb = 1024.0 * 1024 * 1024;
 
     TakeRouteInputs in;
     in.destinationOnThisComputer = 0;
     in.bytesPerSecond = 4.0 * gb / 3600.0;
-    in.destinationRemainingSeconds = 60.0 * gb / in.bytesPerSecond; // 15 hours
-    in.computerFreeBytes = static_cast<int64_t> (12.0 * gb);
-    REQUIRE (projectedTakeBytes (in) == static_cast<int64_t> (in.bytesPerSecond * kLongestShowSeconds));
-    REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
-
-    // Room here for the longest show: recorded here.
-    in.computerFreeBytes = projectedTakeBytes (in) + MirrorPolicy::kMinHeadroomBytes + 1;
+    in.card = CardCheck::Clears;
+    in.computerFreeBytes = static_cast<int64_t> (in.bytesPerSecond * kPlanningSeconds)
+                         + MirrorPolicy::kMinHeadroomBytes + 1;
     REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
 
-    // A card with less room than that: this computer needs only what the
-    // card could have held, at the same boundary.
-    in.destinationRemainingSeconds = 2.0 * 3600.0;
-    const auto cardHolds = static_cast<int64_t> (in.bytesPerSecond * 2.0 * 3600.0);
-    REQUIRE (projectedTakeBytes (in) == cardHolds);
-    in.computerFreeBytes = cardHolds + MirrorPolicy::kMinHeadroomBytes;
+    // The card is not asked: whatever it said, the take records here.
+    for (const auto card : { CardCheck::NotYet, CardCheck::Refuses })
+    {
+        in.card = card;
+        REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
+        in.arming = true;
+        REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
+        in.arming = false;
+    }
+}
+
+// Mutation: Clears treated as Refuses. Under an hour here, a card that passed
+// its check takes the take, so a long show is not cut short at 30 minutes.
+TEST_CASE (TakeRoute_UnderAnHourACardThatPassesTakesIt)
+{
+    TakeRouteInputs in;
+    in.destinationOnThisComputer = 0;
+    in.bytesPerSecond = 4.0 * 1024 * 1024 * 1024 / 3600.0;
+    in.computerFreeBytes = static_cast<int64_t> (in.bytesPerSecond * 30.0 * 60.0) + MirrorPolicy::kMinHeadroomBytes;
+    in.card = CardCheck::Clears;
     REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
-    in.computerFreeBytes = cardHolds + MirrorPolicy::kMinHeadroomBytes + 1;
+
+    // Also at Record: a card that passed is still the better place.
+    in.arming = true;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
+}
+
+// The user's report: "it says it's not strong enough". Mutation: the floor
+// removed or off by one, or Refuses ignored -- a card too slow to record on
+// stopped the show though this computer had room for a short one.
+TEST_CASE (TakeRoute_UnderAnHourARefusingCardDoesNotStopTheShow)
+{
+    TakeRouteInputs in;
+    in.destinationOnThisComputer = 0;
+    in.bytesPerSecond = 4.0 * 1024 * 1024 * 1024 / 3600.0;
+    in.card = CardCheck::Refuses;
+
+    const auto tenMinutes = static_cast<int64_t> (in.bytesPerSecond * kShortestTakeHereSeconds);
+
+    in.computerFreeBytes = tenMinutes + MirrorPolicy::kMinHeadroomBytes;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
+
+    in.computerFreeBytes = tenMinutes + MirrorPolicy::kMinHeadroomBytes + 1;
     REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
 
-    // The card out: recording here is the only way, and an hour is enough.
-    in.destinationRemainingSeconds.reset();
-    REQUIRE (projectedTakeBytes (in) == static_cast<int64_t> (in.bytesPerSecond * kPlanningSeconds));
+    // Half an hour here: still here, not refused.
+    in.computerFreeBytes = static_cast<int64_t> (in.bytesPerSecond * 30.0 * 60.0) + MirrorPolicy::kMinHeadroomBytes;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
+}
+
+// Mutation: arming ignored. Between takes, an unchecked card is checked
+// first -- it may pass and take a long show. Record pressed before that has
+// no time left to check it, so the take records here.
+TEST_CASE (TakeRoute_NotYetWaitsBetweenTakesButNotAtRecord)
+{
+    TakeRouteInputs in;
+    in.destinationOnThisComputer = 0;
+    in.bytesPerSecond = 4.0 * 1024 * 1024 * 1024 / 3600.0;
+    in.computerFreeBytes = static_cast<int64_t> (in.bytesPerSecond * 30.0 * 60.0) + MirrorPolicy::kMinHeadroomBytes;
+    in.card = CardCheck::NotYet;
+
+    in.arming = false;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
+
+    in.arming = true;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::ComputerThenCard);
+
+    // Under ten minutes here, even at Record: the card it is.
+    in.computerFreeBytes = static_cast<int64_t> (in.bytesPerSecond * kShortestTakeHereSeconds)
+                         + MirrorPolicy::kMinHeadroomBytes;
+    REQUIRE (decideTakeRoute (in) == TakeRoute::StraightToCardComputerFull);
+}
+
+// Mutation: the 1 GB reserve dropped (a take here ran the startup disk to
+// nothing, and the warnings came ten minutes too late), or -1 read as 0 --
+// which stops a take on a disk whose free space could not be read.
+TEST_CASE (TakeRoute_ComputerSecondsKeepTheStopReserve)
+{
+    const double rate = 1024.0 * 1024.0; // 1 MB a second
+
+    REQUIRE (computerRecordingSeconds (MirrorPolicy::kStopBytes + static_cast<int64_t> (3600.0 * rate), rate)
+             == 3600.0);
+    REQUIRE (computerRecordingSeconds (MirrorPolicy::kStopBytes, rate) == 0.0);
+    REQUIRE (computerRecordingSeconds (MirrorPolicy::kStopBytes - 1, rate) == 0.0);
+    REQUIRE (computerRecordingSeconds (0, rate) == 0.0);
+
+    REQUIRE (computerRecordingSeconds (std::nullopt, rate) == -1.0);
+    REQUIRE (computerRecordingSeconds (int64_t { -1 }, rate) == -1.0);
+    REQUIRE (computerRecordingSeconds (MirrorPolicy::kStopBytes * 10, 0.0) == -1.0);
+}
+
+// Mutation: the comparison flipped (said when this computer outlasts the
+// card), or the 4-hour cap dropped (said beside a 128 GB card with hours to
+// spare here).
+TEST_CASE (RoomHereNote_SaysHowLongOnlyWhenShorter)
+{
+    const double h = 3600.0;
+
+    // Not known, or this computer outlasts the card or the longest show.
+    REQUIRE (roomHereNote (-1.0, 2.0 * h, false, false).empty());
+    REQUIRE (roomHereNote (-1.0, 2.0 * h, true, true).empty());
+    REQUIRE (roomHereNote (3.0 * h, 2.0 * h, true, false).empty());
+    REQUIRE (roomHereNote (2.0 * h, 2.0 * h, true, false).empty());
+    REQUIRE (roomHereNote (kLongestShowSeconds, 30.0 * h, true, false).empty());
+    REQUIRE (roomHereNote (kLongestShowSeconds, -1.0, true, false).empty());
+
+    // Shorter than the card: floored to the minute.
+    const auto hours = roomHereNote (h + 40.0 * 60.0 + 59.0, 30.0 * h, false, false);
+    REQUIRE (hours == "This computer has room for about 1h 40m of recording. Each take is recorded here, then "
+                      "copied to the card. For more time, free up space on this computer.");
+    REQUIRE (roomHereNote (kLongestShowSeconds - 60.0, 30.0 * h, false, false).find ("about 3h 59m")
+             != std::string::npos);
+    REQUIRE (roomHereNote (h + 5.0 * 60.0, -1.0, false, false).find ("about 1h 05m") != std::string::npos);
+
+    const auto minutes = roomHereNote (25.0 * 60.0 + 30.0, 30.0 * h, false, false);
+    REQUIRE (minutes.find ("about 25 minutes of recording") != std::string::npos);
+
+    // The camera clause only with cameras on.
+    REQUIRE (minutes.find ("picture size") == std::string::npos);
+    REQUIRE (roomHereNote (25.0 * 60.0, 30.0 * h, true, false)
+                 .find ("free up space on this computer, or choose a smaller picture size in Cameras.")
+             != std::string::npos);
+
+    // A card that refused cannot take the show instead: said whatever the card
+    // could hold, and why the take is here leads.
+    const auto refused = roomHereNote (25.0 * 60.0, -1.0, true, true);
+    REQUIRE (refused == "This card can't be recorded on directly, so each take is recorded on this computer, "
+                        "then copied to the card. This computer has room for about 25 minutes of recording. "
+                        "For more time, free up space on this computer, or choose a smaller picture size in "
+                        "Cameras.");
+    REQUIRE_FALSE (roomHereNote (3.0 * h, 2.0 * h, false, true).empty());
+    REQUIRE (hours.find ("can't be recorded on directly") == std::string::npos);
+
+    // Never that a take IS on the card: it is copied there after Stop.
+    for (const auto& note : { hours, minutes, refused })
+        for (const char* claim : { "is on the card", "are on the card", "saved to the card", "Saved to" })
+            if (note.find (claim) != std::string::npos)
+                mmatest::failAt (__FILE__, __LINE__, "claims the card holds it: " + note);
+}
+
+// Mutation: the tail always added (telling someone whose card passed to
+// delete takes, when the card's own reason is the thing to fix), or the
+// card's reason cut short, losing its "Turning the cameras off" hint.
+TEST_CASE (ComputerFullRefusal_KeepsTheCardsReasonWhole)
+{
+    const std::string folder = "/Users/sam/RECORDINGS-MIRROR";
+    const std::string reason = "This card is too slow for this recording: it managed 0.3 MB/s and needs 2.1 MB/s. "
+                               "Turning the cameras off may make it fast enough.";
+    const std::vector<std::string> waiting { joinPath (folder, "2026-10-14_2015_Show") };
+
+    const auto refused = computerFullRefusal (reason, folder, waiting, true);
+    REQUIRE (refused.rfind ("This computer is nearly full, so this take would go straight to the card. ", 0) == 0);
+    REQUIRE (refused.find (reason) != std::string::npos);
+    REQUIRE (refused.find (reason + " To record on this computer instead, delete takes in " + folder
+                           + " that are already on the card. Keep 2026-10-14_2015_Show: it isn't all on the "
+                             "card yet.")
+             != std::string::npos);
+
+    const auto checking = computerFullRefusal ("Checking this drive is fast enough...", folder, waiting, false);
+    REQUIRE (checking == "This computer is nearly full, so this take would go straight to the card. Checking this "
+                         "drive is fast enough...");
+    REQUIRE (checking.find ("Keep") == std::string::npos);
+    REQUIRE (checking.find ("delete") == std::string::npos);
+
+    REQUIRE (computerFullRefusal (reason, folder, {}, true).find ("Keep") == std::string::npos);
 }
 
 // Not knowing how much room there is does not send the take to the card.
@@ -2286,6 +2434,13 @@ TEST_CASE (TakeCopyWording_ComputerFullPointsOnlyAtCopiedTakes)
              != std::string::npos);
     REQUIRE (none.find ("Delete old takes") == std::string::npos);
     REQUIRE (none.find ("Keep") == std::string::npos);
+    REQUIRE (none.rfind ("This computer is nearly full, so this take is going straight to the card.", 0) == 0);
+
+    // Between takes, about the next one, with the same advice.
+    const auto next = computerFullNote (folder, { joinPath (folder, "A") }, true);
+    REQUIRE (next.rfind ("This computer is nearly full, so the next take will go straight to the card. To make "
+                         "room, delete takes in " + folder + " that have already been copied to the card. Keep A: "
+                         "it isn't all on the card yet.", 0) == 0);
 }
 
 // The bug: "1 take there hasn't been copied yet. Keep it." -- but which? In
