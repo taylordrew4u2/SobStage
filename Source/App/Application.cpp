@@ -3650,22 +3650,24 @@ void Application::reportFinishedCardCopies()
                           "Copied " + juce::File (juce::String (done.folderNow)).getFileName() + " to the card.",
                           true);
         }
+        else if (! done.repeat)
+        {
+            noteActivity (ActivityLevel::Warning, "Card copy",
+                          juce::String (cardcopy::describe (done.result, done.folderNow)), true);
+        }
 
         // A take just written to the save location says its card can be
         // written: a "couldn't write" kept for it -- full then, space freed
         // since -- no longer holds, and it is checked afresh when it matters.
         if (done.result.outcome == cardcopy::Outcome::Copied && ! destinationFolder.empty()
             && cardcopy::parentOf (done.result.cardFolder) == destinationFolder)
+        {
             if (const auto kept = preflightResults.find (destinationFolder);
                 kept != preflightResults.end() && kept->second.couldNotWrite)
             {
                 preflightResults.erase (kept);
                 preflightVerdictAtMs.erase (destinationFolder);
             }
-        else if (! done.repeat)
-        {
-            noteActivity (ActivityLevel::Warning, "Card copy",
-                          juce::String (cardcopy::describe (done.result, done.folderNow)), true);
         }
 
         // A repeat too, which the log leaves out: a quit that waited for the
