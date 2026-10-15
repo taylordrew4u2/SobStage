@@ -441,13 +441,36 @@ copies it to the card when you press Stop.
   they are on it; it can't do that for a card reformatted after you quit.)
 - **A take started while another is still copying comes first.** The copy
   steps aside, and finishes after you stop.
-- **If this computer is nearly full** — it couldn't hold as much as the card
-  could, up to four hours of recording, plus 2 GB — the take goes straight to
-  the card instead, and the activity list says so. A take recorded here never
-  stops for want of room where one recorded on the card would have carried on.
-  To make room, delete takes in `RECORDINGS-MIRROR` that have already been
-  copied to the card. Keep any that haven't: the note on the saved-take card
-  and in the activity list names each folder that isn't all on the card yet
+- **Room for an hour of recording here, plus 2 GB, is enough.** Then every
+  take is recorded on this computer, whatever the card is like: SobStage
+  doesn't even check the card's speed. "An hour" is at your settings, with
+  the cameras that are on.
+- **With less room than that here**, SobStage checks the card first, which
+  takes a few seconds. A card that passes takes the take instead, recorded
+  straight to it, so a long show isn't cut short. The line under the record
+  button says so: "This computer is nearly full, so the next take will go
+  straight to the card."
+- **A card that is too slow, full, locked or FAT32 with a camera on doesn't
+  stop you** while this computer has room for 10 minutes of recording plus
+  2 GB. The take is recorded here and copied to the card after Stop, and the
+  line under the record button says how long you have: "This card can't be
+  recorded on directly, so each take is recorded on this computer, then copied
+  to the card. This computer has room for about 25 minutes of recording."
+- **"This computer has room for about 1h 40m of recording."** Said under the
+  record button, and on the "Where does this recording go?" card, whenever
+  this computer would run out before the card would. For more time, free up
+  space on this computer, or choose a smaller picture size in Cameras.
+- **A take recorded here stops with 1 GB still free**, so this computer keeps
+  working and the copy to the card can run. You're warned with about ten
+  minutes left, and again with about two ("About two minutes of room left on
+  this computer. Wrap up now."). Then: "This computer is full, so recording
+  has stopped. Everything recorded so far is saved on this computer." The take
+  is copied to the card as usual.
+- **With less than 10 minutes of room here and a card that refuses**, Record
+  stays off, and says why: "This computer is nearly full, so this take would
+  go straight to the card." and then what is wrong with the card. To make
+  room, delete takes in `RECORDINGS-MIRROR` that are already on the card. Keep
+  any that aren't: the note names each folder that isn't all on the card yet
   ("Keep 2026-10-14_2015_Show: it isn't all on the card yet."), and for those
   this computer's copy may be the only one.
 - **A card that stops answering doesn't hold up Record.** If SobStage can't
@@ -569,11 +592,13 @@ this feature works out for you.
   the combined file and 1 GB to spare doesn't get one; the line under the
   record button says so. Renaming the take's folder in Finder while it is
   being made is fine: the file ends up in the folder under its new name.
-- **A camera counts against the card's speed, not just its space.** §6.4 blocks
-  arming when the card cannot sustain twice what the take needs; that figure now
-  includes the video, because a card that keeps up with eight microphones can
-  still be too slow once a camera is writing alongside them. Refusing before the
-  take is the entire point — §6.4 says never degrade mid-take.
+- **A camera counts against the card's speed, not just its space**, when a
+  take is recorded straight to the card. §6.4 blocks that when the card cannot
+  sustain twice what the take needs; that figure includes the video, because a
+  card that keeps up with eight microphones can still be too slow once a camera
+  is writing alongside them. A take recorded on this computer and copied after
+  Stop doesn't touch the card while it records, so the card's speed doesn't
+  matter then.
 - **Swapping cards between sets is noticed.** A Mac puts every card at
   `/Volumes/<its name>`, so two cards with the same name (say, both formatted
   in the same camera) land at the same save location. When the card there is

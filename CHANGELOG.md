@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **A slow card no longer stops you recording.** With room on this computer
+  for an hour of recording plus 2 GB, every take is recorded here and copied
+  to the card after Stop, and the card's speed isn't checked at all.
+  SobStage used to want room here for everything the card could hold -- about
+  130 GB beside a 128 GB card, with four mics and a camera -- and short of
+  that it sent the take to the card, said the card was too slow, and kept
+  Record off. With less room than an hour, a card that passed its check takes
+  the take; one that is too slow, full, locked or FAT32 with a camera no
+  longer stops you while this computer has room for 10 minutes: the take
+  records here, and the line under the record button says how long you have
+  ("This computer has room for about 25 minutes of recording."). The
+  "Where does this recording go?" card says it too.
+
+### Fixed
+
+- **A take recorded on this computer now stops with 1 GB still free, not at
+  nothing**, so the computer keeps working and the copy to the card can run.
+  The ten- and two-minute warnings come in time for that, and say "on this
+  computer".
+
 ## v1.13.28 -- 2026-10-14 (release candidate)
 
 Takes for an SD card are recorded on this computer and copied to the card after Stop; a stricter power warning.
