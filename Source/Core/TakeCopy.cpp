@@ -1301,16 +1301,38 @@ std::string roomHereNote (double hereSeconds, double cardSeconds, bool camerasOn
 }
 
 std::string computerFullRefusal (const std::string& cardReason, const std::string& computerFolder,
-                                 const std::vector<std::string>& stillToCopy, bool cardRefused)
+                                 const std::vector<std::string>& stillToCopy, CardCheck card)
 {
+    // "Checking this drive is fast enough..." with no verdict yet: a slow
+    // card, the very one this is for, then sends the take here, so saying it
+    // would go to the card -- with 50 minutes of room here -- was wrong twice.
+    if (card == CardCheck::NotYet)
+        return cardReason;
+
     // Why the card is in it at all: the user chose to record here.
     auto text = "This computer is nearly full, so this take would go straight to the card. " + cardReason;
 
-    if (cardRefused)
+    if (card == CardCheck::Refuses)
         text += " To record on this computer instead, delete takes in " + computerFolder
               + " that are already on the card." + keepClause (stillToCopy);
 
     return text;
+}
+
+std::string recordRefusal (const std::function<std::string()>& askCard, const std::function<TakeRoute()>& route,
+                           const std::function<CardCheck()>& card, const std::string& computerFolder,
+                           const std::vector<std::string>& stillToCopy)
+{
+    const auto reason = askCard();
+    const auto now = route();
+
+    if (now == TakeRoute::ComputerThenCard)
+        return {};
+
+    if (now != TakeRoute::StraightToCardComputerFull || reason.empty())
+        return reason;
+
+    return computerFullRefusal (reason, computerFolder, stillToCopy, card());
 }
 
 bool isFailure (Outcome outcome) noexcept

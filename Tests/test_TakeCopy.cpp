@@ -2456,7 +2456,7 @@ TEST_CASE (ComputerFullRefusal_KeepsTheCardsReasonWhole)
                                "Turning the cameras off may make it fast enough.";
     const std::vector<std::string> waiting { joinPath (folder, "2026-10-14_2015_Show") };
 
-    const auto refused = computerFullRefusal (reason, folder, waiting, true);
+    const auto refused = computerFullRefusal (reason, folder, waiting, CardCheck::Refuses);
     REQUIRE (refused.rfind ("This computer is nearly full, so this take would go straight to the card. ", 0) == 0);
     REQUIRE (refused.find (reason) != std::string::npos);
     REQUIRE (refused.find (reason + " To record on this computer instead, delete takes in " + folder
@@ -2464,13 +2464,67 @@ TEST_CASE (ComputerFullRefusal_KeepsTheCardsReasonWhole)
                              "card yet.")
              != std::string::npos);
 
-    const auto checking = computerFullRefusal ("Checking this drive is fast enough...", folder, waiting, false);
-    REQUIRE (checking == "This computer is nearly full, so this take would go straight to the card. Checking this "
-                         "drive is fast enough...");
-    REQUIRE (checking.find ("Keep") == std::string::npos);
-    REQUIRE (checking.find ("delete") == std::string::npos);
+    const auto passed = computerFullRefusal ("Some other reason.", folder, waiting, CardCheck::Clears);
+    REQUIRE (passed == "This computer is nearly full, so this take would go straight to the card. Some other "
+                       "reason.");
 
-    REQUIRE (computerFullRefusal (reason, folder, {}, true).find ("Keep") == std::string::npos);
+    REQUIRE (computerFullRefusal (reason, folder, {}, CardCheck::Refuses).find ("Keep") == std::string::npos);
+}
+
+// The bug: Record read "This computer is nearly full, so this take would go
+// straight to the card. Checking this drive is fast enough..." at every
+// launch with 50 minutes here -- and a slow card's check, once done, sends
+// the take here. Mutation: the lead added with no verdict.
+TEST_CASE (ComputerFullRefusal_SaysNothingOfTheCardWhileItIsBeingChecked)
+{
+    const std::string folder = "/Users/sam/RECORDINGS-MIRROR";
+    const std::vector<std::string> waiting { joinPath (folder, "2026-10-14_2015_Show") };
+
+    for (const std::string reason : { "Checking this drive is fast enough...",
+                                      "Pausing the copy to the card to check this card is fast enough...",
+                                      "Couldn't confirm this drive is fast enough yet. Choose another location, or "
+                                      "reconnect this drive and try again." })
+        REQUIRE (computerFullRefusal (reason, folder, waiting, CardCheck::NotYet) == reason);
+}
+
+// The bug: Record's gate passed the card's reason and the route as two
+// arguments of one call, in an order C++ leaves to the compiler. GCC and MSVC
+// asked the card first, and when that landed a slow card's verdict the route
+// -- now "here" -- was read after it: the bare "This card is too slow..." --
+// the user's report -- flashed on a Record about to record here. Clang read
+// the route first and showed the computer-full refusal instead. Mutation:
+// the route read before the card is asked, or "here" not read as no refusal.
+TEST_CASE (RecordRefusal_TheCardIsAskedBeforeTheRouteIsRead)
+{
+    const std::string folder = "/Users/sam/RECORDINGS-MIRROR";
+    const std::string slow = "This card is too slow for this recording. Measured 0 MB/s, needs at least 4 MB/s.";
+
+    // Asking lands the verdict: refused, and with room here the take goes here.
+    CardCheck card = CardCheck::NotYet;
+    const auto ask = [&card, &slow] { card = CardCheck::Refuses; return slow; };
+    const auto route = [&card]
+    {
+        return card == CardCheck::Refuses ? TakeRoute::ComputerThenCard : TakeRoute::StraightToCardComputerFull;
+    };
+    const auto check = [&card] { return card; };
+
+    REQUIRE (recordRefusal (ask, route, check, folder, {}).empty());
+
+    // Still checking: the card's reason as it is.
+    const auto checking = [] { return std::string ("Checking this drive is fast enough..."); };
+    card = CardCheck::NotYet;
+    REQUIRE (recordRefusal (checking, route, check, folder, {}) == "Checking this drive is fast enough...");
+
+    // Under ten minutes here, a refusing card: led by why the card at all.
+    const auto toCard = [] { return TakeRoute::StraightToCardComputerFull; };
+    card = CardCheck::NotYet;
+    REQUIRE (recordRefusal (ask, toCard, check, folder, {})
+             == computerFullRefusal (slow, folder, {}, CardCheck::Refuses));
+
+    // Copying off: the card's reason whole.
+    const auto direct = [] { return TakeRoute::StraightToDestination; };
+    REQUIRE (recordRefusal (ask, direct, check, folder, {}) == slow);
+    REQUIRE (recordRefusal ([] { return std::string(); }, toCard, check, folder, {}).empty());
 }
 
 // Not knowing how much room there is does not send the take to the card.

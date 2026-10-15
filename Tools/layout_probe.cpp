@@ -1038,7 +1038,8 @@ int main()
             "This card is too slow for this recording: it managed 0.3 MB/s and needs 2.1 MB/s. Turning the "
             "cameras off may make it fast enough.",
             "/Users/someone-with-a-long-name/RECORDINGS-MIRROR",
-            { "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/2026-10-12_2015_Show" }, true));
+            { "/Users/someone-with-a-long-name/RECORDINGS-MIRROR/2026-10-12_2015_Show" },
+            mma::CardCheck::Refuses));
 
         const auto glyphsFit = [] (juce::Label& label)
         {

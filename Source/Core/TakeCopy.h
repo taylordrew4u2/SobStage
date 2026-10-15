@@ -476,10 +476,26 @@ std::string roomHereNote (double hereSeconds, double cardSeconds, bool camerasOn
 /// take would go straight to the card, and the card refuses it. Leads with
 /// why the card is involved at all, then `cardReason` whole -- its own hint,
 /// "Turning the cameras off...", included. When the card's check refused
-/// (`cardRefused`), says how to record here instead: room made by deleting
-/// takes already on the card, the ones in `stillToCopy` kept.
+/// (CardCheck::Refuses), says how to record here instead: room made by
+/// deleting takes already on the card, the ones in `stillToCopy` kept.
+///
+/// While the card has no verdict (NotYet: being checked, waiting for a copy
+/// to step aside, not confirmed), `cardReason` as it is: a card that refuses
+/// sends the take here, so nothing is said yet of the card taking it.
 std::string computerFullRefusal (const std::string& cardReason, const std::string& computerFolder,
-                                 const std::vector<std::string>& stillToCopy, bool cardRefused);
+                                 const std::vector<std::string>& stillToCopy, CardCheck card);
+
+/// Record's refusal for the next take, from the Record gate. The card's own
+/// reason (`askCard`, empty when it would take the take) is asked first:
+/// asking can land the card's check, which `route` and `card` then read.
+/// Read the other way round -- and C++ leaves the order of a call's
+/// arguments to the compiler -- a slow card's verdict landing on that refresh
+/// showed "This card is too slow" on a Record about to record here. Empty
+/// when the take records here; computerFullRefusal() when only this
+/// computer's room sends it to the card; otherwise the card's reason.
+std::string recordRefusal (const std::function<std::string()>& askCard, const std::function<TakeRoute()>& route,
+                           const std::function<CardCheck()>& card, const std::string& computerFolder,
+                           const std::vector<std::string>& stillToCopy);
 
 /// Whether an outcome is one of the copy's failures, reported to the user.
 bool isFailure (Outcome outcome) noexcept;

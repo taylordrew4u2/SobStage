@@ -4696,7 +4696,7 @@ juce::String Application::refusalForRoute (TakeRoute route, const juce::String& 
     return juce::String (cardcopy::computerFullRefusal (reason.toStdString(),
                                                         backupRootFolder().getFullPathName().toStdString(),
                                                         cardCopier.summary().foldersStillToCopy,
-                                                        cardCheckForNextTake() == CardCheck::Refuses));
+                                                        cardCheckForNextTake()));
 }
 
 int64_t Application::getMirrorFreeBytes() const
@@ -4844,7 +4844,14 @@ juce::String Application::getRecordDisabledReason() const
     if (wouldRecordOnComputer())
         return {};
 
-    return refusalForRoute (plannedTakeRoute (false), directRecordingBlockedReason());
+    // The card is asked before the route is read: the asking can land its
+    // check, and a slow card's then sends the take here (recordRefusal).
+    return juce::String (cardcopy::recordRefusal (
+        [this] { return directRecordingBlockedReason().toStdString(); },
+        [this] { return plannedTakeRoute (false); },
+        [this] { return cardCheckForNextTake(); },
+        backupRootFolder().getFullPathName().toStdString(),
+        cardCopier.summary().foldersStillToCopy));
 }
 
 juce::String Application::directRecordingBlockedReason() const
