@@ -94,6 +94,7 @@ MainComponent::MainComponent (Application& app)
 
     // The window is where Space means mute.
     mainScreen.onSessionNameFinished = [this] { grabKeyboardFocus(); };
+    mainScreen.addMouseListener (&drawerTypingWatcher, true);
 
     // A reason under the record button, a no-microphones message or another
     // row of strips makes the screen taller. Re-fitted here, the viewport
@@ -113,14 +114,8 @@ MainComponent::MainComponent (Application& app)
     mainScreen.onHelpClicked = [this] { toggleHelp(); };
 
     // The live views come from the controller, which is the only thing holding
-    // the open devices -- the panel never opens a camera itself.
-    cameraPanel.makeViewer = [this] (const std::string& id) {
-        return application.getCameraController().createViewer (id);
-    };
-
-    // The same factory for the main screen's tiles. Only one of these two ever
-    // holds viewers at a time -- see the releases in toggleCameras/toggleAdvanced
-    // -- so a camera never has two.
+    // the open devices. The main screen is the only thing that shows them --
+    // it is always on screen, Cameras page or not -- so a camera never has two.
     mainScreen.makeViewer = [this] (const std::string& id) {
         return application.getCameraController().createViewer (id);
     };
@@ -154,19 +149,13 @@ MainComponent::MainComponent (Application& app)
         refreshCameras();
     };
 
-    cameraPanel.onPreviewQualityChanged = [this] (PreviewQuality quality) {
-        application.setCameraPreviewQuality (quality);
-        mainScreen.setFullPreview (quality == PreviewQuality::Full);
-    };
+    cameraPanel.onCombineVideoToggled = [this] (bool enabled) {
+        application.setCombineVideoAndAudio (enabled);
 
-    // The main screen has the same control beside the camera tiles, and
-    // nothing in the repo ever assigned its callback -- so ticking it did
-    // exactly nothing, and it never reflected the setting either. Both boxes
-    // now drive the one setting and both restate it.
-    mainScreen.onFullPreviewToggled = [this] (bool full) {
-        const auto quality = full ? PreviewQuality::Full : PreviewQuality::Low;
-        application.setCameraPreviewQuality (quality);
-        cameraPanel.setPreviewQuality (quality);
+        // Straight back, so switching it on says immediately whether the
+        // machine can actually do it rather than leaving that to be discovered
+        // after the next take.
+        refreshCameras();
     };
 
     cameraPanel.onCloseClicked = [this] { toggleCameras(); };
@@ -216,15 +205,6 @@ MainComponent::MainComponent (Application& app)
 
     advancedPanel.onDeliveryTargetChanged = [this] (juce::String name) {
         application.setDeliveryTarget (name);
-        refreshAdvanced();
-    };
-
-    advancedPanel.onCombineVideoToggled = [this] (bool enabled) {
-        application.setCombineVideoAndAudio (enabled);
-
-        // Straight back, so switching it on says immediately whether the
-        // machine can actually do it rather than leaving that to be discovered
-        // after the next take.
         refreshAdvanced();
     };
 
@@ -389,7 +369,6 @@ MainComponent::MainComponent (Application& app)
     cameraPreviewCover.onCoverChanged = [this] (bool covered)
     {
         mainScreen.setCameraPreviewsHidden (covered);
-        cameraPanel.setCameraPreviewsHidden (covered);
     };
     cameraPreviewCover.watch (saveLocationPrompt);
     cameraPreviewCover.watch (savedTakePanel);
@@ -449,11 +428,33 @@ MainComponent::MainComponent (Application& app)
 
 MainComponent::~MainComponent()
 {
+    mainScreen.removeMouseListener (&drawerTypingWatcher);
+
     // The window is torn down before Application::shutdown(), and a queued
     // device-change can still fire in between -- it must not call into a
     // destroyed component.
     application.onCaptureRebuilt = nullptr;
     stopTimer();
+}
+
+void MainComponent::DrawerTypingWatcher::mouseDown (const juce::MouseEvent&)
+{
+    auto* focused = juce::Component::getCurrentlyFocusedComponent();
+
+    if (dynamic_cast<juce::TextEditor*> (focused) == nullptr)
+        return;
+
+    const juce::Component* drawers[] { &owner.advancedViewport, &owner.cameraViewport,
+                                       &owner.helpViewport, &owner.guideViewport };
+
+    for (const auto* drawer : drawers)
+        if (drawer->isParentOf (focused))
+        {
+            // To the window, where Space mutes; the box commits what was
+            // typed as it loses the keyboard (its onFocusLost).
+            owner.grabKeyboardFocus();
+            return;
+        }
 }
 
 void MainComponent::timerCallback()
@@ -515,12 +516,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // The arrows resize the camera pictures, and only while the main screen is
-    // the thing on screen -- behind a panel they would resize something the
-    // user cannot see. A focused slider or text field consumes its own arrows
-    // before they reach here, so this cannot steal them from the volume.
-    if (! cameraVisible
-        && (key == juce::KeyPress::upKey || key == juce::KeyPress::downKey))
+    // The arrows resize the camera pictures. The main screen is always on
+    // screen now -- every drawer, Cameras included, opens beside it -- so they
+    // work whenever no card is up (the cards returned above). A focused slider
+    // or text field consumes its own arrows before they reach here, so this
+    // cannot steal them from the volume.
+    if (key == juce::KeyPress::upKey || key == juce::KeyPress::downKey)
     {
         const int step = mainScreen.getCameraScale() + (key == juce::KeyPress::upKey ? 1 : -1);
 
@@ -615,7 +616,8 @@ void MainComponent::showSaveLocationPrompt()
     saveLocationPrompt.setAskEveryTime (application.getAskWhereToSaveEveryTime());
     saveLocationPrompt.setPlan (plan.parentFolder, plan.folderName, plan.mirrorFolder, plan.fileNames,
                                 armedCameraCount, readyCameraCount, plan.mirrorNote,
-                                plan.recordsOnComputerFirst ? plan.computerFolder : juce::String());
+                                plan.recordsOnComputerFirst ? plan.computerFolder : juce::String(),
+                                plan.recordsOnComputerFirst ? plan.roomNote : juce::String());
 
     saveLocationPrompt.setBlockedReason (application.getRecordDisabledReason());
     // Room for the whole card BEFORE it is shown. ModalCard clamps itself to
@@ -1085,7 +1087,6 @@ void MainComponent::refreshStatus()
     // what was actually saved. The slider ignores this while it is being
     // dragged, so restating it on the status tick cannot fight the user.
     mainScreen.setMasterVolume (application.getMasterVolume());
-    mainScreen.setFullPreview (application.getCameraPreviewQuality() == PreviewQuality::Full);
 
     const int micCount = juce::jmax (0, lastMicCount);
 
@@ -1252,22 +1253,18 @@ void MainComponent::refreshStatus()
         if (advancedVisible)
             refreshAdvanced();
 
-        if (cameraVisible)
-            refreshCameras();
-        else
-        {
-            // The main screen carries the pictures now, so the cameras have to
-            // actually be open for it to have anything to show.
-            //
-            // This only opens what the user already switched on, and switching
-            // one on happens behind the camera door -- where the macOS privacy
-            // prompt is still spent for the first time, with the explanation on
-            // screen behind it. A rig with no camera enabled opens nothing,
-            // prompts for nothing, and shows no tiles. applySelection() skips
-            // what is already open, so this is a no-op once they are.
-            application.openEnabledCameras();
-            refreshCameras();
-        }
+        // The main screen carries the pictures, and it is always showing --
+        // the Cameras page opens beside it -- so the cameras have to actually
+        // be open for it to have anything to show.
+        //
+        // This opens only what is switched on (a camera is on until it is
+        // switched off on the Cameras page), and does not retry one that
+        // failed: that retry is the Cameras door's, and switching a camera off
+        // and on. A rig with no camera on opens nothing, prompts for nothing,
+        // and shows no tiles. applySelection() skips what is already open, so
+        // this is a no-op once they are.
+        application.openEnabledCameras();
+        refreshCameras();
     }
 }
 
@@ -1336,8 +1333,6 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setAggregateStatus (application.getAggregateStatus());
     advancedPanel.setAggregateName (application.getAggregateDeviceName());
     advancedPanel.setDestinationFolderText ("Destination folder: " + application.getDestinationFolder());
-    advancedPanel.setCombineVideoState (application.getCombineVideoAndAudio(),
-                                        application.getCombineUnavailableReason());
     advancedPanel.setMirrorEnabled (application.isMirrorEnabledByUser());
     advancedPanel.setCopyToCardEnabled (application.isRecordOnComputerThenCopy());
     advancedPanel.setUpdateState (application.getCheckForUpdates(),
@@ -1458,38 +1453,33 @@ void MainComponent::toggleCameras()
 
     if (cameraVisible)
     {
-        // Opening the door is the user asking to see the cameras, which is the
-        // moment to actually open them -- and on macOS the moment to spend the
-        // privacy prompt, with the reason on screen behind it.
+        // One drawer at a time, as for Settings and Help. The Cameras page
+        // sits beside the main screen like them, so the pictures it is about
+        // stay in view while their size is chosen.
         advancedVisible = false;
         helpVisible = false;
         suspendSetupGuide();
 
-        // Hand the viewers over before the panel makes its own. Whichever
-        // screen is visible owns them, and a camera with two live viewers is a
-        // second claim on a device this app has no reason to make.
-        mainScreen.releaseCameraViews();
-
+        // Opening the door is the user asking about the cameras, which is the
+        // moment to look for new ones and to try again any that failed to
+        // open -- and on macOS the moment to spend the privacy prompt, with
+        // the reason on screen beside it.
         application.getCameraController().refreshCameras();
         application.openEnabledCameras (true);
-        refreshCameras();
     }
-    else
+    else if (! anyDrawerOpen())
     {
-        // Coming back: the panel's viewers go with it and the main screen
-        // rebuilds its own, so the pictures are on screen beside the meters
-        // again without either screen having held a stale one.
-        cameraPanel.setCameras ({});
-        refreshCameras();
         resumeSetupGuideIfSuspended();
     }
 
     applyPanelVisibility();
+    refreshCameras();
 
+    // Back to the top on entry, and wide enough for both halves, as Settings.
     if (cameraVisible)
     {
         cameraViewport.setViewPosition (0, 0);
-        growWindowToFit (cameraPanel.getRequiredHeight());
+        growWindowToFitWidth (kMainMinWidth + drawerWidth());
     }
 
     resized();
@@ -1502,13 +1492,19 @@ void MainComponent::refreshCameras()
     if (controller.applyPendingCameraList())
         application.announceCameraChanges();
 
-    cameraPanel.setUnavailableReason (controller.getUnavailableReason());
-    cameraPanel.setProblemText (controller.getProblem());
-    cameraPanel.setPreviewQuality (controller.getPreviewQuality());
     // A take with zero successfully opened camera writers is still a take.
     // Camera controls must stay frozen until the audio recording ends, or an
     // apparent late camera change would not be represented in that take.
-    cameraPanel.setRecording (application.getRecordingEngine().getState() == RecordingState::Recording);
+    if (cameraVisible)
+    {
+        cameraPanel.setUnavailableReason (controller.getUnavailableReason());
+        cameraPanel.setProblemText (controller.getProblem());
+        cameraPanel.setRecording (application.getRecordingEngine().getState() == RecordingState::Recording);
+        cameraPanel.setCombineVideoState (application.getCombineVideoAndAudio(),
+                                          application.getCombineUnavailableReason());
+        cameraPanel.setSpaceText (application.recordingSpaceLine(), application.nextTakeRoomNote());
+        cameraPanel.setLookingForCameras (! controller.hasLookedForCameras());
+    }
 
     std::vector<CameraPanel::CameraRow> cameras;
     std::map<std::string, CameraController::TakeCameraState> takeCameraStates;
@@ -1558,21 +1554,14 @@ void MainComponent::refreshCameras()
                              {} });
     }
 
-    // Only the visible surface owns preview hosts. Keeping CameraPanel rows
-    // populated while it was hidden let its cached host lose the native view
-    // when MainScreen reparented it; opening the panel then reused that empty
-    // cache and showed black. The native viewer itself remains alive in the
-    // controller, so rebuilding these lightweight rows is safe.
+    // The page is fed only while it is open; it is read again on the way in.
     if (cameraVisible)
         cameraPanel.setCameras (cameras);
-    else
-        cameraPanel.setCameras ({});
 
     // The main screen shows only what is switched on: a tile per camera that is
     // actually going into the take. The off ones are a settings question, and
-    // settings live behind the door. The Settings and Help drawers sit beside
-    // the main screen rather than over it, so the tiles stay while they are up.
-    if (! cameraVisible)
+    // settings live behind the door. Every drawer -- Cameras included -- sits
+    // beside the main screen rather than over it, so the tiles always stay.
     {
         std::vector<MainScreen::CameraTile> tiles;
 
@@ -1684,22 +1673,15 @@ void MainComponent::toggleAdvanced()
 
     if (advancedVisible)
     {
-        // One drawer at a time, and the camera panel closes if it was up:
-        // Settings sits beside the MAIN screen, whose pictures come back as
-        // the panel's go.
+        // One drawer at a time: Help and the Cameras page close.
         helpVisible = false;
+        cameraVisible = false;
         suspendSetupGuide();
-
-        if (cameraVisible)
-        {
-            cameraVisible = false;
-            cameraPanel.setCameras ({});
-        }
 
         refreshShows();
         refreshAdvanced();
     }
-    else if (! helpVisible && ! cameraVisible)
+    else if (! anyDrawerOpen())
     {
         resumeSetupGuideIfSuspended();
     }
@@ -1725,15 +1707,10 @@ void MainComponent::toggleHelp()
     if (helpVisible)
     {
         advancedVisible = false;
+        cameraVisible = false;
         suspendSetupGuide();
-
-        if (cameraVisible)
-        {
-            cameraVisible = false;
-            cameraPanel.setCameras ({});
-        }
     }
-    else if (! advancedVisible && ! cameraVisible)
+    else if (! anyDrawerOpen())
     {
         resumeSetupGuideIfSuspended();
     }
@@ -1810,16 +1787,10 @@ void MainComponent::refreshSetupGuide()
 
 void MainComponent::openSetupGuide()
 {
-    // One drawer at a time, as for Settings and Help, and the Cameras screen
-    // gives the main screen back: the guide is about what is on it.
+    // One drawer at a time, as for Settings, Help and Cameras.
     advancedVisible = false;
     helpVisible = false;
-
-    if (cameraVisible)
-    {
-        cameraVisible = false;
-        cameraPanel.setCameras ({});
-    }
+    cameraVisible = false;
 
     guideVisible = true;
     guideSuspended = false;
@@ -1893,7 +1864,7 @@ void MainComponent::openSetupGuideOnFirstLaunch()
         || application.getRecordingEngine().getState() == RecordingState::Recording
         || saveLocationPrompt.isVisible() || savedTakePanel.isVisible()
         || recoveredTakesPanel.isVisible() || takeAlertCard.isVisible()
-        || advancedVisible || helpVisible || cameraVisible)
+        || anyDrawerOpen())
         return;
 
     // Once a run, so closing it and carrying on is not undone half a second
@@ -1920,15 +1891,15 @@ int MainComponent::drawerWidth() const
 
 void MainComponent::applyPanelVisibility()
 {
-    // The camera panel replaces the main screen, because it owns the live
-    // viewers while it is up. The two drawers sit beside it instead.
+    // The main screen is always showing. Every drawer -- Settings, Help, the
+    // setup guide and the Cameras page -- opens beside it, one at a time.
+    mainViewport.setVisible (true);
     cameraViewport.setVisible (cameraVisible);
-    mainViewport.setVisible (! cameraVisible);
-    advancedViewport.setVisible (advancedVisible && ! cameraVisible);
-    helpViewport.setVisible (helpVisible && ! cameraVisible);
-    guideViewport.setVisible (guideVisible && ! cameraVisible);
+    advancedViewport.setVisible (advancedVisible);
+    helpViewport.setVisible (helpVisible);
+    guideViewport.setVisible (guideVisible);
 
-    mainScreen.setDoorsOpen (advancedVisible && ! cameraVisible, helpVisible && ! cameraVisible);
+    mainScreen.setDoorsOpen (advancedVisible, helpVisible, cameraVisible);
 
     updateWindowMinimumSize();
 }
@@ -1981,7 +1952,7 @@ void MainComponent::updateWindowMinimumSize()
     // of each other. The limit is raised for as long as a drawer is open.
     int minimumWidth = windowBaseMinimumWidth;
 
-    if ((advancedVisible || helpVisible || guideVisible) && ! cameraVisible)
+    if (anyDrawerOpen())
     {
         const int chrome = juce::jmax (0, window->getWidth() - getWidth());
 
@@ -2088,10 +2059,10 @@ void MainComponent::setQuitPendingNote (const juce::String& note)
 
 void MainComponent::paint (juce::Graphics& g)
 {
-    // The drawer's edge: one hairline where the main screen ends and Settings
-    // begins, so the two read as a screen and a drawer rather than one wide
-    // screen with a seam in it.
-    if ((advancedVisible || helpVisible || guideVisible) && ! cameraVisible)
+    // The drawer's edge: one hairline where the main screen ends and the
+    // drawer begins, so the two read as a screen and a drawer rather than one
+    // wide screen with a seam in it.
+    if (anyDrawerOpen())
     {
         g.setColour (AppLookAndFeel::outline);
         g.fillRect (mainViewport.getRight(), 0, 1, getHeight());
@@ -2105,13 +2076,11 @@ void MainComponent::resized()
     const auto full = getLocalBounds();
     auto bounds = full;
 
-    cameraViewport.setBounds (bounds);
-
     // The drawer takes the right-hand side only while one is open; otherwise
     // the main screen has the whole window, as before.
     auto drawer = juce::Rectangle<int>();
 
-    if ((advancedVisible || helpVisible || guideVisible) && ! cameraVisible)
+    if (anyDrawerOpen())
     {
         drawer = bounds.removeFromRight (drawerWidth());
         drawer.removeFromLeft (1); // the hairline paint() draws
@@ -2119,6 +2088,7 @@ void MainComponent::resized()
 
     mainViewport.setBounds (bounds);
     advancedViewport.setBounds (drawer);
+    cameraViewport.setBounds (drawer);
     helpViewport.setBounds (drawer);
     guideViewport.setBounds (drawer);
 
@@ -2155,6 +2125,11 @@ void MainComponent::resized()
 
     fit (mainViewport, mainScreen, mainScreen.getRequiredHeight());
     fit (advancedViewport, advancedPanel, advancedPanel.getRequiredHeight());
+
+    // Width first, then height, as for Help below: the page's lines wrap, so
+    // what it needs depends on what it is given across.
+    cameraPanel.setSize (juce::jmax (1, cameraViewport.getWidth() - cameraViewport.getScrollBarThickness()),
+                         juce::jmax (1, cameraPanel.getHeight()));
     fit (cameraViewport, cameraPanel, cameraPanel.getRequiredHeight());
 
     // Width first, then height: the help text wraps, so what it needs

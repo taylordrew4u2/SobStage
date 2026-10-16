@@ -173,10 +173,10 @@ bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePla
         // lost -- the picture and the sound are both on disk, complete -- so
         // this says that too, or the sentence reads like a failed recording.
         const std::lock_guard<std::mutex> lock (next->statusLock);
-        next->status.problem = "Couldn't find ffmpeg, so the combined video wasn't made. "
-                               "Your picture and sound are both saved as separate files. "
-                               "Install ffmpeg (on a Mac: brew install ffmpeg) and the next "
-                               "take will combine them.";
+        next->status.problem = juce::String ("Couldn't find ffmpeg, so the combined video wasn't made. "
+                                             "Your picture and sound are both saved as separate files. ")
+                             + juce::String (ffmpegInstallHint (thisHostPlatform()))
+                             + " The next take will then combine them.";
         runState = std::move (next);
         return false;
     }

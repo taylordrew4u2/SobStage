@@ -111,6 +111,7 @@ private:
     int diagnosticsZipsBefore = 0;
     juce::String takeFolder;
     juce::Rectangle<int> windowBoundsBefore;
+    juce::String nameBoxTextBefore;
 
     // --- reporting -------------------------------------------------------
 
@@ -249,6 +250,66 @@ private:
         return false;
     }
 
+    /// The Cameras door in the masthead. Found by its spoken name: the words
+    /// on it carry a count once a camera is on ("Cameras (2)").
+    juce::Button* camerasDoor() const
+    {
+        for (auto* c : showing())
+            if (auto* b = dynamic_cast<juce::Button*> (c); b != nullptr && b->isEnabled() && b->getTitle() == "Cameras"
+                                                            && b->findParentComponentOfClass<MainScreen>() != nullptr)
+                return b;
+        return nullptr;
+    }
+
+    bool clickCamerasDoor()
+    {
+        if (auto* b = camerasDoor())
+        {
+            exercised.insert (b->getButtonText());
+            b->triggerClick();
+            return true;
+        }
+        return false;
+    }
+
+    /// The Cameras page is up beside the main screen, not in its place: the
+    /// main screen is showing, and it ends where the page begins.
+    bool camerasBesideMainScreen() const
+    {
+        auto* page = find<CameraPanel>();
+        auto* ms = find<MainScreen>();
+        auto* mc = mainComponent();
+        if (page == nullptr || ms == nullptr || mc == nullptr)
+            return false;
+
+        const auto pageArea = mc->getLocalArea (page, page->getLocalBounds());
+        const auto screenArea = mc->getLocalArea (ms, ms->getLocalBounds());
+        return screenArea.getX() < pageArea.getX() && screenArea.getRight() <= pageArea.getX() + 1
+            && pageArea.getRight() <= mc->getWidth() + 1;
+    }
+
+    /// A name box in the drawer that is open: a camera's on the Cameras page,
+    /// or the combined device's in Settings.
+    juce::TextEditor* drawerNameBox() const
+    {
+        for (auto* c : showing())
+            if (auto* box = dynamic_cast<juce::TextEditor*> (c); box != nullptr && box->isEnabled()
+                && (box->findParentComponentOfClass<CameraPanel>() != nullptr
+                    || box->findParentComponentOfClass<AdvancedPanel>() != nullptr))
+                return box;
+        return nullptr;
+    }
+
+    /// A heading on the main screen: takes no keyboard when clicked.
+    juce::Label* mainScreenHeading() const
+    {
+        for (auto* c : showing())
+            if (auto* l = dynamic_cast<juce::Label*> (c); l != nullptr && l->getText() == "M I C R O P H O N E S"
+                && l->findParentComponentOfClass<MainScreen>() != nullptr)
+                return l;
+        return nullptr;
+    }
+
     /// The monitor mute button reads "Mute" or "Unmute" depending on state.
     juce::Button* muteButton() const
     {
@@ -340,11 +401,21 @@ private:
     /// whoever has the focus.
     bool pressKeyThroughWindow (int keyCode)
     {
+        return pressKeyThroughWindow (juce::KeyPress (keyCode));
+    }
+
+    /// The same for a key that carries its character, as a real one does: a
+    /// text box types a space only for a key that says it is one, and lets a
+    /// bare key code past to the window.
+    bool pressKeyThroughWindow (const juce::KeyPress& key)
+    {
         if (auto* mc = mainComponent())
             if (auto* peer = mc->getPeer())
-                return peer->handleKeyPress (juce::KeyPress (keyCode));
+                return peer->handleKeyPress (key);
         return false;
     }
+
+    static juce::KeyPress typedSpace() { return juce::KeyPress (juce::KeyPress::spaceKey, juce::ModifierKeys(), ' '); }
 
     /// Every modal card, and the take banner, is the size of the whole window
     /// -- not of whatever the Settings or Help drawer left beside it, or the
@@ -609,6 +680,14 @@ private:
             {
                 auto* guide = find<SetupGuidePanel>();
                 return ! isUp<AdvancedPanel>() && guide != nullptr && guide->getPage().step == SetupGuideStep::TestTake;
+            });
+            add ("Cameras puts the guide aside", [this] { clickCamerasDoor(); },
+                 [this] { return isUp<CameraPanel>() && ! isUp<SetupGuidePanel>(); });
+            add ("and closing Cameras brings it back on the same page",
+                 [this] { click<CameraPanel> ("Close"); }, [this]
+            {
+                auto* guide = find<SetupGuidePanel>();
+                return ! isUp<CameraPanel>() && guide != nullptr && guide->getPage().step == SetupGuideStep::TestTake;
             });
             add ("Done closes the guide", [this] { click<SetupGuidePanel> ("Done"); },
                  [this] { return ! isUp<SetupGuidePanel>(); });
@@ -1032,13 +1111,13 @@ private:
             return editor != nullptr && ! editor->hasKeyboardFocus (true);
         });
         add ("so the space bar then mutes the room, not types into the name",
-             [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+             [this] { pressKeyThroughWindow (typedSpace()); },
              [this]
              {
                  auto* ms = find<MainScreen>();
                  return muted() && busMuted() && ms != nullptr && ms->getSessionName() == "UI walk";
              });
-        add ("  (and unmutes it)", [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+        add ("  (and unmutes it)", [this] { pressKeyThroughWindow (typedSpace()); },
              [this] { return ! muted() && ! busMuted(); });
         // The same after a click on something that does not take the keyboard
         // itself: JUCE left the focus in the box.
@@ -1058,13 +1137,13 @@ private:
             auto* editor = find<juce::TextEditor>();
             return editor != nullptr && ! editor->hasKeyboardFocus (true);
         });
-        add ("  and the space bar mutes", [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+        add ("  and the space bar mutes", [this] { pressKeyThroughWindow (typedSpace()); },
              [this]
              {
                  auto* ms = find<MainScreen>();
                  return muted() && busMuted() && ms != nullptr && ms->getSessionName() == "UI walk";
              });
-        add ("  (and unmutes it)", [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+        add ("  (and unmutes it)", [this] { pressKeyThroughWindow (typedSpace()); },
              [this] { return ! muted() && ! busMuted(); });
 
         // Rename microphone 1, and check the name reaches its file later.
@@ -1270,10 +1349,102 @@ private:
         add ("and its Skip closes it", [this] { click<SetupGuidePanel> ("Skip"); },
              [this] { return ! isUp<SetupGuidePanel>(); });
 
-        // Cameras.
-        add ("Cameras opens", [this] { click<MainScreen> ("Cameras"); }, [this] { return isUp<CameraPanel>(); });
-        add ("every control on the Cameras screen", [this] { insertNext (exerciseControlsIn<CameraPanel> ("Cameras")); }, [] { return true; });
-        add ("Cameras' Done goes back", [this] { click<CameraPanel> ("< Done"); }, [this] { return ! isUp<CameraPanel>(); });
+        // Cameras: a page of its own, opened from the masthead and beside the
+        // main screen like Settings, so the pictures stay in view.
+        check ("Cameras is in the masthead", [this]
+        {
+            auto* door = camerasDoor();
+            auto* ms = find<MainScreen>();
+            return door != nullptr && ms != nullptr
+                && ms->getLocalArea (door, door->getLocalBounds()).getBottom() <= 60;
+        });
+        add ("Cameras opens beside the main screen", [this] { clickCamerasDoor(); },
+             [this] { return isUp<CameraPanel>() && camerasBesideMainScreen(); });
+        add ({}, [this] { snapshot ("cameras-page"); }, [] { return true; });
+        add ("every control on the Cameras page", [this] { insertNext (exerciseControlsIn<CameraPanel> ("Cameras")); }, [] { return true; });
+        check ("the Cameras page says how much room recording takes", [this]
+        {
+            if (auto* page = find<CameraPanel>())
+                for (auto* c : showing())
+                    if (auto* label = dynamic_cast<juce::Label*> (c); label != nullptr && label->getText().contains ("an hour")
+                                                                      && label->findParentComponentOfClass<CameraPanel>() == page)
+                        return true;
+            return false;
+        });
+        add ("Settings closes Cameras", [this] { click<MainScreen> ("Settings"); },
+             [this] { return isUp<AdvancedPanel>() && ! isUp<CameraPanel>(); });
+        add ("Cameras closes Settings", [this] { clickCamerasDoor(); },
+             [this] { return isUp<CameraPanel>() && ! isUp<AdvancedPanel>() && camerasBesideMainScreen(); });
+        add ("with Cameras open, the window cannot be dragged narrower than the main screen needs", [this]
+        {
+            if (auto* window = mainWindow())
+            {
+                windowBoundsBefore = window->getBounds();
+                window->setBoundsConstrained (windowBoundsBefore.withWidth (560));
+            }
+        }, [this]
+        {
+            auto* ms = find<MainScreen>();
+            return ms != nullptr && ms->getWidth() >= 600 && camerasBesideMainScreen();
+        });
+        add ("  (window size put back)", [this]
+        {
+            if (auto* window = mainWindow())
+                window->setBounds (windowBoundsBefore);
+        }, [this] { auto* window = mainWindow(); return window != nullptr && window->getBounds() == windowBoundsBefore; });
+        add ("Cameras' Close closes it", [this] { click<CameraPanel> ("Close"); }, [this] { return ! isUp<CameraPanel>(); });
+        add ("Escape closes Cameras", [this] { clickCamerasDoor(); }, [this] { return isUp<CameraPanel>(); });
+        add ("  (Escape)", [this] { pressKey (juce::KeyPress::escapeKey); }, [this] { return ! isUp<CameraPanel>(); });
+
+        // A name box in a drawer kept the keyboard while the main screen beside
+        // it was used: nothing there takes the keyboard on a click, so Space
+        // typed into the name and the room stayed live. A camera's name where
+        // this build lists cameras; the combined device's in Settings where it
+        // does not. Its text is left as it is, so nothing is renamed.
+        add ("a drawer with a name box opens beside the main screen", [this] { clickCamerasDoor(); },
+             [this] { return isUp<CameraPanel>(); });
+        add ("  (Settings, with no camera here to name)", [this]
+        {
+            if (drawerNameBox() == nullptr)
+                click<MainScreen> ("Settings");
+        }, [this] { return drawerNameBox() != nullptr; });
+        add ("typing in it, then a click on the main screen beside it, ends the typing", [this]
+        {
+            if (auto* box = drawerNameBox())
+            {
+                nameBoxTextBefore = box->getText();
+                box->grabKeyboardFocus();
+            }
+
+            if (auto* heading = mainScreenHeading())
+                clickWithMouse (*heading);
+        }, [this]
+        {
+            auto* box = drawerNameBox();
+            return box != nullptr && ! box->hasKeyboardFocus (true);
+        });
+        add ("  so the space bar mutes the room, and nothing is typed into the name",
+             [this] { pressKeyThroughWindow (typedSpace()); },
+             [this]
+             {
+                 auto* box = drawerNameBox();
+                 return muted() && busMuted() && box != nullptr && box->getText() == nameBoxTextBefore;
+             });
+        add ("  (and unmutes it)", [this] { pressKeyThroughWindow (typedSpace()); },
+             [this] { return ! muted() && ! busMuted(); });
+        add ("Escape in the name box ends the typing, with the page still open", [this]
+        {
+            if (auto* box = drawerNameBox())
+                box->grabKeyboardFocus();
+
+            pressKeyThroughWindow (juce::KeyPress::escapeKey);
+        }, [this]
+        {
+            auto* box = drawerNameBox();
+            return box != nullptr && ! box->hasKeyboardFocus (true) && box->getText() == nameBoxTextBefore;
+        });
+        add ("  and a second Escape closes the page", [this] { pressKeyThroughWindow (juce::KeyPress::escapeKey); },
+             [this] { return ! isUp<CameraPanel>() && ! isUp<AdvancedPanel>(); });
 
         // A take.
         add ("recording starts", [this]
@@ -1337,6 +1508,15 @@ private:
         add ("the take is still running after that too", [] {}, [this] { return recording(); });
         add ("Settings closes during a take", [this] { pressKey (juce::KeyPress::escapeKey); },
              [this] { return ! isUp<AdvancedPanel>(); });
+        add ("Cameras opens during a take", [this] { clickCamerasDoor(); },
+             [this] { return isUp<CameraPanel>() && camerasBesideMainScreen(); });
+        settle (1000);
+        add ("and the take is still recording", [] {}, [this]
+        {
+            return recording() && button<MainScreen> ("Recording. Tap to stop.") != nullptr;
+        });
+        add ("Escape closes it", [this] { pressKey (juce::KeyPress::escapeKey); },
+             [this] { return ! isUp<CameraPanel>() && recording(); });
         settle (2000);
 
         // Renaming during a take: this take's files keep the name they started

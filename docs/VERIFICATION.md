@@ -20,7 +20,7 @@ on any platform. That is stated here, in the release checklist, and in the
 ## Implemented and verified
 
 All of `Source/Core` plus the platform-neutral Linux input policy, covered by
-1112 unit tests passing in CI on Linux, macOS
+1126 unit tests passing in CI on Linux, macOS
 and Windows. The table below lists the largest areas rather than every file:
 
 | Area | Spec | Tests |
@@ -234,7 +234,7 @@ v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a
 first-frame enqueue, but that run did not verify a visibly non-black SobStage
 preview or a completed recording. The simulator drives the
 `CameraDevice::openDevice` boundary, including failures and a hot-plug reorder;
-the v1.13.28 AVFoundation/DirectShow viewer and `startRecordingToFile`
+the v1.13.29 AVFoundation/DirectShow viewer and `startRecordingToFile`
 paths still need the physical macOS and Windows matrix. See *Not yet validated
 against hardware*.
 
@@ -323,7 +323,7 @@ the matrix. In particular:
   during open, and the no-false-recovery policy for a mid-take unplug/replug.
   Separately, an older v1.11.0 build opened `USB2 Video` and AVFoundation logged
   a first-frame enqueue; that did not verify a visible non-black preview or a
-  completed recording, and the v1.13.28 artifacts remain untested with a
+  completed recording, and the v1.13.29 artifacts remain untested with a
   physical capture card.
   Outstanding on real hardware:
   what resolution `openDevice` actually settles on, what the recorded file
@@ -371,9 +371,9 @@ the matrix. In particular:
   rather than setup — losing it costs a second to reset, where losing a trim
   costs the ear-work that found it.
 - **Cameras are an addition, not a spec item.** `docs/SPEC.md` is about
-  microphones and says nothing about video, so everything in the Cameras panel
-  is a judgment call against the spec's own principles rather than a
-  requirement being met: every plugged-in camera recording by default because
+  microphones; it now lists the Cameras page's contents (§10.3.1) and its door
+  in the masthead (§10.2), but what is on that page is still a judgment call
+  against the spec's own principles rather than a requirement being met: every plugged-in camera recording by default because
   a take with a camera missing from it cannot be redone, while §6.5's
   card-full failure is guarded by the remaining-time figure counting every
   recording camera; capture

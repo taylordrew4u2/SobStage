@@ -57,4 +57,30 @@ bool looksLikeFfmpegVersionOutput (const std::string& output)
     return output.compare (start, expected.size(), expected) == 0;
 }
 
+std::string ffmpegInstallHint (HostPlatform platform)
+{
+    switch (platform)
+    {
+        case HostPlatform::MacOS:
+            return "To add it, type brew install ffmpeg in Terminal (this needs Homebrew, from brew.sh).";
+
+        // The first place ffmpegSearchPaths looks, so following this sentence
+        // is enough for the app to find it without touching PATH.
+        case HostPlatform::Windows:
+            return "To add it, put ffmpeg in C:\\Program Files\\ffmpeg (ffmpeg.exe goes in its bin folder).";
+
+        case HostPlatform::Linux:
+        default:
+            return "Install ffmpeg with your package manager.";
+    }
+}
+
+std::string ffmpegMissingNote (HostPlatform platform)
+{
+    // §10.6: named before a take rather than discovered after one, and said
+    // with what is still safe, so it does not read like a failed recording.
+    return "Combined video needs ffmpeg, which isn't installed. Your picture and sound are "
+           "still recorded, as separate files. " + ffmpegInstallHint (platform);
+}
+
 } // namespace mma

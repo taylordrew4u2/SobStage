@@ -305,3 +305,59 @@ TEST_CASE (PreflightThroughputTest_AVerdictIsOnlyForTheCardItMeasured)
     REQUIRE_FALSE (PreflightThroughputTest::measuredAnotherDrive (nothingMeasured, fat32Card, after));
     REQUIRE_FALSE (PreflightThroughputTest::measuredAnotherDrive (verdict, VolumeFingerprint {}, after));
 }
+
+// The bug: a card that sustains 1.5 MB/s wrote all 200 MB of its test --
+// over two minutes, Record waiting -- though its first second already
+// settled the verdict, the slowest second. Mutation: never settled, or
+// settled at the gate itself (a card exactly fast enough cut short).
+TEST_CASE (PreflightThroughputTest_ASecondUnderTheGateSettlesTheTest)
+{
+    const double gate = PreflightThroughputTest::gateBytesPerSecond (4, 48000.0, 3, 8.0 * 1024 * 1024);
+    REQUIRE_NEAR (gate, PreflightThroughputTest::requiredBytesPerSecond (4, 48000.0, 3, 8.0 * 1024 * 1024)
+                            * PreflightThroughputTest::kRequiredMultiplier, 1e-6);
+
+    REQUIRE (PreflightThroughputTest::settledBelow (1.5 * 1024 * 1024, gate));
+    REQUIRE (PreflightThroughputTest::settledBelow (gate - 1.0, gate));
+    REQUIRE_FALSE (PreflightThroughputTest::settledBelow (gate, gate));
+    REQUIRE_FALSE (PreflightThroughputTest::settledBelow (gate * 3.0, gate));
+
+    // Not known: the whole test, as before.
+    REQUIRE_FALSE (PreflightThroughputTest::settledBelow (1.0, 0.0));
+}
+
+// A test stopped early answers the rig it was stopped for and any needing
+// more; one needing no more than its slowest second -- a camera turned off --
+// would pass on half a test, so the card is checked again. Mutation: a cut
+// short result passed for a lighter rig, or re-measured for the same rig.
+TEST_CASE (PreflightThroughputTest_ATestStoppedEarlyAnswersOnlyTheRigsItSettled)
+{
+    const double camera = 8.0 * 1024 * 1024;
+    const double withCamera = PreflightThroughputTest::gateBytesPerSecond (4, 48000.0, 3, camera);
+    const double audioOnly = PreflightThroughputTest::gateBytesPerSecond (4, 48000.0, 3);
+
+    PreflightResult cut;
+    cut.cutShort = true;
+    cut.sustainedMinBytesPerSec = (audioOnly + withCamera) / 2.0;
+
+    // The rig it was stopped for, and one needing more: settled, refused.
+    REQUIRE_FALSE (PreflightThroughputTest::needsMeasuringFor (cut, 4, 48000.0, 3, camera));
+    REQUIRE_FALSE (PreflightThroughputTest::needsMeasuringFor (cut, 8, 48000.0, 3, camera));
+    const auto refused = PreflightThroughputTest::evaluateCached (cut, 4, 48000.0, 3, camera);
+    REQUIRE_FALSE (refused.passed);
+    REQUIRE (refused.reason.rfind ("This card is too slow", 0) == 0);
+
+    // The camera off: its slowest second would pass. Not passed; checked again.
+    REQUIRE (PreflightThroughputTest::needsMeasuringFor (cut, 4, 48000.0, 3));
+    const auto unmeasured = PreflightThroughputTest::evaluateCached (cut, 4, 48000.0, 3);
+    REQUIRE_FALSE (unmeasured.passed);
+    REQUIRE (unmeasured.reason == "Checking this drive is fast enough...");
+
+    // A whole test answers every rig; a card that couldn't be written is that.
+    auto whole = cut;
+    whole.cutShort = false;
+    REQUIRE_FALSE (PreflightThroughputTest::needsMeasuringFor (whole, 4, 48000.0, 3));
+    REQUIRE (PreflightThroughputTest::evaluateCached (whole, 4, 48000.0, 3).passed);
+    auto unwritable = cut;
+    unwritable.couldNotWrite = true;
+    REQUIRE_FALSE (PreflightThroughputTest::needsMeasuringFor (unwritable, 4, 48000.0, 3));
+}

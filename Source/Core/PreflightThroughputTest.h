@@ -22,6 +22,12 @@ struct PreflightResult
     /// A property of the drive, so it is kept with the measurement.
     bool limitedTo4GiBFiles = false;
 
+    /// The test stopped at its first second under what the rig then needed
+    /// (PreflightThroughputTest::settledBelow), the rest of the 200 MB not
+    /// written. Settled for that rig and any needing more; not an answer for
+    /// one needing no more than the slowest second (needsMeasuringFor).
+    bool cutShort = false;
+
     /// Which volume was measured: read just before the test file was written.
     /// Unknown for a verdict that measured nothing (a check that could not be
     /// started), which is then never compared.
@@ -59,6 +65,24 @@ public:
     static double requiredBytesPerSecond (int numChannels, double sampleRate, int bytesPerSample,
                                           double videoBytesPerSecond = 0.0) noexcept;
 
+    /// What a card must sustain for this rig: requiredBytesPerSecond() times
+    /// kRequiredMultiplier.
+    static double gateBytesPerSecond (int numChannels, double sampleRate, int bytesPerSample,
+                                      double videoBytesPerSecond = 0.0) noexcept;
+
+    /// True when a closed one-second window (`windowBytesPerSec`) is under
+    /// `gate`: the verdict is the slowest window, so the rest of the 200 MB
+    /// cannot change it. On a card that sustains 1.5 MB/s the whole test took
+    /// over two minutes, Record waiting all the while. A gate of 0 or less
+    /// (not known) never settles it.
+    static bool settledBelow (double windowBytesPerSec, double gate) noexcept;
+
+    /// True when `cached` stopped early (cutShort) and this rig needs no more
+    /// than its slowest second -- a camera turned off since, say -- so it would
+    /// pass on less than the whole test. The card is then checked again.
+    static bool needsMeasuringFor (const PreflightResult& cached, int numChannels, double sampleRate,
+                                   int bytesPerSample, double videoBytesPerSecond = 0.0) noexcept;
+
     /// Reduces a series of measured (rolling 1-second window) throughput samples,
     /// in bytes/sec, to the sustained minimum -- never the average.
     static double sustainedMinimum (const std::vector<double>& rollingWindowBytesPerSec) noexcept;
@@ -82,7 +106,9 @@ public:
     /// The gate applied to a cached benchmark. A card that could not be
     /// written is refused as that, never as "too slow" -- with no windows it
     /// read 0 MB/s, and a partial run measured before the failure could even
-    /// have passed.
+    /// have passed. One stopped early that does not answer this rig
+    /// (needsMeasuringFor) is not passed either: "Checking...", until the
+    /// card has been checked again.
     static PreflightResult evaluateCached (const PreflightResult& cached,
                                            int numChannels, double sampleRate, int bytesPerSample,
                                            double videoBytesPerSecond = 0.0);

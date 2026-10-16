@@ -104,6 +104,11 @@ public:
     /// still being checked rather than falsely declared unplugged.
     bool isInitialDiscoveryPending() const noexcept;
 
+    /// True once a look for cameras has finished and its list been applied:
+    /// only then does an empty list mean no camera is plugged in. Stays false
+    /// for as long as a driver keeps the first look from finishing.
+    bool hasLookedForCameras() const noexcept;
+
     /// Crash-loop guard. While a camera is being started, its id is kept in
     /// this file; it leaves once the camera delivers a frame, has been open for
     /// a while, is closed, or the app quits normally. If the file still names a

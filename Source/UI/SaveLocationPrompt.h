@@ -28,7 +28,8 @@ public:
                   int armedCameraCount,
                   int readyCameraCount,
                   const juce::String& mirrorNote = {},
-                  const juce::String& computerFolder = {});
+                  const juce::String& computerFolder = {},
+                  const juce::String& roomNote = {});
 
     void setSessionName (const juce::String& name);
     juce::String getSessionName() const { return nameEditor.getText(); }
@@ -79,10 +80,18 @@ private:
     juce::Label blockedReason;
     juce::Label videoNote;
     juce::Label mirrorValue;
-    /// Height of the backup line: two lines, or four for the longer
-    /// "recorded on this computer first" one with its path, which needs them
-    /// on the narrowest card.
-    int mirrorValueHeight = 32;
+    /// Height of the backup line, measured from its words at `contentWidth`:
+    /// the "recorded on this computer first" line carries a path and, when
+    /// this computer runs out before the card would, how long it can record
+    /// for -- six lines or more on the narrowest card.
+    int mirrorValueHeight (int contentWidth) const { return wrappedHeight (mirrorValue, contentWidth); }
+    /// The same for why Record is refused, which can carry a card's reason
+    /// and what to delete on this computer.
+    int blockedReasonHeight (int contentWidth) const { return wrappedHeight (blockedReason, contentWidth); }
+    /// As tall as `label`'s words need at `width`, and never under two lines.
+    static int wrappedHeight (const juce::Label& label, int width);
+    /// The width layOutContent() will be given, for getContentHeight().
+    int contentWidth() const;
 
     juce::ToggleButton askEveryTimeToggle { "Ask me this before every recording" };
     juce::TextButton chooseButton { "Choose a different folder..." };

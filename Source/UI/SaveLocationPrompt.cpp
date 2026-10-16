@@ -99,7 +99,8 @@ void SaveLocationPrompt::setPlan (const juce::String& parentFolder,
                                   int armedCameraCount,
                                   int readyCameraCount,
                                   const juce::String& mirrorNote,
-                                  const juce::String& computerFolder)
+                                  const juce::String& computerFolder,
+                                  const juce::String& roomNote)
 {
     folderValue.setText (parentFolder, juce::dontSendNotification);
     folderNameValue.setText (folderName, juce::dontSendNotification);
@@ -146,14 +147,16 @@ void SaveLocationPrompt::setPlan (const juce::String& parentFolder,
     // And a backup that will not be made for a reason the user can act on
     // (it would share the recording's disk) is said in the same place.
     mirrorValue.setVisible (mirrorFolder.isNotEmpty() || mirrorNote.isNotEmpty() || computerFolder.isNotEmpty());
-    mirrorValueHeight = computerFolder.isNotEmpty() ? 64 : 32;
 
     // A take for a card is recorded here and copied when it stops: where it
     // lands first is where to look if the card copy goes wrong, so it is said
     // now, in place of the backup line -- the take itself is the copy here.
+    // And how long this computer can record for, when that is shorter than
+    // the card could have: the moment to free space is before the show.
     if (computerFolder.isNotEmpty())
         mirrorValue.setText ("Recorded on this computer first, then copied to the card when you stop. "
-                             "This computer keeps its copy in " + computerFolder + ".",
+                             "This computer keeps its copy in " + computerFolder + "."
+                                 + (roomNote.isNotEmpty() ? " " + roomNote : juce::String()),
                              juce::dontSendNotification);
     else
         mirrorValue.setText (mirrorFolder.isNotEmpty() ? "A backup copy also goes to " + mirrorFolder
@@ -216,12 +219,38 @@ int SaveLocationPrompt::getContentHeight() const
         height += 8 + 32;
 
     if (mirrorValue.isVisible())
-        height += 8 + mirrorValueHeight;
+        height += 8 + mirrorValueHeight (contentWidth());
 
     if (blockedReason.isVisible())
-        height += 8 + 32;
+        height += 8 + blockedReasonHeight (contentWidth());
 
     return height + 18 + kRowHeight + 14 + kButtonHeight;
+}
+
+int SaveLocationPrompt::contentWidth() const
+{
+    // Before the card has been given a width, its full one.
+    return (getWidth() > 0 ? getCardWidth() : kCardWidth) - 2 * kCardPadding;
+}
+
+int SaveLocationPrompt::wrappedHeight (const juce::Label& label, int width)
+{
+    // Laid out exactly as the label draws it -- GlyphArrangement's own line
+    // breaking at the label's inner width -- given room for every line it
+    // wants. A fixed height cut the line short once it carried a long path
+    // and the room note, and a label too short for its lines shrinks the
+    // font rather than wrapping further.
+    const auto font = label.getFont();
+    const auto border = label.getBorderSize();
+    const float available = (float) juce::jmax (1, width - border.getLeftAndRight());
+
+    juce::GlyphArrangement glyphs;
+    glyphs.addFittedText (font, label.getText(), 0.0f, 0.0f, available, 100000.0f,
+                          juce::Justification::topLeft, 1000, label.getMinimumHorizontalScale());
+
+    const auto textHeight = glyphs.getNumGlyphs() > 0 ? glyphs.getBoundingBox (0, -1, true).getHeight() : 0.0f;
+
+    return juce::jmax (32, (int) std::ceil (textHeight) + border.getTopAndBottom() + 2);
 }
 
 void SaveLocationPrompt::layOutContent (juce::Rectangle<int> area)
@@ -252,13 +281,13 @@ void SaveLocationPrompt::layOutContent (juce::Rectangle<int> area)
     if (mirrorValue.isVisible())
     {
         area.removeFromTop (8);
-        mirrorValue.setBounds (area.removeFromTop (mirrorValueHeight));
+        mirrorValue.setBounds (area.removeFromTop (mirrorValueHeight (area.getWidth())));
     }
 
     if (blockedReason.isVisible())
     {
         area.removeFromTop (8);
-        blockedReason.setBounds (area.removeFromTop (32));
+        blockedReason.setBounds (area.removeFromTop (blockedReasonHeight (area.getWidth())));
     }
 
     area.removeFromTop (18);

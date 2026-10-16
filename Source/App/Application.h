@@ -289,6 +289,9 @@ public:
         /// the copy on this computer.
         bool recordsOnComputerFirst = false;
         juce::String computerFolder;
+        /// How long this computer can record for, when that is shorter than
+        /// the card could have (nextTakeRoomNote), or empty.
+        juce::String roomNote;
     };
     PlannedSave planSave (const juce::String& proposedSessionName) const;
 
@@ -572,6 +575,18 @@ public:
     /// Whether the next take would be recorded on this computer and copied to
     /// the card, from what the background probe already knows. Never waits.
     bool wouldRecordOnComputer() const;
+
+    /// For a next take recorded on this computer: how long it can record for,
+    /// when that is shorter than the card could have held, or whenever the
+    /// card can't be recorded on directly (cardcopy::roomHereNote). Empty
+    /// otherwise. From what the probe already knows; never waits.
+    juce::String nextTakeRoomNote() const;
+
+    /// The Cameras page's line about space: how much an hour of recording
+    /// takes at the current mics and camera sizes. From the same figure the
+    /// route and card checks use (bytesPerSecondOfRecording), so the page and
+    /// those checks can never disagree.
+    juce::String recordingSpaceLine() const;
 
     /// Fired on the message thread whenever the capture coordinator's meters
     /// have been destroyed and rebuilt (rename, hot-plug, output change, rate
@@ -1067,9 +1082,33 @@ private:
     /// The route for the next take. `authoritative` (arm time only) asks the
     /// disks themselves; otherwise only what the probe already knows.
     TakeRoute plannedTakeRoute (bool authoritative) const;
+    /// What plannedTakeRoute() decides from, gathered the same way.
+    TakeRouteInputs takeRouteInputs (bool authoritative) const;
     /// How long the save location itself could record for, from the probe's
     /// last look between takes, or -1 when that is not known.
     double destinationRoomFromProbe() const;
+    /// The card's last check against the rig as it is now, for the route:
+    /// full, refused by its speed or format check, passed, or not checked
+    /// (or another card in its place since). Cached state only -- asked on
+    /// every refresh of the Record button, it never touches the card.
+    CardCheck cardCheckForNextTake() const;
+    /// The refusal a cached check of the card gives for the rig as it is now
+    /// (its speed, FAT32 with a camera), or empty when it passes.
+    juce::String cachedCardRefusal (const PreflightResult& checked) const;
+    /// How long a take recorded here could run before it is stopped with
+    /// 1 GB free, from the probe's last look; -1 when not known.
+    double computerSecondsForNextTake() const;
+    /// The room note above, for a take recorded here, whatever the probe
+    /// says the route is: the arm asks it just after deciding the route.
+    juce::String roomNoteForTakeHere() const;
+    /// Between takes, on the status line when nothing else is: the room note,
+    /// or that the next take will go straight to the card because this
+    /// computer is too full (when the card passed, and so will take it).
+    juce::String nextTakeRouteAdvice() const;
+    /// Record's refusal for a take going straight to the card: as given, or,
+    /// when it goes there only because this computer is too full, led by
+    /// that (cardcopy::computerFullRefusal).
+    juce::String refusalForRoute (TakeRoute route, const juce::String& reason) const;
     /// Test builds' MMA_TREAT_AS_CARD=<prefix>: a destination under it counts
     /// as a card, so the end-to-end gates can exercise the copy on one disk.
     static bool treatAsCardForTesting (const std::string& destination);
@@ -1117,9 +1156,15 @@ private:
     mutable std::map<std::string, double> preflightVerdictAtMs;
     static std::string filesystemTypeName (const juce::File& folder);
     static int probeWriteErrno (const juce::File& folder);
+    /// `stopBelowBytesPerSec`: what the rig needs at launch
+    /// (PreflightThroughputTest::gateBytesPerSecond); the test stops at its
+    /// first second under that, the verdict settled.
     static PreflightBackgroundResult runPreflight (
         std::string destination, int channelCount, double sampleRate,
-        int bytesPerSample, const std::atomic<bool>& cancelled);
+        int bytesPerSample, double stopBelowBytesPerSec, const std::atomic<bool>& cancelled);
+    /// A check that stopped early and does not answer the rig as it is now
+    /// (PreflightThroughputTest::needsMeasuringFor): the card is checked again.
+    bool checkNeedsMeasuring (const PreflightResult& checked) const;
     /// Consumes any completed verdict and atomically reports whether its
     /// worker is still running. This combined observation is what keeps Record
     /// fail-closed at the instant a background benchmark publishes.

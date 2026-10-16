@@ -27,9 +27,24 @@ enum class TakeRoute
     StraightToDestination,
     /// Record on this computer, copy to the card after Stop.
     ComputerThenCard,
-    /// The destination is a card but this computer is too full to hold the
-    /// take, so it records straight to the card as it always did.
+    /// The destination is a card and this computer has room for under an
+    /// hour (kPlanningSeconds), and either the card passed its check for this
+    /// rig and has more room than this computer, or there are under ten
+    /// minutes of room here (kShortestTakeHereSeconds): the take records
+    /// straight to the card, as every take did before this.
     StraightToCardComputerFull,
+};
+
+/// The card's last check, against the rig as it is now: its speed, FAT32
+/// with a camera, whether it can be written at all, whether it is full.
+enum class CardCheck
+{
+    /// No verdict for the card that is there: never checked, or swapped since.
+    NotYet,
+    /// A take recorded straight to it would be accepted.
+    Clears,
+    /// A take recorded straight to it would be refused.
+    Refuses,
 };
 
 struct TakeRouteInputs
@@ -42,25 +57,51 @@ struct TakeRouteInputs
     std::optional<int64_t> computerFreeBytes;
     /// Audio and cameras at the current settings.
     double bytesPerSecond = 0.0;
-    /// How long the destination itself could record for at that rate, when
-    /// known: what a take recorded straight to it could last.
-    std::optional<double> destinationRemainingSeconds;
+    /// The card's last check, against this rig (speed, FAT32 with a camera,
+    /// can't be written, full).
+    CardCheck card = CardCheck::NotYet;
+    /// How long a take recorded straight to the card could run before the
+    /// card is full, from the status probe's last look between takes; empty
+    /// when not known. Weighed only under an hour here.
+    std::optional<double> cardRoomSeconds;
+    /// Record was just pressed: there is no time left to check the card.
+    bool arming = false;
 };
 
-/// What this computer must be able to hold for a take recorded here: as much
-/// as the card could hold, up to kLongestShowSeconds -- so a take recorded
-/// here never stops for want of room where one recorded straight to the card
-/// would have carried on. An hour when the card's room is not known (it is
-/// out, so recording here is the only way anyway).
-int64_t projectedTakeBytes (const TakeRouteInputs& inputs) noexcept;
-
-inline constexpr double kLongestShowSeconds = 4.0 * 60.0 * 60.0;
+/// An hour of recording plus MirrorPolicy::kMinHeadroomBytes here, and every
+/// take records here whatever the card holds: the backup copy's rule (§6.3).
 inline constexpr double kPlanningSeconds = 60.0 * 60.0;
+/// The least room here for which a card that refuses is passed over and the
+/// take recorded here instead, stopped short if it must (§6.5).
+inline constexpr double kShortestTakeHereSeconds = 10.0 * 60.0;
+/// A card with room for longer than this is not said to outlast this
+/// computer (cardcopy::roomHereNote): no show runs this long.
+inline constexpr double kLongestShowSeconds = 4.0 * 60.0 * 60.0;
 
-/// The route for the next take. Free space at or below projectedTakeBytes()
-/// plus MirrorPolicy::kMinHeadroomBytes sends the take straight to the card:
-/// the same 2 GB rule the backup copy has always followed (§1, §6.3).
+/// Seconds a take recorded here can run before it is stopped with
+/// MirrorPolicy::kStopBytes still free; 0 at or below that; -1 when either
+/// input is unknown (no free figure, a negative one, or no rate).
+double computerRecordingSeconds (std::optional<int64_t> freeBytes, double bytesPerSecond) noexcept;
+
+/// The route for the next take (§1, §6.3). An hour here plus 2 GB records
+/// here. Under that, a card that passed its check takes the take; one that
+/// refuses -- or is not checked yet when Record is pressed, or has less room
+/// than this computer -- is passed over while there are ten minutes plus
+/// 2 GB here. Otherwise the take goes straight to the card, where its own
+/// checks then apply.
 TakeRoute decideTakeRoute (const TakeRouteInputs& inputs) noexcept;
+
+/// Whether the card's 200 MB speed test (§6.4) is to run now, between takes,
+/// for the next take's route as `in` gives it. `checked`: there is a verdict
+/// for the card that is there; `retryDue`: it is "couldn't write" and due
+/// another try (PreflightThroughputTest::shouldRetryCached).
+///
+/// A take that goes to the card has it checked first. One recorded here asks
+/// nothing of the card -- unless all that sends it here is a "couldn't
+/// write" a card that passed would replace: freeing space or unlocking the
+/// card is done without choosing the location again, and a long show is then
+/// not held to this computer's room.
+bool speedTestDue (const TakeRouteInputs& in, bool checked, bool retryDue) noexcept;
 
 /// How long Record waits for the first answer about where a save location
 /// is before going on without it. A card that hangs before the status probe
@@ -414,11 +455,47 @@ std::string waitingLine (int takes);
 std::string notAnsweringLine (int takes, const std::string& computerFolder);
 
 /// Said when a take goes straight to the card because this computer is too
-/// full. Points only at takes already on the card: some in `computerFolder`
-/// may be the only copy of a take not copied yet, and those are named
+/// full -- or, with `nextTake`, between takes, that the next one will. Points
+/// only at takes already on the card: some in `computerFolder` may be the
+/// only copy of a take not copied yet, and those are named
 /// (`takesStillToCopy`, their folders' names), because nothing a user sees in
 /// Finder or File Explorer tells them from the takes that are on the card.
-std::string computerFullNote (const std::string& computerFolder, const std::vector<std::string>& takesStillToCopy);
+std::string computerFullNote (const std::string& computerFolder, const std::vector<std::string>& takesStillToCopy,
+                              bool nextTake = false);
+
+/// Between takes recorded here: how long this computer can record for
+/// (`hereSeconds`, computerRecordingSeconds), when that is shorter than a
+/// take recorded straight to the card could run (`cardSeconds`, -1 when not
+/// known) or than kLongestShowSeconds -- or always, when the card refused
+/// (`cardRefused`) and so cannot take the show instead. Empty when there is
+/// nothing to say, or `hereSeconds` is not known. `camerasOn` adds the other
+/// way to make more time. Never says a take is on the card.
+std::string roomHereNote (double hereSeconds, double cardSeconds, bool camerasOn, bool cardRefused);
+
+/// Record refused because this computer is too full to record here, so the
+/// take would go straight to the card, and the card refuses it. Leads with
+/// why the card is involved at all, then `cardReason` whole -- its own hint,
+/// "Turning the cameras off...", included. When the card's check refused
+/// (CardCheck::Refuses), says how to record here instead: room made by
+/// deleting takes already on the card, the ones in `stillToCopy` kept.
+///
+/// While the card has no verdict (NotYet: being checked, waiting for a copy
+/// to step aside, not confirmed), `cardReason` as it is: a card that refuses
+/// sends the take here, so nothing is said yet of the card taking it.
+std::string computerFullRefusal (const std::string& cardReason, const std::string& computerFolder,
+                                 const std::vector<std::string>& stillToCopy, CardCheck card);
+
+/// Record's refusal for the next take, from the Record gate. The card's own
+/// reason (`askCard`, empty when it would take the take) is asked first:
+/// asking can land the card's check, which `route` and `card` then read.
+/// Read the other way round -- and C++ leaves the order of a call's
+/// arguments to the compiler -- a slow card's verdict landing on that refresh
+/// showed "This card is too slow" on a Record about to record here. Empty
+/// when the take records here; computerFullRefusal() when only this
+/// computer's room sends it to the card; otherwise the card's reason.
+std::string recordRefusal (const std::function<std::string()>& askCard, const std::function<TakeRoute()>& route,
+                           const std::function<CardCheck()>& card, const std::string& computerFolder,
+                           const std::vector<std::string>& stillToCopy);
 
 /// Whether an outcome is one of the copy's failures, reported to the user.
 bool isFailure (Outcome outcome) noexcept;

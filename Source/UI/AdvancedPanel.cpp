@@ -172,14 +172,6 @@ AdvancedPanel::AdvancedPanel()
     mirrorNote.setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
     addAndMakeVisible (mirrorNote);
 
-    // Off by default: it costs disk and minutes of CPU after every take, and
-    // the picture and the sound are already both saved and already aligned by
-    // the session origin. Nobody who does not want it should pay for it.
-    combineVideoToggle.setToggleState (false, juce::dontSendNotification);
-    combineVideoToggle.onClick = [this]
-    { if (onCombineVideoToggled) onCombineVideoToggled (combineVideoToggle.getToggleState()); };
-    addAndMakeVisible (combineVideoToggle);
-
     deliveryLabel.setText ("Aim the loudness at", juce::dontSendNotification);
     addAndMakeVisible (deliveryLabel);
 
@@ -213,10 +205,6 @@ AdvancedPanel::AdvancedPanel()
     loudnessAdviceLabel.setFont (juce::Font (13.0f));
     loudnessAdviceLabel.setColour (juce::Label::textColourId, AppLookAndFeel::accent);
     addAndMakeVisible (loudnessAdviceLabel);
-
-    combineVideoNote.setJustificationType (juce::Justification::topLeft);
-    combineVideoNote.setFont (juce::Font (12.0f));
-    addAndMakeVisible (combineVideoNote);
 
     destinationFolderButton.onClick = [this] { if (onDestinationFolderClicked) onDestinationFolderClicked(); };
     addAndMakeVisible (destinationFolderButton);
@@ -324,6 +312,8 @@ AdvancedPanel::AdvancedPanel()
         if (auto* window = getTopLevelComponent(); window != nullptr && window != this)
             window->grabKeyboardFocus();
     };
+    // Escape too, or the box swallowed it and Settings would not close.
+    aggregateNameEditor.onEscapeKey = aggregateNameEditor.onReturnKey;
     aggregateNameEditor.onFocusLost = [this] { if (onAggregateNameChanged) onAggregateNameChanged (aggregateNameEditor.getText()); };
     addAndMakeVisible (aggregateNameEditor);
     aggregateStatusLabel.setJustificationType (juce::Justification::centredLeft);
@@ -757,9 +747,8 @@ int AdvancedPanel::getRequiredHeight() const
     // checkbox list.
     constexpr int kSectionGaps = 12 + 12 + 10;
 
-    // The backup copy's note, the combined-video toggle and its note.
+    // The backup copy's note.
     constexpr int kMirrorNote  = 20;
-    constexpr int kCombine     = 28 + 32;
 
     // "Where it's going": the explanation and the line of advice under it.
     constexpr int kDelivery    = 100 + 4 + 36;
@@ -773,7 +762,7 @@ int AdvancedPanel::getRequiredHeight() const
     return kMargins + kCloseButton + (kSection * 7) + kShows + (kRow * kRowCount) + headphoneRows
          + kMicListLabel + static_cast<int> (micToggles.size()) * kMicToggle
          + kSectionGaps + kClockHelp + kDrift + kTrimViewport + kAggregate
-         + kCopyToCard + kMirror + kMirrorNote + kCombine + kDelivery + kDiagnostics + kUpdates + kActivity;
+         + kCopyToCard + kMirror + kMirrorNote + kDelivery + kDiagnostics + kUpdates + kActivity;
 }
 
 void AdvancedPanel::resized()
@@ -854,16 +843,6 @@ void AdvancedPanel::resized()
     // diagnostics button.
     mirrorToggle.setBounds (area.removeFromTop (28));
     mirrorNote.setBounds (area.removeFromTop (20).reduced (20, 0));
-
-    // With the backup copy, because both are answers to "what else ends up on
-    // my disk when I stop".
-    combineVideoToggle.setBounds (area.removeFromTop (28));
-
-    // Only takes room when it has something to say, so the panel does not
-    // carry an empty line for everyone whose machine is set up correctly.
-    combineVideoNote.setBounds (combineVideoNote.getText().isEmpty()
-                                    ? juce::Rectangle<int>()
-                                    : area.removeFromTop (32).reduced (20, 0));
 
     area.removeFromTop (16);
 
@@ -953,20 +932,6 @@ void AdvancedPanel::resized()
     // the bottom of the panel.
     section (activitySection);
     activityLabel.setBounds (area.removeFromTop (kActivityHeight));
-}
-
-
-void AdvancedPanel::setCombineVideoState (bool on, const juce::String& unavailableReason)
-{
-    combineVideoToggle.setToggleState (on, juce::dontSendNotification);
-
-    // §10.6: what is missing and what to do about it, under the control it
-    // affects. The toggle stays usable either way -- switching it on with no
-    // ffmpeg installed is a reasonable thing to do just before installing it,
-    // and a disabled control with an explanation nobody can act on is worse
-    // than an enabled one that says what it needs.
-    combineVideoNote.setText (unavailableReason, juce::dontSendNotification);
-    resized();
 }
 
 

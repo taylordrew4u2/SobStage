@@ -344,3 +344,31 @@ TEST_CASE (CameraSelection_otherNamesAreNeverTakenOver)
     REQUIRE_FALSE (selection.takeAdoptedLegacyChoices());
     REQUIRE (selection.resolveId ("Twin Cam Pro") == "Twin Cam Pro");
 }
+
+TEST_CASE (CameraSelection_SpaceAnHour_FollowsTheBudget)
+{
+    // The Cameras page's figure comes from the same per-camera budget the
+    // free-space and card checks use: decimal GB, rounded to whole ones.
+    REQUIRE (CameraSelection::spaceAnHourText (
+                 static_cast<double> (CameraSelection::estimatedBytesPerSecondFor (CameraQuality::Best)))
+             == "Recording now takes up to about 29 GB an hour, sound included.");
+    REQUIRE (CameraSelection::spaceAnHourText (
+                 static_cast<double> (CameraSelection::estimatedBytesPerSecondFor (CameraQuality::HD1080)))
+             == "Recording now takes up to about 14 GB an hour, sound included.");
+    REQUIRE (CameraSelection::spaceAnHourText (
+                 static_cast<double> (CameraSelection::estimatedBytesPerSecondFor (CameraQuality::HD720)))
+             == "Recording now takes up to about 7 GB an hour, sound included.");
+
+    // A bump to the estimate moves the text: the figure is worked out, not
+    // written in.
+    REQUIRE (CameraSelection::spaceAnHourText (
+                 static_cast<double> (CameraSelection::estimatedBytesPerSecondFor (CameraQuality::Best)) + 1.0e6)
+             == "Recording now takes up to about 32 GB an hour, sound included.");
+
+    // One 24-bit, 48 kHz track is half a gigabyte an hour, and says so
+    // rather than "about 1 GB" or "about 0 GB".
+    REQUIRE (CameraSelection::spaceAnHourText (48000.0 * 3.0)
+             == "Recording now takes up to less than 1 GB an hour, sound included.");
+    REQUIRE (CameraSelection::spaceAnHourText (0.0)
+             == "Recording now takes up to less than 1 GB an hour, sound included.");
+}

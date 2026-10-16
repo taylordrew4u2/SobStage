@@ -1,5 +1,52 @@
 # Changelog
 
+## v1.13.29 -- 2026-10-16 (release candidate)
+
+A slow SD card no longer blocks Record while this computer has room; a Cameras settings page.
+
+### Changed
+
+- **A slow card no longer stops you recording.** With room on this computer
+  for an hour of recording plus 2 GB, every take is recorded here and copied
+  to the card after Stop, and the card's speed isn't checked at all.
+  SobStage used to want room here for everything the card could hold -- about
+  130 GB beside a 128 GB card, with four mics and a camera -- and short of
+  that it sent the take to the card, said the card was too slow, and kept
+  Record off. With less room than an hour, a card that passed its check, and
+  has more room left than this computer, takes the take; one that is too
+  slow, full, locked or FAT32 with a camera no longer stops you while this
+  computer has room for 10 minutes: the take records here, and the line
+  under the record button says how long you have ("This computer has room
+  for about 25 minutes of recording."). The "Where does this recording go?"
+  card says it too. The card's check stops as soon as the card proves too
+  slow, a second or two in, instead of writing all 200 MB -- minutes on a
+  slow card, with Record waiting. A locked or full card is tried again within
+  seconds of being unlocked or having space freed.
+- **Cameras has its own settings page.** **Cameras** is always in the bar at
+  the top of the window, between Help and Settings, and says how many are on.
+  It opens a page beside the main screen, the way Settings does, so the
+  pictures stay in view: for each camera its name, whether it records, the
+  file it will write, what to do if it isn't working, its **Picture size**
+  (was "Quality") and, on a Mac, what it is running at. It also says how much
+  an hour of recording takes now.
+- **"Also save video with the sound in one file" moved from Settings to the
+  Cameras page.**
+- **The "bigger, sharper preview" and "Full preview" boxes are gone.** The
+  arrows on the main screen's camera row size the pictures, as before; what a
+  camera records is its Picture size.
+
+### Fixed
+
+- **A take recorded on this computer now stops with 1 GB still free, not at
+  nothing**, so the computer keeps working and the copy to the card can run.
+  The ten- and two-minute warnings come in time for that, and say "on this
+  computer".
+- **On Windows, the note about combined video no longer gives Mac
+  instructions.** It says where to put ffmpeg (`C:\Program Files\ffmpeg`,
+  with `ffmpeg.exe` in its `bin` folder); so does the message after a take.
+- **The Cameras button was hidden whenever a camera was on**, which is
+  exactly when its settings matter. It is always in the top bar now.
+
 ## v1.13.28 -- 2026-10-14 (release candidate)
 
 Takes for an SD card are recorded on this computer and copied to the card after Stop; a stricter power warning.

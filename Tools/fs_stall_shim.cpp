@@ -47,11 +47,37 @@
  *                               tells one card from another (cardIdentityOf).
  *                               Another size written there is another card.
  *
+ * A card can also be slow rather than dead: SD cards pause for whole seconds
+ * now and then while they tidy their insides, and the card's speed test
+ * measures in one-second windows to catch exactly that. With
+ *
+ *   MMA_STALL_SLOW_FILE             a file name, e.g. .sobstage-preflight.tmp
+ *   MMA_STALL_SLOW_FIRST_WRITE_MS   how long, in ms, the first write pauses
+ *   MMA_STALL_SLOW_EVERY_WRITE_MS   how long, in ms, every write pauses
+ *
+ * a file of that name opened under the card (open, openat, creat) has its
+ * first write (write, pwrite, writev) held that long -- or every write, for a
+ * card that is slow throughout; every other file goes straight through. With
+ * the speed test's file, which it writes 1 MB at a time, and 4000 ms on every
+ * write, the card sustains about 0.25 MB/s, well under any rig's bar: the
+ * whole 200 MB would take over 13 minutes, so a test that does not stop once
+ * its verdict is settled never finishes in a gate's time. The copy to the
+ * card is not slowed.
+ *
+ * A card can also be locked, and then unlocked without being taken out:
+ *
+ *   MMA_STALL_LOCKED_FILE  while this file exists, opening a file under the
+ *                          card for writing, or making a folder there, fails
+ *                          with EROFS, as a card with its lock switch on
+ *                          does. Reading goes through. Removed, the card
+ *                          takes writes again -- the same card, in place.
+ *
  * The gates' "card" is a folder on this computer's own disk, and whether a
  * take is recorded here and copied, or goes straight to the card, depends on
- * how much the card could hold against how much this computer has. On one
- * disk the two are the same, and a runner with less than four hours of
- * takes free sent every take straight to the "card". A card reporting a few
+ * how much room this computer has: an hour of recording plus 2 GB. On one
+ * disk the card and this computer are the same, so the gates set this
+ * computer's room (MMA_STALL_COMPUTER_FREE_MB_FILE) where it matters; a
+ * runner needs an hour plus 2 GB free for the rest. A card reporting a few
  * GB is a card, whatever the disk under it.
  */
 // Fortified builds turn open() and friends into inline wrappers, which would
@@ -147,6 +173,11 @@ bool underCardPrefix (const char* path) { return underGivenPrefix (path, cardPre
 
 std::mutex& fdMutex() { static std::mutex m; return m; }
 std::set<int>& cardFds() { static std::set<int> s; return s; }
+// MMA_STALL_SLOW_FILE / MMA_STALL_SLOW_FIRST_WRITE_MS: descriptors of that
+// file under the card whose first write is still to come.
+std::set<int>& slowFds() { static std::set<int> s; return s; }
+// MMA_STALL_SLOW_EVERY_WRITE_MS: descriptors of it slow throughout.
+std::set<int>& steadilySlowFds() { static std::set<int> s; return s; }
 
 bool isCardFd (int fd)
 {
@@ -166,6 +197,70 @@ void forgetFd (int fd)
 {
     const std::lock_guard<std::mutex> lock (fdMutex());
     cardFds().erase (fd);
+    slowFds().erase (fd);
+    steadilySlowFds().erase (fd);
+}
+
+const char* slowFileName()
+{
+    static const char* name = [] {
+        const char* v = std::getenv ("MMA_STALL_SLOW_FILE");
+        return v != nullptr && *v != 0 ? v : nullptr;
+    }();
+    return name;
+}
+
+long long slowFirstWriteMs()
+{
+    static const long long ms = [] {
+        const char* v = std::getenv ("MMA_STALL_SLOW_FIRST_WRITE_MS");
+        return v != nullptr && *v != 0 ? std::atoll (v) : 0LL;
+    }();
+    return ms;
+}
+
+long long slowEveryWriteMs()
+{
+    static const long long ms = [] {
+        const char* v = std::getenv ("MMA_STALL_SLOW_EVERY_WRITE_MS");
+        return v != nullptr && *v != 0 ? std::atoll (v) : 0LL;
+    }();
+    return ms;
+}
+
+void rememberSlowFd (int fd, const char* path)
+{
+    if (fd < 0 || slowFileName() == nullptr || (slowFirstWriteMs() <= 0 && slowEveryWriteMs() <= 0)
+        || ! underCardPrefix (path))
+        return;
+
+    const char* slash = std::strrchr (path, '/');
+
+    if (std::strcmp (slash != nullptr ? slash + 1 : path, slowFileName()) != 0)
+        return;
+
+    const std::lock_guard<std::mutex> lock (fdMutex());
+    if (slowFirstWriteMs() > 0)
+        slowFds().insert (fd);
+    if (slowEveryWriteMs() > 0)
+        steadilySlowFds().insert (fd);
+}
+
+// The first write on such a descriptor pauses, as a card does mid-write; on
+// a card slow throughout, every write does.
+void pauseIfFirstSlowWrite (int fd)
+{
+    long long ms = 0;
+    {
+        const std::lock_guard<std::mutex> lock (fdMutex());
+        if (slowFds().erase (fd) > 0)
+            ms += slowFirstWriteMs();
+        if (steadilySlowFds().count (fd) > 0)
+            ms += slowEveryWriteMs();
+    }
+
+    if (ms > 0)
+        std::this_thread::sleep_for (std::chrono::milliseconds (ms));
 }
 
 bool cardIsDead()
@@ -241,6 +336,28 @@ void mark (const char* suffix)
 
     if (fd >= 0)
         realClose (fd);
+}
+
+// MMA_STALL_LOCKED_FILE: true, with errno EROFS, for a write-open or a
+// folder made under the card while the file exists.
+bool refusedAsLocked (const char* path, bool writes)
+{
+    static const char* flag = [] {
+        const char* v = std::getenv ("MMA_STALL_LOCKED_FILE");
+        return v != nullptr && *v != 0 ? v : nullptr;
+    }();
+    static auto realAccess = real<int (*) (const char*, int)> ("access");
+
+    if (! writes || flag == nullptr || ! underCardPrefix (path) || realAccess (flag, F_OK) != 0)
+        return false;
+
+    errno = EROFS;
+    return true;
+}
+
+bool opensForWriting (int flags)
+{
+    return (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC)) != 0;
 }
 
 mode_t modeArg (int flags, va_list args)
@@ -365,9 +482,12 @@ int open (const char* path, int flags, ...)
 {
     va_list args; va_start (args, flags); const auto mode = modeArg (flags, args); va_end (args);
     touchPath (path);
+    if (refusedAsLocked (path, opensForWriting (flags)))
+        return -1;
     static const auto fn = real<int (*) (const char*, int, ...)> ("open");
     const int fd = fn (path, flags, mode);
     rememberFd (fd, path);
+    rememberSlowFd (fd, path);
     return fd;
 }
 
@@ -375,9 +495,12 @@ int open64 (const char* path, int flags, ...)
 {
     va_list args; va_start (args, flags); const auto mode = modeArg (flags, args); va_end (args);
     touchPath (path);
+    if (refusedAsLocked (path, opensForWriting (flags)))
+        return -1;
     static const auto fn = real<int (*) (const char*, int, ...)> ("open64");
     const int fd = fn (path, flags, mode);
     rememberFd (fd, path);
+    rememberSlowFd (fd, path);
     return fd;
 }
 
@@ -385,9 +508,12 @@ int openat (int dirfd, const char* path, int flags, ...)
 {
     va_list args; va_start (args, flags); const auto mode = modeArg (flags, args); va_end (args);
     touchPath (path);
+    if (refusedAsLocked (path, opensForWriting (flags)))
+        return -1;
     static const auto fn = real<int (*) (int, const char*, int, ...)> ("openat");
     const int fd = fn (dirfd, path, flags, mode);
     rememberFd (fd, path);
+    rememberSlowFd (fd, path);
     return fd;
 }
 
@@ -395,18 +521,24 @@ int openat64 (int dirfd, const char* path, int flags, ...)
 {
     va_list args; va_start (args, flags); const auto mode = modeArg (flags, args); va_end (args);
     touchPath (path);
+    if (refusedAsLocked (path, opensForWriting (flags)))
+        return -1;
     static const auto fn = real<int (*) (int, const char*, int, ...)> ("openat64");
     const int fd = fn (dirfd, path, flags, mode);
     rememberFd (fd, path);
+    rememberSlowFd (fd, path);
     return fd;
 }
 
 int creat (const char* path, mode_t mode)
 {
     touchPath (path);
+    if (refusedAsLocked (path, true))
+        return -1;
     static const auto fn = real<int (*) (const char*, mode_t)> ("creat");
     const int fd = fn (path, mode);
     rememberFd (fd, path);
+    rememberSlowFd (fd, path);
     return fd;
 }
 
@@ -421,6 +553,7 @@ int close (int fd)
 ssize_t write (int fd, const void* buf, size_t n)
 {
     touchFd (fd);
+    pauseIfFirstSlowWrite (fd);
     static const auto fn = real<ssize_t (*) (int, const void*, size_t)> ("write");
     return fn (fd, buf, n);
 }
@@ -428,6 +561,7 @@ ssize_t write (int fd, const void* buf, size_t n)
 ssize_t pwrite (int fd, const void* buf, size_t n, off_t off)
 {
     touchFd (fd);
+    pauseIfFirstSlowWrite (fd);
     static const auto fn = real<ssize_t (*) (int, const void*, size_t, off_t)> ("pwrite");
     return fn (fd, buf, n, off);
 }
@@ -435,6 +569,7 @@ ssize_t pwrite (int fd, const void* buf, size_t n, off_t off)
 ssize_t pwrite64 (int fd, const void* buf, size_t n, off64_t off)
 {
     touchFd (fd);
+    pauseIfFirstSlowWrite (fd);
     static const auto fn = real<ssize_t (*) (int, const void*, size_t, off64_t)> ("pwrite64");
     return fn (fd, buf, n, off);
 }
@@ -442,6 +577,7 @@ ssize_t pwrite64 (int fd, const void* buf, size_t n, off64_t off)
 ssize_t writev (int fd, const struct iovec* iov, int count)
 {
     touchFd (fd);
+    pauseIfFirstSlowWrite (fd);
     static const auto fn = real<ssize_t (*) (int, const struct iovec*, int)> ("writev");
     return fn (fd, iov, count);
 }
@@ -575,6 +711,8 @@ int faccessat (int dirfd, const char* path, int mode, int flags)
 int mkdir (const char* path, mode_t mode)
 {
     touchPath (path);
+    if (refusedAsLocked (path, true))
+        return -1;
     static const auto fn = real<int (*) (const char*, mode_t)> ("mkdir");
     return fn (path, mode);
 }
@@ -582,6 +720,8 @@ int mkdir (const char* path, mode_t mode)
 int mkdirat (int dirfd, const char* path, mode_t mode)
 {
     touchPath (path);
+    if (refusedAsLocked (path, true))
+        return -1;
     static const auto fn = real<int (*) (int, const char*, mode_t)> ("mkdirat");
     return fn (dirfd, path, mode);
 }
