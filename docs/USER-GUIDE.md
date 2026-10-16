@@ -449,12 +449,12 @@ copies it to the card when you press Stop.
   the cameras that are on.
 - **With less room than that here**, SobStage checks the card first, which
   takes a few seconds (a card that is too slow is known within a second or
-  two). A card that passes, and has more room than this
-  computer, takes the take instead, recorded straight to it, so a long show
-  isn't cut short. The line under the record button says so: "This computer
-  is nearly full, so the next take will go straight to the card." A card with
-  less room left than this computer (nearly full from earlier shows) doesn't:
-  the take is recorded here, where it can run longer.
+  two). A card that passes, and has more room than this computer, takes the
+  take instead, recorded straight to it, so a long show isn't cut short. The
+  line under the record button says so: "This computer is nearly full, so
+  the next take will go straight to the card." A card with less room left
+  than this computer (nearly full from earlier shows) doesn't: the take is
+  recorded here, where it can run longer.
 - **A card that is too slow, full, locked or FAT32 with a camera on doesn't
   stop you** while this computer has room for 10 minutes of recording plus
   2 GB. The take is recorded here and copied to the card after Stop, and the

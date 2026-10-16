@@ -13,11 +13,13 @@
   Record off. With less room than an hour, a card that passed its check, and
   has more room left than this computer, takes the take; one that is too
   slow, full, locked or FAT32 with a camera no longer stops you while this
-  computer has room for 10 minutes: the take
-  records here, and the line under the record button says how long you have
-  ("This computer has room for about 25 minutes of recording."). The
-  "Where does this recording go?" card says it too. A locked or full card is
-  tried again within seconds of being unlocked or having space freed.
+  computer has room for 10 minutes: the take records here, and the line
+  under the record button says how long you have ("This computer has room
+  for about 25 minutes of recording."). The "Where does this recording go?"
+  card says it too. The card's check stops as soon as the card proves too
+  slow, a second or two in, instead of writing all 200 MB -- minutes on a
+  slow card, with Record waiting. A locked or full card is tried again within
+  seconds of being unlocked or having space freed.
 - **Cameras has its own settings page.** **Cameras** is always in the bar at
   the top of the window, between Help and Settings, and says how many are on.
   It opens a page beside the main screen, the way Settings does, so the
