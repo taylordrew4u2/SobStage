@@ -8,7 +8,7 @@ Downloads, checksum verification, per-platform installation, what each platform 
 [`CHANGELOG.md`](../CHANGELOG.md) lists what changed in each one and what is still
 missing.
 
-The source currently describes the **v1.13.28 release candidate**. It is not a
+The source currently describes the **v1.13.29 release candidate**. It is not a
 general-release claim: signing, artifact inspection and physical-hardware gates
 are tracked in [`RELEASE_CHECKLIST.md`](../RELEASE_CHECKLIST.md). For help, see
 [`SUPPORT.md`](../SUPPORT.md); data handling is documented in
@@ -96,15 +96,15 @@ Step-by-step setup is in [Installing](#installing) below.
 
 ## What to expect on your platform
 
-This is the **v1.13.28 release candidate**. The recording engine is covered by
-1112 unit tests plus capture and platform harnesses. What differs by platform is
+This is the **v1.13.29 release candidate**. The recording engine is covered by
+1126 unit tests plus capture and platform harnesses. What differs by platform is
 how much of the *device* layer has been run against a live audio system and
 physical hardware.
 
 | Platform | Status | What this means for you |
 |---|---|---|
 | **Linux** | External-only policy and real ALSA API exercised; physical hardware unverified | The production build lists kernel ALSA cards only when sysfs proves they are removable. A separately compiled test binary admits file-backed virtual microphones so capture and hot-plug can run through ALSA in CI. Multi-input hardware, driver timing and real USB devices still require bench validation. Linux is an early-use build, not a v1 production target. |
-| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. An input HAL open now stops holding the UI after five seconds and quarantines late cleanup so a wedged USB interface cannot freeze launch or quit; the simulator also covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. An older v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a first-frame enqueue, but no visible non-black preview or completed camera recording has been verified for the v1.13.28 candidate. |
+| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. An input HAL open now stops holding the UI after five seconds and quarantines late cleanup so a wedged USB interface cannot freeze launch or quit; the simulator also covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. An older v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a first-frame enqueue, but no visible non-black preview or completed camera recording has been verified for the v1.13.29 candidate. |
 | **Windows** | WASAPI and external-only policy simulated; physical hardware unverified | Enumeration follows each endpoint into the Plug and Play device tree, requires an eligible wired branch plus positive removable capability and removal-policy evidence on the same node, and fails closed otherwise. Fixed/internal USB, known phone, Bluetooth, software and unknown sources are omitted in simulation. Exclusive-mode format negotiation, 16/24/32-bit conversion and the worker-thread handshake execute in CI. A real microphone, output device, driver timing and camera capture have not completed the hardware matrix. |
 
 The automated environment can exercise ALSA through virtual PCMs and the other

@@ -1,4 +1,4 @@
-# SobStage v1.13.28 release checklist
+# SobStage v1.13.29 release checklist
 
 **Classification:** release candidate. Do not present it as a general consumer
 release until every **GA blocker** below is closed with evidence.
@@ -8,7 +8,7 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] The release commit is on `main`, the worktree is clean, and all intended
   changes have been reviewed.
 - [ ] `CMakeLists.txt`, the app About/version strings, package metadata, the tag
-  (`v1.13.28`) and this changelog all agree.
+  (`v1.13.29`) and this changelog all agree.
 - [ ] `CHANGELOG.md` covers every user-visible change since v1.13.19.
 - [ ] Dependency revisions and third-party GitHub Actions are immutable pins;
   the GPLv3 source offer and release archive are present.
@@ -20,7 +20,7 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] CI is green for Core + tests and the full app on Linux, macOS and Windows.
 - [ ] The release workflow is green at the exact candidate commit.
 - [ ] All unit tests pass on all three operating systems. The current baseline
-  is **1112 unit tests**; if tests change, record the final discovered count here.
+  is **1126 unit tests**; if tests change, record the final discovered count here.
 - [ ] `sim_channel_meter` passes on all three operating systems: every
   crying-face state is checked against the pixels drawn.
 - [ ] `sim_coreaudio`, `sim_wasapi`, `sim_camera` and
@@ -84,7 +84,7 @@ release until every **GA blocker** below is closed with evidence.
   Close this only after the same moments have been run with a real card
   pulled on macOS and Windows.
 - [ ] The macOS app is universal (`arm64` and `x86_64`), has a macOS 13.0 minimum,
-  reports 1.13.28 in its bundle, and passes `Tools/verify_macos_release.sh` both
+  reports 1.13.29 in its bundle, and passes `Tools/verify_macos_release.sh` both
   before and after ZIP/DMG round trips.
 - [ ] The DMG opens with current SobStage artwork, a working Applications link,
   no icon over the first-launch Terminal command (the release build checks the
@@ -125,7 +125,7 @@ release record. Simulation is not a substitute.
 Known camera evidence as of 12 September is diagnostic only: the older v1.11.0
 app opened a USB HDMI capture device reported as `USB2 Video`, and AVFoundation
 logged a first-frame enqueue. No visible non-black preview or completed camera
-recording has been verified from that run, and the v1.13.28 candidate has not yet
+recording has been verified from that run, and the v1.13.29 candidate has not yet
 passed the physical camera matrix.
 
 - [ ] **GA blocker:** Complete a real macOS take with a directly attached
@@ -205,7 +205,7 @@ passed the physical camera matrix.
   notices have owner/legal sign-off.
 - [ ] JUCE licensing is checked against the current official JUCE licensing page
   for the selected distribution model; no undated price table is relied on.
-- [ ] Release notes (`docs/release-notes/v1.13.28.md`, which the release
+- [ ] Release notes (`docs/release-notes/v1.13.29.md`, which the release
   workflow requires and publishes as the release body) state the supported
   targets and known limitations without describing simulator results as
   hardware certification, name the previous release for rolling back, and
@@ -214,10 +214,10 @@ passed the physical camera matrix.
 
 ## 6. Release and rollback
 
-- [ ] Keep the v1.13.28 tag and the previous release's tag (the one the release
+- [ ] Keep the v1.13.29 tag and the previous release's tag (the one the release
   notes name for rolling back) and their assets immutable and available until
-  v1.13.28 is proven in production.
-- [ ] Publish v1.13.28 from the exact tested commit; never move or reuse the tag.
+  v1.13.29 is proven in production.
+- [ ] Publish v1.13.29 from the exact tested commit; never move or reuse the tag.
 - [ ] After publishing, `python3 Tools/release_body.py --all` reports that every
   release page matches its notes file. The workflow never edits a release that
   already exists, so a later fix to `docs/release-notes/<tag>.md` reaches its
@@ -225,7 +225,7 @@ passed the physical camera matrix.
   changes GitHub added and does not change which release is the latest.
 - [ ] Smoke-test each URL, checksum, install, launch, short recording, playback,
   diagnostics export and uninstall from the public release page.
-- [ ] If a serious regression appears, mark v1.13.28 as pre-release/not latest,
+- [ ] If a serious regression appears, mark v1.13.29 as pre-release/not latest,
   point users to the previous release when safe, preserve reports and publish
   the fix as a new version from a new commit and tag. Do not silently replace
   assets or retag.

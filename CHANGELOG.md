@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v1.13.29 -- 2026-10-16 (release candidate)
+
+A slow SD card no longer blocks Record while this computer has room; a Cameras settings page.
 
 ### Changed
 
