@@ -25,6 +25,8 @@
   <a href="docs/images/demo.mp4"><img src="docs/images/demo.gif" alt="A 20-second screen recording: two microphone meters moving, Start recording pressed, the take clock counting while the file count grows, then Stop and a Saved card listing every file with its size" width="680"></a>
 </p>
 
+<p align="center"><img src="docs/images/overview.png" alt="SobStage recording four microphones with live meters, next to a Saved card listing one WAV per person plus the mix" width="100%" /></p>
+
 > **Status:** v1.13.29 release candidate. CI passes on macOS, Windows and Linux against simulated devices; the physical-microphone validation matrix is still open ([details](docs/VERIFICATION.md)).
 
 ## Why I built it
